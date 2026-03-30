@@ -304,6 +304,8 @@ class OCRService:
             value = (self._entity_text_value(entity) or "").upper()
             if value in {"CLP", "USD", "PEN", "CNY"}:
                 return value
+            if "PESO" in value:
+                return "CLP"
             if "SOL" in value or "PEN" in value:
                 return "PEN"
             if "DOLAR" in value or "USD" in value:
@@ -395,10 +397,15 @@ class OCRService:
 
     def _infer_currency_from_text(self, text: str) -> str | None:
         upper = (text or "").upper()
+        if re.search(r"\bMONEDA\s*:\s*PESO(?:S)?\b", upper):
+            return "CLP"
         if "PEN" in upper or "S/" in upper or "SOLES" in upper or "SOL" in upper:
             return "PEN"
         if "USD" in upper or "US$" in upper or "DOLAR" in upper:
             return "USD"
+        # En boletas chilenas de POS a veces solo aparece "$" sin texto "PESO/CLP".
+        if self._looks_like_chile_receipt(upper):
+            return "CLP"
         if "CLP" in upper:
             return "CLP"
         if "CNY" in upper or "RMB" in upper:
@@ -407,13 +414,49 @@ class OCRService:
 
     def _infer_country_from_text(self, text: str) -> str | None:
         upper = (text or "").upper()
-        if "PERU" in upper:
-            return "Peru"
+        # Prioriza evidencia de ubicación/documento por sobre el nombre del comercio.
+        if self._looks_like_chile_receipt(upper):
+            return "Chile"
+        if "PERU" in upper or "PERÚ" in upper:
+            if self._looks_like_peru_receipt(upper):
+                return "Peru"
+            return None
         if "CHILE" in upper:
             return "Chile"
         if "CHINA" in upper:
             return "China"
         return None
+
+    def _looks_like_peru_receipt(self, upper_text: str) -> bool:
+        hard_hits = 0
+        if re.search(r"\bRUC\b", upper_text):
+            hard_hits += 1
+        if "SUNAT" in upper_text:
+            hard_hits += 1
+        if re.search(r"\b[\w.-]+\.PE\b", upper_text):
+            hard_hits += 1
+
+        soft_hits = 0
+        for token in ("LIMA", "MIRAFLORES", "SAN ISIDRO", "AREQUIPA", "CUSCO", "PERU", "PERÚ"):
+            if token in upper_text:
+                soft_hits += 1
+
+        return (hard_hits >= 1 and soft_hits >= 1) or soft_hits >= 2
+
+    def _looks_like_chile_receipt(self, upper_text: str) -> bool:
+        for token in (
+            "CHILE",
+            "SANTIAGO",
+            "VITACURA",
+            "LAS CONDES",
+            "SII.CL",
+            "RUT",
+            "COMUNA",
+            ".CL",
+        ):
+            if token in upper_text:
+                return True
+        return False
 
     def _normalize_merchant_name(self, merchant: str | None) -> str | None:
         if not merchant:

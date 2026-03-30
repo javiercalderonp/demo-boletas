@@ -21,9 +21,42 @@ SHEET_NAMES = {
     "trips": "Trips",
     "expenses": "Expenses",
     "conversations": "Conversations",
+    "trip_documents": "TripDocuments",
 }
 
-_EXPENSE_REQUIRED_HEADERS = {"receipt_drive_url"}
+_EXPENSE_REQUIRED_HEADERS = {"receipt_storage_provider", "receipt_object_key"}
+_TRIP_REQUIRED_HEADERS = [
+    "closure_status",
+    "closure_prompted_at",
+    "closure_deadline_at",
+    "closure_response",
+    "closure_responded_at",
+    "closed_at",
+    "closure_reason",
+]
+_TRIP_DOCUMENT_HEADERS = [
+    "document_id",
+    "phone",
+    "trip_id",
+    "storage_provider",
+    "object_key",
+    "expense_count",
+    "total_clp",
+    "status",
+    "created_at",
+    "updated_at",
+    "signature_provider",
+    "signature_status",
+    "docusign_envelope_id",
+    "signature_url",
+    "signature_sent_at",
+    "signature_completed_at",
+    "signature_declined_at",
+    "signature_expired_at",
+    "signed_storage_provider",
+    "signed_object_key",
+    "signature_error",
+]
 
 
 @dataclass
@@ -39,10 +72,11 @@ class SheetsService:
             "Trips": [],
             "Expenses": [],
             "Conversations": [],
+            "TripDocuments": [],
         }
         if self.settings.google_sheets_enabled:
             self._connect()
-            self._ensure_expenses_headers()
+            self._ensure_required_headers()
 
     @property
     def enabled(self) -> bool:
@@ -59,7 +93,6 @@ class SheetsService:
 
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive",
         ]
         creds = Credentials.from_service_account_file(
             self.settings.google_application_credentials,
@@ -76,7 +109,16 @@ class SheetsService:
         cached = self._worksheet_cache.get(name)
         if cached is not None:
             return cached
-        ws = self._with_retry(lambda: self._spreadsheet.worksheet(name))
+        try:
+            ws = self._with_retry(lambda: self._spreadsheet.worksheet(name))
+        except Exception as exc:  # pragma: no cover - runtime dependency/errors
+            if not self._is_worksheet_not_found(exc):
+                raise
+            if name != SHEET_NAMES["trip_documents"]:
+                raise
+            ws = self._with_retry(
+                lambda: self._spreadsheet.add_worksheet(title=name, rows=200, cols=30)
+            )
         self._worksheet_cache[name] = ws
         return ws
 
@@ -95,16 +137,45 @@ class SheetsService:
         row = [row_dict.get(header, "") for header in headers]
         self._with_retry(lambda: ws.append_row(row, value_input_option="USER_ENTERED"))
 
+    def _ensure_required_headers(self) -> None:
+        self._ensure_sheet_headers(SHEET_NAMES["trips"], list(_TRIP_REQUIRED_HEADERS))
+        self._ensure_expenses_headers()
+        self._ensure_sheet_headers(
+            SHEET_NAMES["trip_documents"], list(_TRIP_DOCUMENT_HEADERS)
+        )
+
     def _ensure_expenses_headers(self) -> None:
         ws = self._worksheet(SHEET_NAMES["expenses"])
         if ws is None:
             return
         headers = self._with_retry(lambda: ws.row_values(1))
+        if not headers:
+            return
         missing = [header for header in _EXPENSE_REQUIRED_HEADERS if header not in headers]
         if not missing:
             return
         updated_headers = headers + missing
         self._with_retry(lambda: ws.update("A1", [updated_headers]))
+
+    def _ensure_sheet_headers(self, worksheet_name: str, required_headers: list[str]) -> None:
+        ws = self._worksheet(worksheet_name)
+        if ws is None:
+            return
+        headers = self._with_retry(lambda: ws.row_values(1))
+        if not headers:
+            self._with_retry(lambda: ws.update("A1", [required_headers]))
+            return
+        missing = [header for header in required_headers if header not in headers]
+        if not missing:
+            return
+        updated_headers = headers + missing
+        self._with_retry(lambda: ws.update("A1", [updated_headers]))
+
+    def _is_worksheet_not_found(self, exc: Exception) -> bool:
+        class_name = exc.__class__.__name__
+        if class_name == "WorksheetNotFound":
+            return True
+        return "WorksheetNotFound" in str(exc)
 
     def _upsert_by_key(
         self, name: str, key_field: str, key_value: Any, payload: dict[str, Any]
@@ -210,6 +281,70 @@ class SheetsService:
         self._append_row(SHEET_NAMES["expenses"], expense_data)
         return expense_data
 
+    def create_trip_document(self, document_data: dict[str, Any]) -> dict[str, Any]:
+        self._append_row(SHEET_NAMES["trip_documents"], document_data)
+        return document_data
+
+    def update_trip_document(
+        self, document_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        existing = self.get_trip_document_by_id(document_id)
+        if existing is None:
+            return None
+        merged = existing.copy()
+        merged.update(payload)
+        merged["document_id"] = str(document_id or "").strip()
+        self._upsert_by_key(
+            SHEET_NAMES["trip_documents"],
+            "document_id",
+            merged["document_id"],
+            merged,
+        )
+        return merged
+
+    def get_trip_document_by_id(self, document_id: str) -> dict[str, Any] | None:
+        target_document_id = str(document_id or "").strip()
+        if not target_document_id:
+            return None
+        for row in self._get_records(SHEET_NAMES["trip_documents"]):
+            row_document_id = str(row.get("document_id", "")).strip()
+            if row_document_id == target_document_id:
+                return row
+        return None
+
+    def list_trip_documents_by_phone_trip(self, phone: str, trip_id: str) -> list[dict[str, Any]]:
+        target_phone = normalize_whatsapp_phone(phone)
+        target_trip_id = str(trip_id or "").strip()
+        if not target_phone or not target_trip_id:
+            return []
+        matches: list[dict[str, Any]] = []
+        for row in self._get_records(SHEET_NAMES["trip_documents"]):
+            row_phone = normalize_whatsapp_phone(row.get("phone", ""))
+            row_trip_id = str(row.get("trip_id", "")).strip()
+            if row_phone != target_phone or row_trip_id != target_trip_id:
+                continue
+            matches.append(row)
+        return matches
+
+    def get_latest_trip_document_by_phone_trip(
+        self, phone: str, trip_id: str
+    ) -> dict[str, Any] | None:
+        records = self.list_trip_documents_by_phone_trip(phone, trip_id)
+        latest: dict[str, Any] | None = None
+        latest_ts: datetime | None = None
+        for row in records:
+            row_ts = self._parse_updated_at(row.get("updated_at")) or self._parse_updated_at(
+                row.get("created_at")
+            )
+            if latest is None:
+                latest = row
+                latest_ts = row_ts
+                continue
+            if row_ts and (latest_ts is None or row_ts >= latest_ts):
+                latest = row
+                latest_ts = row_ts
+        return latest
+
     def get_trip_by_id(self, trip_id: str) -> dict[str, Any] | None:
         target_trip_id = str(trip_id or "").strip()
         if not target_trip_id:
@@ -240,6 +375,27 @@ class SheetsService:
             if str(row.get("status", "")).strip().lower() == "active":
                 active_rows.append(row)
         return active_rows
+
+    def list_active_trips_by_phone(self, phone: str) -> list[dict[str, Any]]:
+        target_phone = normalize_whatsapp_phone(phone)
+        matches: list[dict[str, Any]] = []
+        if not target_phone:
+            return matches
+        for row in self.list_active_trips():
+            row_phone = normalize_whatsapp_phone(row.get("phone", ""))
+            if row_phone == target_phone:
+                matches.append(row)
+        return matches
+
+    def update_trip(self, trip_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        existing = self.get_trip_by_id(trip_id)
+        if existing is None:
+            return None
+        merged = existing.copy()
+        merged.update(payload)
+        merged["trip_id"] = str(trip_id or "").strip()
+        self._upsert_by_key(SHEET_NAMES["trips"], "trip_id", merged["trip_id"], merged)
+        return merged
 
     def get_conversation(self, phone: str) -> dict[str, Any] | None:
         target_phone = normalize_whatsapp_phone(phone)

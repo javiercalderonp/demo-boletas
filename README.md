@@ -11,7 +11,7 @@ Construir un agente de viáticos por WhatsApp que:
 - Extraiga información con Google Document AI.
 - Dialogue con el usuario cuando falten datos.
 - Guarde gastos estructurados en Google Sheets.
-- Soporte gastos compartidos básicos (50/50).
+- Almacene imágenes de boletas en storage privado.
 - Maneje estado de conversación.
 
 Este proyecto busca un MVP funcional, profesional y simple.
@@ -46,15 +46,14 @@ Este proyecto busca un MVP funcional, profesional y simple.
 - Validación de campos obligatorios.
 - Confirmación de resumen antes de persistir.
 - Persistencia de gastos en hoja `Expenses`.
-- Conversación para gastos compartidos (50/50) en flujo básico.
+- Scheduler de recordatorios por viaje.
 
 ### No incluye aún
 
-- Scheduler (recordatorios automáticos).
-- Lógica OCR completa con Google Document AI.
 - Panel web / autenticación.
 - Aprobaciones complejas.
-- Tipos de split avanzados (porcentaje, monto custom, múltiples personas).
+- Cierre automático de viaje con ventana de 24 horas.
+- Integración de firma electrónica con DocuSign.
 
 ## Flujo General del Producto
 
@@ -115,15 +114,26 @@ Si confirma:
 - `status` del gasto = `pending_approval`
 - estado conversación = `DONE`
 
-### 5. Gasto compartido (MVP básico)
+### 5. Cierre de viaje (nuevo flujo)
 
-Después de confirmar gasto:
+Cuando llega `end_date` del viaje:
 
-1. Preguntar si fue compartido.
-2. Si sí:
-   - pedir teléfono del otro colaborador
-   - dividir 50/50
-   - crear dos filas en `Expenses` con `shared = true`
+1. El bot envía mensaje solicitando subir boletas restantes.
+2. El bot pregunta: "¿Tienes más boletas por subir?".
+3. Si responde "sí", se mantiene abierto el flujo para seguir recibiendo boletas.
+4. Si responde "no", se cierra el viaje.
+5. Si no responde en 24 horas, se cierra el viaje automáticamente.
+
+### 6. Documento y firma
+
+Al cerrar el viaje:
+
+1. Se genera un documento por `phone + trip_id`.
+2. El documento incluye:
+   - página de resumen (total general, total por categoría, total por día)
+   - detalle de cada boleta con datos tabulados
+3. El documento se envía al usuario.
+4. Se inicia firma obligatoria en DocuSign (una firma por documento).
 
 ## Estados de Conversación (State Machine)
 
@@ -132,6 +142,7 @@ Después de confirmar gasto:
 - `NEEDS_INFO`
 - `CONFIRM_SUMMARY`
 - `DONE`
+- `WAIT_TRIP_CLOSURE_CONFIRMATION`
 
 ### Estado recomendado por tipo de evento
 
@@ -139,6 +150,7 @@ Después de confirmar gasto:
 - OCR incompleto: `NEEDS_INFO`
 - OCR completo: `CONFIRM_SUMMARY`
 - Confirmación y guardado: `DONE`
+- Llegada de `end_date`: `WAIT_TRIP_CLOSURE_CONFIRMATION`
 - Después de cerrar flujo / próximo gasto: `WAIT_RECEIPT`
 
 ## Arquitectura Deseada (Monolito modular)
@@ -193,13 +205,18 @@ Spreadsheet: `Travel_Agent_MVP`
 
 ### Hoja `Expenses`
 
-| expense_id | phone | trip_id | merchant | date | currency | total | total_clp | category | country | shared | status | receipt_drive_url | created_at |
+| expense_id | phone | trip_id | merchant | date | currency | total | total_clp | category | country | status | receipt_storage_provider | receipt_object_key | created_at |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 
 ### Hoja `Conversations`
 
 | phone | state | current_step | context_json | updated_at |
 |---|---|---|---|---|
+
+### Hoja `TripDocuments`
+
+| document_id | phone | trip_id | storage_provider | object_key | expense_count | total_clp | status | created_at | updated_at | signature_provider | signature_status | docusign_envelope_id | signature_url | signature_sent_at | signature_completed_at | signature_declined_at | signature_expired_at | signed_storage_provider | signed_object_key | signature_error |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 
 ### Notas de modelado (MVP)
 
@@ -212,7 +229,7 @@ Spreadsheet: `Travel_Agent_MVP`
 
 Se agregó un script para:
 
-- asegurar que existan las 4 hojas (`Employees`, `Trips`, `Expenses`, `Conversations`)
+- asegurar que existan las 5 hojas (`Employees`, `Trips`, `Expenses`, `Conversations`, `TripDocuments`)
 - escribir los headers correctos en la fila 1
 - limpiar filas (opcional)
 - cargar datos demo (opcional)
@@ -224,14 +241,14 @@ Se agregó un script para:
 ### Requisitos
 
 ```bash
-pip install gspread google-auth google-api-python-client
+pip install gspread google-auth
 ```
 
 ### Uso recomendado
 
 ```bash
 python scripts/seed_sheets.py \
-  --credentials ./biaticos-488419-1073823ba21a.json \
+  --credentials ./viaticos-488419-1073823ba21a.json \
   --spreadsheet-id 1PgJc4460etPJxx1nSgtC4fGy0RGX85xVc55nm94plrk \
   --clear-data \
   --seed-demo
@@ -243,12 +260,11 @@ El script también acepta:
 
 - `GOOGLE_APPLICATION_CREDENTIALS`
 - `GOOGLE_SHEETS_SPREADSHEET_ID`
-- `DRIVE_RECEIPTS_FOLDER_ID` (opcional)
 
 Ejemplo:
 
 ```bash
-export GOOGLE_APPLICATION_CREDENTIALS=./biaticos-488419-1073823ba21a.json
+export GOOGLE_APPLICATION_CREDENTIALS=./viaticos-488419-1073823ba21a.json
 export GOOGLE_SHEETS_SPREADSHEET_ID=1PgJc4460etPJxx1nSgtC4fGy0RGX85xVc55nm94plrk
 python scripts/seed_sheets.py --clear-data --seed-demo
 ```
@@ -259,6 +275,7 @@ python scripts/seed_sheets.py --clear-data --seed-demo
 - `Trips`: 1 viaje activo asociado al empleado principal
 - `Expenses`: 1 gasto de ejemplo `pending_approval`
 - `Conversations`: estados `WAIT_RECEIPT` demo
+- `TripDocuments`: sin filas demo por defecto
 
 ### Nota de seguridad
 
@@ -342,7 +359,7 @@ Logs útiles durante pruebas:
 - `From` (número WhatsApp)
 - `Body` (texto)
 - `NumMedia`
-- `MediaUrl0` (si existe imagen)
+- `MediaUrl0..N` (si existen múltiples imágenes)
 - firma Twilio (`X-Twilio-Signature`)
 
 ### Lógica del webhook (MVP)
@@ -352,11 +369,11 @@ Logs útiles durante pruebas:
 3. Buscar empleado activo en `Employees`.
 4. Obtener conversación actual en `Conversations` (o inicializar).
 5. Si `NumMedia > 0`:
-   - actualizar estado a `PROCESSING`
-   - llamar OCR placeholder
-   - buscar viaje activo en `Trips`
-   - validar campos obligatorios
-   - transicionar a `NEEDS_INFO` o `CONFIRM_SUMMARY`
+   - si hay un gasto en curso (`PROCESSING`/`NEEDS_INFO`/`CONFIRM_SUMMARY`), encolar boleta(s) en `pending_receipts`
+   - si no hay gasto en curso, tomar una boleta y bloquear estado en `PROCESSING`
+   - ejecutar OCR + enrich + validación para esa boleta
+   - transicionar a `NEEDS_INFO` o `CONFIRM_SUMMARY` para esa boleta
+   - al cerrar/confirmar una boleta, disparar automáticamente la siguiente en cola (si existe)
 6. Si es texto:
    - procesar según `state` + `current_step`
    - actualizar conversación
@@ -383,6 +400,14 @@ Logs útiles durante pruebas:
 4. Usuario confirma.
 5. Se guarda gasto.
 
+### Caso C: Múltiples boletas seguidas
+
+1. Usuario envía 2+ boletas (en uno o varios mensajes seguidos).
+2. El bot procesa solo 1 boleta activa y encola el resto en `pending_receipts`.
+3. El bot pide confirmación de la boleta activa.
+4. Al confirmar/cancelar/cerrar esa boleta, procesa automáticamente la siguiente en cola.
+5. El estado de presupuesto se envía al final del lote (cuando ya no quedan boletas pendientes).
+
 ## Campos Obligatorios del Gasto
 
 Campos mínimos para crear una fila en `Expenses`:
@@ -401,9 +426,14 @@ Campos calculados / derivados:
 
 - `expense_id`
 - `total_clp`
-- `shared`
-- `receipt_drive_url` (link del archivo en Google Drive; si falla, se guarda `MediaUrl0` temporal de Twilio)
+- `receipt_storage_provider`
+- `receipt_object_key`
 - `created_at`
+
+Regla de seguridad:
+
+- No guardar links públicos permanentes de boletas ni del documento final.
+- Usar storage privado y acceso controlado (URL firmada temporal cuando se requiera compartir).
 
 ## Exchange Rate (Hardcoded)
 
@@ -430,9 +460,10 @@ def convert_to_clp(amount, currency):
 5. `webhook` Twilio (texto + imagen).
 6. `ocr_service` placeholder.
 7. `expense_service` + confirmación + persistencia.
-8. Gasto compartido 50/50.
-9. Integración real con Document AI.
-10. Scheduler de recordatorios.
+8. Storage privado de boletas (Object Storage).
+9. Cierre de viaje con pregunta de boletas restantes + timeout 24h.
+10. Generación de PDF consolidado por persona/viaje.
+11. Integración con DocuSign (firma obligatoria).
 
 ## Estado actual (implementado)
 
@@ -452,9 +483,13 @@ Base funcional mínima ya implementada:
   - `NEEDS_INFO`
   - `CONFIRM_SUMMARY`
   - `DONE`
+  - cola de boletas `pending_receipts` para procesamiento secuencial (1 confirmación a la vez)
+  - envío de estado de presupuesto al final del lote de boletas
   - respuestas contextuales de chat en `WAIT_RECEIPT`/`DONE` cuando el mensaje parece pregunta
 - `ocr_service` con integración a Google Document AI + fallback conversacional ante error
 - `expense_service` con validación de campos y guardado en `Expenses`
+- `storage_service` con upload de boletas a GCS privado (`receipt_storage_provider` + `receipt_object_key`)
+- `consolidated_document_service` para generar PDF consolidado por `phone + trip_id` y guardarlo en GCS privado
 - `utils/exchange_rate.py` con conversión hardcoded a CLP
 - Script `scripts/seed_sheets.py` para headers + datos demo
 - `scheduler_service` MVP para recordatorios automáticos (09:00 / 20:00 hora local del viaje)
@@ -488,8 +523,19 @@ cp .env.example .env
 Luego exporta variables desde tu shell (o usa tu gestor de entorno favorito):
 
 ```bash
-export GOOGLE_APPLICATION_CREDENTIALS=./biaticos-488419-1073823ba21a.json
+export GOOGLE_APPLICATION_CREDENTIALS=./viaticos-488419-1073823ba21a.json
 export GOOGLE_SHEETS_SPREADSHEET_ID=1PgJc4460etPJxx1nSgtC4fGy0RGX85xVc55nm94plrk
+export GCS_BUCKET_NAME=viaticos-receipts-bucket
+export GCS_RECEIPTS_PREFIX=receipts/
+export GCS_REPORTS_PREFIX=reports/
+export GCS_SIGNED_URL_TTL_SECONDS=900
+export CONSOLIDATED_REPORT_LOGO_PATH=./assets/ripley-logo.png
+export DOCUSIGN_ENABLED=false
+export DOCUSIGN_BASE_URL=https://demo.docusign.net/restapi
+export DOCUSIGN_ACCOUNT_ID=<tu_account_id>
+export DOCUSIGN_ACCESS_TOKEN=<tu_access_token>
+export DOCUSIGN_RETURN_URL=https://example.com/docusign/return
+export DOCUSIGN_DOCUMENT_URL_TTL_SECONDS=1800
 export TWILIO_VALIDATE_SIGNATURE=false
 ```
 
@@ -572,6 +618,48 @@ curl -X POST "http://127.0.0.1:8000/jobs/reminders/run" \
 
 Para automatizarlo, configura un cron/job externo que invoque este endpoint cada `5-10` minutos.
 
+### 5.2. Generar documento consolidado (PDF)
+
+Se implemento endpoint manual para generar el consolidado por `phone + trip_id`:
+
+- `POST /jobs/documents/consolidated/generate`
+- Requiere `phone` y `trip_id` como query params
+- Genera PDF con:
+  - resumen total (general, por categoria, por dia)
+  - detalle tabulado por boleta
+  - referencia de storage privado de cada boleta (`gcs://bucket/object_key`)
+  - logo corporativo opcional desde `CONSOLIDATED_REPORT_LOGO_PATH` (por defecto `./assets/ripley-logo.png`)
+- Sube el PDF a GCS bajo `GCS_REPORTS_PREFIX`
+- Persiste metadata en hoja `TripDocuments`
+
+Ejemplo:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/jobs/documents/consolidated/generate?phone=%2B56974340422&trip_id=TRIP-20260306-001"
+```
+
+Si configuras `SCHEDULER_ENDPOINT_TOKEN`, envia el header:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/jobs/documents/consolidated/generate?phone=%2B56974340422&trip_id=TRIP-20260306-001" \
+  -H "X-Scheduler-Token: <tu_token>"
+```
+
+### 5.3. Iniciar firma DocuSign para documento consolidado
+
+Se implementó endpoint manual para iniciar firma sobre el último documento consolidado (`TripDocuments`) del `phone + trip_id`:
+
+- `POST /jobs/documents/signature/start`
+- Requiere: `phone`, `trip_id`, `signer_email`
+- Opcional: `signer_name`, `embedded_signing=true|false`
+- Crea `envelope` en DocuSign y actualiza tracking en `TripDocuments` (`signature_status`, `docusign_envelope_id`, etc.)
+
+Ejemplo:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/jobs/documents/signature/start?phone=%2B56974340422&trip_id=TRIP-20260306-001&signer_email=usuario@empresa.com&signer_name=Javier%20Calderon&embedded_signing=true"
+```
+
 #### Automatización con `cron` (macOS/Linux)
 
 Se agregó el script:
@@ -606,7 +694,7 @@ crontab -e
 ```
 
 ```cron
-*/5 * * * * /usr/bin/curl --silent --show-error --fail --max-time 20 -X POST http://127.0.0.1:8000/jobs/reminders/run -H "X-Scheduler-Token: <tu_token>" >> /tmp/mvp_biaticos_scheduler_cron.log 2>&1
+*/5 * * * * /usr/bin/curl --silent --show-error --fail --max-time 20 -X POST http://127.0.0.1:8000/jobs/reminders/run -H "X-Scheduler-Token: <tu_token>" >> /tmp/mvp_viaticos_scheduler_cron.log 2>&1
 ```
 
 Instalación automática (idempotente):
@@ -624,7 +712,7 @@ CRON_EXPR="*/10 * * * *" bash scripts/install_scheduler_cron.sh
 Opcional (log distinto):
 
 ```bash
-CRON_LOG_FILE="/tmp/biaticos_scheduler.log" bash scripts/install_scheduler_cron.sh
+CRON_LOG_FILE="/tmp/viaticos_scheduler.log" bash scripts/install_scheduler_cron.sh
 ```
 
 Nota macOS:
@@ -635,7 +723,7 @@ Nota macOS:
 Ver logs:
 
 ```bash
-tail -f /tmp/mvp_biaticos_scheduler_cron.log
+tail -f /tmp/mvp_viaticos_scheduler_cron.log
 ```
 
 ### 6. Prueba real con Twilio WhatsApp Sandbox (recomendado)
@@ -690,6 +778,8 @@ Para mantener trazabilidad del MVP:
 ## Próximos Entregables Inmediatos
 
 - Integrar validación real de firma Twilio en entorno de pruebas/productivo.
-- Implementar flujo de gasto compartido 50/50.
+- Implementar storage privado para boletas (sin depender de URL temporal de Twilio).
+- Implementar cierre de viaje por `end_date` + timeout de 24 horas.
+- Generar documento consolidado de boletas y conectar firma DocuSign.
 - Configurar cron/job externo para invocar `POST /jobs/reminders/run` cada 5-10 minutos.
 - Afinar mapeo de timezone (especialmente países con múltiples husos horarios, ej. USA).

@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ENV_FILE:-$ROOT_DIR/.env}"
 CRON_EXPR="${CRON_EXPR:-*/5 * * * *}"
-CRON_LOG_FILE="${CRON_LOG_FILE:-/tmp/mvp_biaticos_scheduler_cron.log}"
-CRON_MARKER="# biaticos_scheduler_job"
+CRON_LOG_FILE="${CRON_LOG_FILE:-/tmp/mvp_viaticos_scheduler_cron.log}"
+CRON_MARKER="# viaticos_scheduler_job"
 
 if [[ -f "$ENV_FILE" ]]; then
   set -a
@@ -49,9 +49,9 @@ escaped_log_file="$(printf '%q' "$CRON_LOG_FILE")"
 CRON_CMD="${escaped_curl_cmd}>> ${escaped_log_file} 2>&1"
 CRON_LINE="$CRON_EXPR $CRON_CMD $CRON_MARKER"
 without_legacy="$(printf '%s\n' "$existing_cron" | grep -v "scripts/run_scheduler_job.sh" || true)"
-without_marker="$(printf '%s\n' "$without_legacy" | grep -v "biaticos_scheduler_job" || true)"
+without_marker="$(printf '%s\n' "$without_legacy" | grep -Ev "biaticos_scheduler_job|viaticos_scheduler_job" || true)"
 
-if printf '%s\n' "$existing_cron" | grep -F "biaticos_scheduler_job" >/dev/null 2>&1; then
+if printf '%s\n' "$existing_cron" | grep -E "biaticos_scheduler_job|viaticos_scheduler_job" >/dev/null 2>&1; then
   echo "Cron ya existe:"
   echo "Se actualizará con la configuración actual."
 fi

@@ -27,7 +27,6 @@ from google.oauth2.service_account import Credentials
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
 ]
 
 SHEET_HEADERS: dict[str, list[str]] = {
@@ -41,6 +40,13 @@ SHEET_HEADERS: dict[str, list[str]] = {
         "end_date",
         "budget",
         "status",
+        "closure_status",
+        "closure_prompted_at",
+        "closure_deadline_at",
+        "closure_response",
+        "closure_responded_at",
+        "closed_at",
+        "closure_reason",
     ],
     "Expenses": [
         "expense_id",
@@ -55,10 +61,34 @@ SHEET_HEADERS: dict[str, list[str]] = {
         "country",
         "shared",
         "status",
-        "receipt_drive_url",
+        "receipt_storage_provider",
+        "receipt_object_key",
         "created_at",
     ],
     "Conversations": ["phone", "state", "current_step", "context_json", "updated_at"],
+    "TripDocuments": [
+        "document_id",
+        "phone",
+        "trip_id",
+        "storage_provider",
+        "object_key",
+        "expense_count",
+        "total_clp",
+        "status",
+        "created_at",
+        "updated_at",
+        "signature_provider",
+        "signature_status",
+        "docusign_envelope_id",
+        "signature_url",
+        "signature_sent_at",
+        "signature_completed_at",
+        "signature_declined_at",
+        "signature_expired_at",
+        "signed_storage_provider",
+        "signed_object_key",
+        "signature_error",
+    ],
 }
 
 
@@ -217,6 +247,7 @@ def demo_rows(cfg: SeedConfig) -> dict[str, list[list[Any]]]:
                 "Chile",
                 "FALSE",
                 "pending_approval",
+                "gcs",
                 "",
                 created_at,
             ]
@@ -237,6 +268,7 @@ def demo_rows(cfg: SeedConfig) -> dict[str, list[list[Any]]]:
                 created_at,
             ],
         ],
+        "TripDocuments": [],
     }
 
 

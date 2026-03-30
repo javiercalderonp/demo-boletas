@@ -66,6 +66,7 @@ Objetivo de este archivo:
 - [x] Implementar slot filling (preguntar campo faltante)
 - [x] Implementar confirmación (`Confirmar`, `Corregir`, `Cancelar`)
 - [x] Persistir gasto confirmado en `Expenses`
+- [ ] Validar que la `date` de la boleta esté dentro del rango `start_date`/`end_date` del viaje activo; si está fuera, marcar gasto como no válido
 
 ## Fase 5 - Endpoint `/webhook` Twilio (flujo funcional mínimo)
 
@@ -75,6 +76,8 @@ Objetivo de este archivo:
 - [x] Manejar flujo imagen (OCR -> validación -> transición de estado)
 - [x] Manejar flujo texto (leer estado -> avanzar step)
 - [x] Responder texto adecuado al usuario
+- [x] Soportar múltiples boletas en cola (`pending_receipts`) con confirmación secuencial (una por vez)
+- [x] Enviar estado de presupuesto solo al cierre del lote (sin duplicarlo entre boletas en cola)
 
 ## Fase 5.1 - WhatsApp/Twilio producción (branding y perfil profesional)
 
@@ -85,22 +88,34 @@ Objetivo de este archivo:
 - [ ] Actualizar webhook del sender productivo y validar E2E
 - [ ] Definir templates de WhatsApp para mensajes proactivos (recordatorios del scheduler)
 
-## Fase 6 - Gasto compartido 50/50 (MVP)
+## Fase 6 - Cierre de viaje por `end_date` + ventana 24h
 
-- [ ] Preguntar si gasto fue compartido
-- [ ] Pedir teléfono del otro colaborador
-- [ ] Dividir monto 50/50
-- [ ] Crear dos filas en `Expenses` con `shared = true`
-- [ ] Validar caso colaborador no encontrado (mensaje de error / retry)
+- [x] Detectar viajes con `end_date` cumplido
+- [x] Enviar mensaje de cierre solicitando boletas restantes
+- [x] Preguntar explícitamente si tiene más boletas por subir
+- [x] Si responde "no", cerrar viaje inmediatamente
+- [x] Si responde "sí", mantener viaje abierto
+- [x] Si no responde en 24 horas, cerrar viaje automáticamente
+- [x] Persistir estado de cierre y timestamps en `Conversations`/`Trips`
 
-## Fase 7 - Integración real OCR (post-MVP mínimo)
+## Fase 7 - Storage privado de boletas (object storage)
+
+- [x] Definir proveedor inicial (recomendado: GCS bucket privado)
+- [x] Implementar `storage_service` para upload de boletas
+- [x] Guardar `receipt_storage_provider` y `receipt_object_key` en `Expenses`
+- [x] Eliminar dependencia de `MediaUrl0` temporal en persistencia final
+- [x] Implementar generación de URL firmada temporal solo para acceso controlado
+- [x] Validar flujo E2E con Twilio real + escritura en GCS (`receipts/...`) y persistencia en `Expenses`
+- [ ] Validar lectura de boletas antiguas migrando desde `receipt_drive_url` cuando aplique
+
+## Fase 8 - Integración real OCR (post-MVP mínimo)
 
 - [x] Configurar cliente Google Document AI
 - [x] Procesar imagen desde URL / descarga temporal
 - [x] Mapear output OCR a campos `merchant/date/total/currency/country`
 - [x] Manejar errores de OCR y fallback conversacional
 
-## Fase 7.1 - Inferencia de merchant + clasificación automática (LLM híbrido)
+## Fase 8.1 - Inferencia de merchant + clasificación automática (LLM híbrido)
 
 - [x] Implementar clasificación de categoría con LLM (OpenAI) como opcional
 - [x] Implementar inferencia de `merchant` con LLM cuando OCR venga vacío/genérico
@@ -110,7 +125,7 @@ Objetivo de este archivo:
 - [x] Integrar inferencia en flujo conversacional antes de preguntar `category`
 - [x] Documentar variables de entorno y setup en `README.md` / `.env.example`
 
-## Fase 7.2 - Chat contextual (LLM) para preguntas de usuario
+## Fase 8.2 - Chat contextual (LLM) para preguntas de usuario
 
 - [x] Implementar respuesta contextual para preguntas generales del flujo (FAQ operativa)
 - [x] Definir contexto base del MVP para evitar respuestas fuera de alcance
@@ -120,7 +135,7 @@ Objetivo de este archivo:
 - [x] Exponer diagnóstico en `GET /health` (`chat_assistant_flag`, `chat_assistant_enabled`)
 - [x] Actualizar `README.md` y `.env.example` con configuración y comportamiento
 
-## Fase 8 - Scheduler (posterior)
+## Fase 9 - Scheduler (posterior)
 
 - [x] Definir estrategia: cron externo + endpoint interno `POST /jobs/reminders/run`
 - [x] Configurar cron/job externo para invocar `POST /jobs/reminders/run` cada 5-10 minutos
@@ -129,6 +144,7 @@ Objetivo de este archivo:
 - [x] Enviar mensaje inicial de inicio de viaje (presentación + instrucciones breves)
 - [x] Adaptar horario según zona horaria del viaje (`country`/`destination`, con fallback)
 - [x] Evitar envíos duplicados (idempotencia básica en `Conversations.context_json.scheduler`)
+- [ ] Solucionar sistema de alertas/recordatorios (actualmente presenta fallas)
 
 ## Decisiones abiertas (por resolver)
 
@@ -137,6 +153,32 @@ Objetivo de este archivo:
 - [x] Definir estrategia local para validar firma Twilio (toggle por env)
 - [x] Definir formato de `expense_id` (UUID vs timestamp)
 - [x] Definir criterio si un usuario tiene más de un viaje activo
+- [x] Definir almacenamiento de boletas como privado
+- [x] Definir firma obligatoria por documento en DocuSign
+
+## Fase 10 - Documento consolidado por viaje
+
+- [x] Generar 1 PDF por `phone + trip_id` al cierre del viaje
+- [x] Incluir página de resumen: total general, por categoría y por día
+- [x] Incluir detalle por boleta con datos tabulados
+- [x] Incluir referencia a la imagen de cada boleta en storage privado
+- [x] Guardar metadata del documento en `Trips`/hoja dedicada
+
+## Fase 11 - Firma electrónica (DocuSign)
+
+- [ ] Integrar API de DocuSign (auth + creación de envelope)
+- [ ] Enviar documento generado para firma obligatoria
+- [ ] Enviar link/control de firma al usuario por WhatsApp
+- [ ] Registrar estado de firma (`pending`, `completed`, `declined`, `expired`)
+- [ ] Guardar URL/ubicación del documento firmado
+
+## Fase 12 - Divisas y tipo de cambio en tiempo real
+
+- [ ] Definir política de viáticos por moneda (en qué moneda se entregan/liquidan y reglas por país)
+- [ ] Documentar claramente al usuario cómo se calculan y presentan conversiones en el flujo
+- [ ] Integrar API de tipo de cambio en tiempo real (con fallback) para conversiones automáticas
+- [ ] Aplicar transformaciones de moneda en registro y reporte cuando corresponda
+- [ ] Trazar origen/timestamp del tipo de cambio usado por cada conversión (auditoría)
 
 ## Checklist de sesión (usar siempre)
 
@@ -225,7 +267,7 @@ Objetivo de este archivo:
   - Si se activa `TWILIO_VALIDATE_SIGNATURE=true` con URL distinta a la configurada en Twilio, el webhook responderá `403`.
 - Próximo paso sugerido:
   - Activar validación de firma Twilio y revalidar una prueba real.
-  - Luego avanzar a Fase 6 (gasto compartido 50/50) o Fase 7 (OCR real).
+  - Luego avanzar a Fase 6 (cierre de viaje) o Fase 7 (storage privado).
 
 ### 2026-02-24 - Fase 7 OCR real con Google Document AI
 
@@ -346,7 +388,7 @@ Objetivo de este archivo:
   - El cron depende de que la API esté levantada y accesible en la URL configurada.
   - Si `SCHEDULER_ENDPOINT_TOKEN` cambia y no se actualiza en el entorno del cron, responderá `401`.
 - Próximo paso sugerido:
-  - Validar ejecución en ventana activa con `tail -f /tmp/mvp_biaticos_scheduler_cron.log` y revisar idempotencia (`skipped_already_sent`).
+  - Validar ejecución en ventana activa con `tail -f /tmp/mvp_viaticos_scheduler_cron.log` y revisar idempotencia (`skipped_already_sent`).
 
 ### 2026-02-27 - Chat contextual con LLM (FAQ operativa en WhatsApp)
 
@@ -362,3 +404,91 @@ Objetivo de este archivo:
   - El contexto base está hardcodeado; si cambia el producto, conviene mantenerlo sincronizado.
 - Próximo paso sugerido:
   - Extraer el contexto base a archivo/config editable para ajustar copy sin tocar código.
+
+### 2026-03-05 - Actualización de alcance (cierre de viaje + storage privado + DocuSign)
+
+- Estado: `done`
+- Trabajo realizado:
+  - Se removió del alcance la funcionalidad de gasto compartido por ahora.
+  - Se definió cierre de viaje por `end_date` con pregunta de boletas restantes y timeout de 24 horas.
+  - Se definió almacenamiento privado para boletas (sin links públicos permanentes).
+  - Se definió documento consolidado por persona/viaje con resumen y detalle por boleta.
+  - Se definió firma obligatoria por documento vía DocuSign.
+- Bloqueos / riesgos:
+  - En ese momento faltaba implementar `storage_service` y migración de persistencia desde `receipt_drive_url` (resuelto parcialmente el 2026-03-06).
+  - Falta diseño final de hoja/tabla para tracking de documentos y estados de firma.
+- Próximo paso sugerido:
+  - Iniciar por Fase 7 (storage privado), porque desbloquea tanto documento consolidado como firma.
+
+### 2026-03-06 - Migración de almacenamiento a GCS (boletas privadas)
+
+- Estado: `done`
+- Trabajo realizado:
+  - Se implementó `services/storage_service.py` para upload de boletas a GCS y generación de signed URL temporal.
+  - Se conectó el webhook para persistir en GCS y guardar `receipt_storage_provider` + `receipt_object_key`.
+  - Se eliminó la dependencia de Google Drive en runtime (`services/drive_service.py` removido).
+  - Se eliminó el fallback de persistencia por URL temporal de Twilio (`MediaUrl0`) en `Expenses`.
+  - Se actualizaron headers de `Expenses` y script `seed_sheets.py` al nuevo esquema.
+- Bloqueos / riesgos:
+  - Falta validar estrategia de lectura/migración de filas antiguas con `receipt_drive_url` histórico.
+- Próximo paso sugerido:
+  - Ejecutar una migración liviana en `Expenses` para mapear registros legacy a `receipt_storage_provider/receipt_object_key` cuando sea posible.
+
+### 2026-03-06 - Validación E2E Twilio + GCS
+
+- Estado: `done`
+- Trabajo realizado:
+  - Se validó envío real por Twilio WhatsApp con boleta y persistencia final del gasto.
+  - Se confirmó upload en bucket GCS `viaticos-receipts-bucket` bajo `receipts/<phone>/...`.
+  - Se confirmó en `Expenses` la persistencia de `receipt_object_key` y `receipt_storage_provider = gcs`.
+- Bloqueos / riesgos:
+  - La migración de registros legacy con `receipt_drive_url` sigue pendiente.
+- Próximo paso sugerido:
+  - Crear script de migración para homologar filas históricas al esquema `receipt_storage_provider/receipt_object_key`.
+
+### 2026-03-06 - Fase 10 implementada (documento consolidado PDF)
+
+- Estado: `done`
+- Trabajo realizado:
+  - Se agregó `services/consolidated_document_service.py` para generar PDF consolidado por `phone + trip_id`.
+  - El PDF incluye resumen (total general, por categoría y por día), detalle tabulado y referencia de storage privado por boleta.
+  - Se extendió `storage_service` para subir el PDF a GCS bajo `GCS_REPORTS_PREFIX`.
+  - Se agregó persistencia de metadata en nueva hoja `TripDocuments`.
+  - Se agregó endpoint `POST /jobs/documents/consolidated/generate` para ejecución manual del flujo.
+  - Se actualizó `scripts/seed_sheets.py` para crear headers de `TripDocuments`.
+- Bloqueos / riesgos:
+  - El endpoint requiere dependencia `reportlab` instalada en el entorno.
+  - No se conectó todavía al cierre automático de viaje (Fase 6 pendiente).
+- Próximo paso sugerido:
+  - Integrar este endpoint/servicio al flujo de cierre de viaje para generación automática al cerrar cada `trip_id`.
+
+### 2026-03-06 - Cola secuencial de boletas + ajustes de reporte consolidado
+
+- Estado: `done`
+- Trabajo realizado:
+  - Se agregó cola de boletas `pending_receipts` en contexto conversacional para procesar múltiples boletas secuencialmente.
+  - Se corrigió condición de carrera al recibir boletas seguidas: bloqueo síncrono en `PROCESSING` antes de disparar procesamiento async.
+  - Se ajustó post-confirmación para enviar avance de presupuesto solo cuando no quedan boletas pendientes (fin de lote).
+  - Se corrigió generación de PDF consolidado (`NameError: Table`) pasando clases de ReportLab al header.
+  - Se robusteció resolución de ruta de logo (`CONSOLIDATED_REPORT_LOGO_PATH`) y se dejó logo en `assets/ripley-logo.png`.
+  - Se actualizó `.env` con `CONSOLIDATED_REPORT_LOGO_PATH=./assets/ripley-logo.png`.
+- Bloqueos / riesgos:
+  - Si el servidor no se reinicia tras cambios de `.env`, puede usar configuración antigua.
+  - Si se borra/mueve `assets/ripley-logo.png`, el PDF se genera sin logo (con warning en logs).
+- Próximo paso sugerido:
+  - Agregar prueba automatizada de integración para flujo `NumMedia > 1` y verificación de cola `pending_receipts`.
+
+### 2026-03-06 - Fase 6 implementada (cierre por end_date + ventana 24h)
+
+- Estado: `done`
+- Trabajo realizado:
+  - Se implementó detección automática de viajes vencidos (`local_date > end_date`) en `scheduler_service`.
+  - Se agregó envío automático de pregunta de cierre por WhatsApp (respuesta explícita `SI/NO`) y persistencia de deadline de 24h.
+  - Se agregó cierre inmediato por respuesta `NO` y mantenimiento de viaje abierto por respuesta `SI`.
+  - Se agregó cierre automático por timeout de 24h sin respuesta, incluyendo actualización de `Trips.status = closed`.
+  - Se persistió trazabilidad de cierre en `Conversations.context_json.trip_closure` y columnas nuevas en `Trips`.
+  - Se extendió `sheets_service` para actualizar viajes por `trip_id` y asegurar headers de cierre.
+- Bloqueos / riesgos:
+  - Falta validar E2E en entorno real con cron activo para confirmar el timeout automático en producción.
+- Próximo paso sugerido:
+  - Ejecutar `POST /jobs/reminders/run?dry_run=true` y luego corrida real para validar prompt + timeout sobre un viaje demo vencido.

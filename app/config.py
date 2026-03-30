@@ -50,7 +50,27 @@ class Settings:
 
     google_application_credentials: str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
     google_sheets_spreadsheet_id: str = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "")
-    drive_receipts_folder_id: str = os.getenv("DRIVE_RECEIPTS_FOLDER_ID", "")
+    gcs_bucket_name: str = os.getenv("GCS_BUCKET_NAME", "")
+    gcs_receipts_prefix: str = os.getenv("GCS_RECEIPTS_PREFIX", "receipts/")
+    gcs_reports_prefix: str = os.getenv("GCS_REPORTS_PREFIX", "reports/")
+    gcs_signed_url_ttl_seconds: int = int(
+        os.getenv("GCS_SIGNED_URL_TTL_SECONDS", "900") or "900"
+    )
+    consolidated_report_logo_path: str = os.getenv(
+        "CONSOLIDATED_REPORT_LOGO_PATH", "./assets/ripley-logo.png"
+    )
+    docusign_enabled: bool = _as_bool(os.getenv("DOCUSIGN_ENABLED"), default=False)
+    docusign_base_url: str = os.getenv(
+        "DOCUSIGN_BASE_URL", "https://demo.docusign.net/restapi"
+    )
+    docusign_account_id: str = os.getenv("DOCUSIGN_ACCOUNT_ID", "")
+    docusign_access_token: str = os.getenv("DOCUSIGN_ACCESS_TOKEN", "")
+    docusign_return_url: str = os.getenv(
+        "DOCUSIGN_RETURN_URL", "https://example.com/docusign/return"
+    )
+    docusign_document_url_ttl_seconds: int = int(
+        os.getenv("DOCUSIGN_DOCUMENT_URL_TTL_SECONDS", "1800") or "1800"
+    )
 
     document_ai_project_id: str = os.getenv("DOCUMENT_AI_PROJECT_ID", "")
     document_ai_location: str = os.getenv("DOCUMENT_AI_LOCATION", "us")
@@ -84,6 +104,10 @@ class Settings:
         return bool(
             self.google_application_credentials and self.google_sheets_spreadsheet_id
         )
+
+    @property
+    def gcs_storage_enabled(self) -> bool:
+        return bool(self.google_application_credentials and self.gcs_bucket_name)
 
 
 settings = Settings()

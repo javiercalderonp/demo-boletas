@@ -12,6 +12,7 @@ PROCESSING = "PROCESSING"
 NEEDS_INFO = "NEEDS_INFO"
 CONFIRM_SUMMARY = "CONFIRM_SUMMARY"
 DONE = "DONE"
+WAIT_TRIP_CLOSURE_CONFIRMATION = "WAIT_TRIP_CLOSURE_CONFIRMATION"
 
 FIELD_PROMPTS = {
     "merchant": "¿Cuál es el comercio/merchant?",
@@ -72,6 +73,7 @@ class ConversationService:
             "missing_fields": [],
             "last_question": None,
             "scheduler": {"sent_reminders": {}},
+            "trip_closure": {},
         }
 
     def ensure_conversation(self, conversation: dict[str, Any] | None) -> dict[str, Any]:
@@ -100,6 +102,10 @@ class ConversationService:
             **scheduler_ctx,
             "sent_reminders": sent_reminders,
         }
+        trip_closure = context.get("trip_closure")
+        if not isinstance(trip_closure, dict):
+            trip_closure = {}
+        normalized_context["trip_closure"] = trip_closure
         conversation["context_json"] = normalized_context
         conversation.setdefault("state", WAIT_RECEIPT)
         conversation.setdefault("current_step", "")

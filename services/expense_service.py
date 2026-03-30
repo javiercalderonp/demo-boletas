@@ -153,6 +153,7 @@ class ExpenseService:
                     draft.get("currency"),
                 )
 
+        draft = self._reconcile_country_currency(draft)
         draft = self._apply_chile_guardrails(draft)
 
         category = draft.get("category")
@@ -253,6 +254,31 @@ class ExpenseService:
             )
         return draft_expense
 
+    def _reconcile_country_currency(self, draft_expense: dict[str, Any]) -> dict[str, Any]:
+        country = str(draft_expense.get("country", "") or "").strip().lower()
+        currency = str(draft_expense.get("currency", "") or "").strip().upper()
+        ocr_text = str(draft_expense.get("ocr_text", "") or "")
+
+        if country != "chile":
+            return draft_expense
+
+        if not currency:
+            draft_expense["currency"] = "CLP"
+            logger.info("Expense currency set by country reconciliation country=%r currency=%r", "Chile", "CLP")
+            return draft_expense
+
+        has_explicit_usd = self._has_explicit_usd_marker(ocr_text)
+        has_peso_marker = self._has_peso_marker(ocr_text)
+        looks_clp_amount = self._has_clp_amount_format(ocr_text)
+        if currency == "USD" and not has_explicit_usd and (has_peso_marker or looks_clp_amount):
+            draft_expense["currency"] = "CLP"
+            logger.info(
+                "Expense currency reconciled for Chile previous=%r new=%r",
+                currency,
+                draft_expense["currency"],
+            )
+        return draft_expense
+
     def _has_strong_chile_receipt_evidence(self, text: str) -> bool:
         upper = (text or "").upper()
         if not upper:
@@ -279,6 +305,9 @@ class ExpenseService:
 
     def _has_clp_amount_format(self, text: str) -> bool:
         return bool(re.search(r"\$\s*\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?\b", text or ""))
+
+    def _has_peso_marker(self, text: str) -> bool:
+        return bool(re.search(r"\bMONEDA\s*:\s*PESO(?:S)?\b|\bPESO(?:S)?\b", (text or "").upper()))
 
     def _should_infer_merchant_with_llm(self, draft_expense: dict[str, Any]) -> bool:
         if not self.llm_service:
@@ -334,7 +363,8 @@ class ExpenseService:
             "country": draft_expense.get("country", ""),
             "shared": "FALSE",
             "status": "pending_approval",
-            "receipt_drive_url": draft_expense.get("receipt_drive_url", ""),
+            "receipt_storage_provider": draft_expense.get("receipt_storage_provider", ""),
+            "receipt_object_key": draft_expense.get("receipt_object_key", ""),
             "created_at": utc_now_iso(),
         }
         return self.sheets_service.create_expense(expense_row)
