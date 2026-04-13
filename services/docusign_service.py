@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+import base64
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from app.config import Settings
@@ -63,9 +65,10 @@ class DocusignService:
                 "signHereTabs": [
                     {
                         "documentId": "1",
-                        "pageNumber": "1",
-                        "xPosition": "430",
-                        "yPosition": "730",
+                        "anchorString": "[[DS_SIGN_HERE]]",
+                        "anchorUnits": "pixels",
+                        "anchorXOffset": "0",
+                        "anchorYOffset": "0",
                     }
                 ]
             },
@@ -144,6 +147,49 @@ class DocusignService:
             raise DocusignError("DocuSign no devolvio URL de firma")
         return url
 
+    def exchange_authorization_code(
+        self,
+        *,
+        code: str,
+        redirect_uri: str | None = None,
+    ) -> dict[str, Any]:
+        integration_key = str(self.settings.docusign_integration_key or "").strip()
+        secret_key = str(self.settings.docusign_secret_key or "").strip()
+        clean_code = str(code or "").strip()
+        clean_redirect_uri = str(redirect_uri or self.settings.docusign_return_url or "").strip()
+
+        if not integration_key:
+            raise DocusignError("DOCUSIGN_INTEGRATION_KEY vacio")
+        if not secret_key:
+            raise DocusignError("DOCUSIGN_SECRET_KEY vacio")
+        if not clean_code:
+            raise DocusignError("authorization code vacio")
+        if not clean_redirect_uri:
+            raise DocusignError("redirect_uri vacio")
+
+        basic_token = base64.b64encode(f"{integration_key}:{secret_key}".encode("utf-8")).decode(
+            "ascii"
+        )
+        body = urlencode(
+            {
+                "grant_type": "authorization_code",
+                "code": clean_code,
+                "redirect_uri": clean_redirect_uri,
+            }
+        ).encode("utf-8")
+        headers = {
+            "Authorization": f"Basic {basic_token}",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "User-Agent": "TravelExpenseAgent/1.0",
+        }
+        return self._request_json_absolute(
+            method="POST",
+            url="https://account-d.docusign.com/oauth/token",
+            headers=headers,
+            body=body,
+        )
+
     def _request_json(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         base_url = str(self.settings.docusign_base_url or "").strip().rstrip("/")
         if not base_url:
@@ -165,12 +211,28 @@ class DocusignService:
             body = json.dumps(payload).encode("utf-8")
 
         request = Request(url, method=method.upper(), headers=headers, data=body)
+        return self._read_json_response(request)
+
+    def _request_json_absolute(
+        self,
+        *,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: bytes | None = None,
+    ) -> dict[str, Any]:
+        request = Request(url, method=method.upper(), headers=headers, data=body)
+        return self._read_json_response(request)
+
+    def _read_json_response(self, request: Request) -> dict[str, Any]:
         try:
             with urlopen(request, timeout=20) as response:
                 raw = response.read().decode("utf-8", errors="replace")
         except HTTPError as exc:
             details = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
             logger.warning("DocuSign HTTP error status=%s details=%s", exc.code, details)
+            if exc.code == 401:
+                raise DocusignError("DocuSign access token invalido o expirado") from exc
             raise DocusignError(f"DocuSign respondio HTTP {exc.code}") from exc
         except URLError as exc:
             raise DocusignError("No se pudo conectar con DocuSign") from exc

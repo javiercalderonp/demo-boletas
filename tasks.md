@@ -65,6 +65,7 @@ Objetivo de este archivo:
 - [x] Implementar validación de campos obligatorios
 - [x] Implementar slot filling (preguntar campo faltante)
 - [x] Implementar confirmación (`Confirmar`, `Corregir`, `Cancelar`)
+- [x] Reemplazar opciones numeradas por botones/listas interactivas de WhatsApp cuando aplica
 - [x] Persistir gasto confirmado en `Expenses`
 - [ ] Validar que la `date` de la boleta esté dentro del rango `start_date`/`end_date` del viaje activo; si está fuera, marcar gasto como no válido
 
@@ -78,6 +79,7 @@ Objetivo de este archivo:
 - [x] Responder texto adecuado al usuario
 - [x] Soportar múltiples boletas en cola (`pending_receipts`) con confirmación secuencial (una por vez)
 - [x] Enviar estado de presupuesto solo al cierre del lote (sin duplicarlo entre boletas en cola)
+- [x] Consolidar aviso de múltiples boletas con debounce de 5 segundos y un solo mensaje agregado
 
 ## Fase 5.1 - WhatsApp/Twilio producción (branding y perfil profesional)
 
@@ -166,10 +168,10 @@ Objetivo de este archivo:
 
 ## Fase 11 - Firma electrónica (DocuSign)
 
-- [ ] Integrar API de DocuSign (auth + creación de envelope)
-- [ ] Enviar documento generado para firma obligatoria
-- [ ] Enviar link/control de firma al usuario por WhatsApp
-- [ ] Registrar estado de firma (`pending`, `completed`, `declined`, `expired`)
+- [x] Integrar API de DocuSign (auth + creación de envelope)
+- [x] Enviar documento generado para firma obligatoria
+- [x] Enviar link/control de firma al usuario por WhatsApp
+- [x] Registrar estado de firma (`pending`, `completed`, `declined`, `expired`)
 - [ ] Guardar URL/ubicación del documento firmado
 
 ## Fase 12 - Divisas y tipo de cambio en tiempo real
@@ -469,6 +471,10 @@ Objetivo de este archivo:
   - Se agregó cola de boletas `pending_receipts` en contexto conversacional para procesar múltiples boletas secuencialmente.
   - Se corrigió condición de carrera al recibir boletas seguidas: bloqueo síncrono en `PROCESSING` antes de disparar procesamiento async.
   - Se ajustó post-confirmación para enviar avance de presupuesto solo cuando no quedan boletas pendientes (fin de lote).
+  - Se agregó reply contextual a la foto original para respuestas de la boleta activa en Meta.
+  - Se reemplazaron opciones numeradas por botones/listas interactivas para confirmación, corrección, moneda, categoría y país.
+  - Se consolidó el aviso de múltiples boletas con espera de 5 segundos desde la última foto para enviar un único mensaje agregado.
+  - Se robusteció el envío saliente con fallback a texto normal si Meta rechaza el reply-context o el payload interactivo.
   - Se corrigió generación de PDF consolidado (`NameError: Table`) pasando clases de ReportLab al header.
   - Se robusteció resolución de ruta de logo (`CONSOLIDATED_REPORT_LOGO_PATH`) y se dejó logo en `assets/ripley-logo.png`.
   - Se actualizó `.env` con `CONSOLIDATED_REPORT_LOGO_PATH=./assets/ripley-logo.png`.
@@ -489,6 +495,17 @@ Objetivo de este archivo:
   - Se persistió trazabilidad de cierre en `Conversations.context_json.trip_closure` y columnas nuevas en `Trips`.
   - Se extendió `sheets_service` para actualizar viajes por `trip_id` y asegurar headers de cierre.
 - Bloqueos / riesgos:
-  - Falta validar E2E en entorno real con cron activo para confirmar el timeout automático en producción.
+- Falta validar E2E en entorno real con cron activo para confirmar el timeout automático en producción.
+
+### 2026-03-31 - DocuSign conectado y validado E2E
+
+- Se implementó callback OAuth local (`/docusign/callback`) y endpoint auxiliar para exchange de authorization code a access token.
+- Se agregó soporte de configuración para `DOCUSIGN_INTEGRATION_KEY` y `DOCUSIGN_SECRET_KEY`.
+- Se confirmó generación manual de `access_token` y `refresh_token` en ambiente demo de DocuSign.
+- Se conectó el cierre automático para enviar PDF consolidado al chat de WhatsApp como documento adjunto y el link de firma como mensaje.
+- Se extendió `Employees` con columna `email` para resolver el firmante automáticamente en el flujo de cierre.
+- Se validó generación de PDF consolidado real para `TRIP-20260224-003` (`expense_count=9`, `total_clp=426755.0`).
+- Se validó creación real de envelope DocuSign y `signing_url` para `TRIP-20260224-003`, con estado `pending`.
+- Queda pendiente automatizar renovación del `DOCUSIGN_ACCESS_TOKEN` y captura del documento firmado al completar la firma.
 - Próximo paso sugerido:
   - Ejecutar `POST /jobs/reminders/run?dry_run=true` y luego corrida real para validar prompt + timeout sobre un viaje demo vencido.

@@ -98,14 +98,19 @@ Campos obligatorios para persistir un gasto:
 Si falta alguno:
 
 - estado conversación = `NEEDS_INFO`
-- el bot pregunta un campo a la vez usando opciones numeradas cuando aplica
+- el bot pregunta un campo a la vez
+- si el campo tiene opciones:
+  - usa botones interactivos cuando hay hasta 3 opciones
+  - usa lista interactiva de WhatsApp cuando hay 4 o más opciones
+  - mantiene fallback a texto numerado si el proveedor no soporta interactivos
 
 ### 4. Confirmación
 
 Cuando están todos los campos:
 
 - se envía resumen al usuario
-- opciones: `Confirmar`, `Corregir`, `Cancelar`
+- opciones interactivas: `Confirmar`, `Corregir`, `Cancelar`
+- si el usuario elige `Corregir`, el bot muestra selección interactiva del campo a modificar
 
 Si confirma:
 
@@ -113,6 +118,10 @@ Si confirma:
 - guardar en `Expenses`
 - `status` del gasto = `pending_approval`
 - estado conversación = `DONE`
+- mensajes de cierre:
+  - `Gasto guardado con éxito.`
+  - estado de presupuesto en un mensaje separado, solo si no quedan más boletas pendientes
+  - mensaje final separado (`Envíame otra boleta...` o `Ahora voy con la siguiente boleta.`)
 
 ### 5. Cierre de viaje (nuevo flujo)
 
@@ -121,7 +130,7 @@ Cuando llega `end_date` del viaje:
 1. El bot envía mensaje solicitando subir boletas restantes.
 2. El bot pregunta: "¿Tienes más boletas por subir?".
 3. Si responde "sí", se mantiene abierto el flujo para seguir recibiendo boletas.
-4. Si responde "no", se cierra el viaje.
+4. Si responde "no", se cierra el viaje, se genera el PDF consolidado y se envía por WhatsApp.
 5. Si no responde en 24 horas, se cierra el viaje automáticamente.
 
 ### 6. Documento y firma
@@ -132,8 +141,8 @@ Al cerrar el viaje:
 2. El documento incluye:
    - página de resumen (total general, total por categoría, total por día)
    - detalle de cada boleta con datos tabulados
-3. El documento se envía al usuario.
-4. Se inicia firma obligatoria en DocuSign (una firma por documento).
+3. El documento se envía al usuario por WhatsApp como PDF.
+4. Si el empleado tiene `email` configurado y DocuSign está habilitado, se envía además el link de firma.
 
 ## Estados de Conversación (State Machine)
 
@@ -250,6 +259,7 @@ pip install gspread google-auth
 python scripts/seed_sheets.py \
   --credentials ./viaticos-488419-1073823ba21a.json \
   --spreadsheet-id 1PgJc4460etPJxx1nSgtC4fGy0RGX85xVc55nm94plrk \
+  --employee-email javier@empresa.com \
   --clear-data \
   --seed-demo
 ```
@@ -268,6 +278,8 @@ export GOOGLE_APPLICATION_CREDENTIALS=./viaticos-488419-1073823ba21a.json
 export GOOGLE_SHEETS_SPREADSHEET_ID=1PgJc4460etPJxx1nSgtC4fGy0RGX85xVc55nm94plrk
 python scripts/seed_sheets.py --clear-data --seed-demo
 ```
+
+El sheet `Employees` ahora contempla columna `email`, usada para iniciar la firma DocuSign automática al cierre del viaje.
 
 ### Qué datos demo carga
 
@@ -371,6 +383,8 @@ Logs útiles durante pruebas:
 5. Si `NumMedia > 0`:
    - si hay un gasto en curso (`PROCESSING`/`NEEDS_INFO`/`CONFIRM_SUMMARY`), encolar boleta(s) en `pending_receipts`
    - si no hay gasto en curso, tomar una boleta y bloquear estado en `PROCESSING`
+   - enviar acuse inmediato para la boleta activa (`Recibí tu boleta y ya la estoy procesando.`)
+   - si llegan 2+ boletas seguidas, esperar 5 segundos desde la última boleta recibida y enviar un único aviso agregado de cola
    - ejecutar OCR + enrich + validación para esa boleta
    - transicionar a `NEEDS_INFO` o `CONFIRM_SUMMARY` para esa boleta
    - al cerrar/confirmar una boleta, disparar automáticamente la siguiente en cola (si existe)
@@ -378,7 +392,10 @@ Logs útiles durante pruebas:
    - procesar según `state` + `current_step`
    - actualizar conversación
    - guardar gasto si hay confirmación final
-7. Responder mensaje al usuario (texto simple para MVP).
+7. Responder mensaje al usuario:
+   - texto simple
+   - botones/listas interactivas cuando el paso actual tiene opciones
+   - reply contextual a la foto original en Meta cuando aplica
 
 ## Flujo Conversacional (MVP mínimo funcional)
 
@@ -404,9 +421,10 @@ Logs útiles durante pruebas:
 
 1. Usuario envía 2+ boletas (en uno o varios mensajes seguidos).
 2. El bot procesa solo 1 boleta activa y encola el resto en `pending_receipts`.
-3. El bot pide confirmación de la boleta activa.
-4. Al confirmar/cancelar/cerrar esa boleta, procesa automáticamente la siguiente en cola.
-5. El estado de presupuesto se envía al final del lote (cuando ya no quedan boletas pendientes).
+3. Si las boletas llegan seguidas, el bot espera 5 segundos desde la última para enviar un solo aviso agregado de cola.
+4. El bot pide confirmación de la boleta activa.
+5. Al confirmar/cancelar/cerrar esa boleta, procesa automáticamente la siguiente en cola.
+6. El estado de presupuesto se envía al final del lote (cuando ya no quedan boletas pendientes).
 
 ## Campos Obligatorios del Gasto
 
@@ -484,6 +502,8 @@ Base funcional mínima ya implementada:
   - `CONFIRM_SUMMARY`
   - `DONE`
   - cola de boletas `pending_receipts` para procesamiento secuencial (1 confirmación a la vez)
+  - aviso agregado de boletas múltiples con debounce de 5 segundos
+  - reply contextual a la foto activa usando `active_receipt_message_id`
   - envío de estado de presupuesto al final del lote de boletas
   - respuestas contextuales de chat en `WAIT_RECEIPT`/`DONE` cuando el mensaje parece pregunta
 - `ocr_service` con integración a Google Document AI + fallback conversacional ante error
@@ -533,6 +553,8 @@ export CONSOLIDATED_REPORT_LOGO_PATH=./assets/ripley-logo.png
 export DOCUSIGN_ENABLED=false
 export DOCUSIGN_BASE_URL=https://demo.docusign.net/restapi
 export DOCUSIGN_ACCOUNT_ID=<tu_account_id>
+export DOCUSIGN_INTEGRATION_KEY=<tu_integration_key>
+export DOCUSIGN_SECRET_KEY=<tu_secret_key>
 export DOCUSIGN_ACCESS_TOKEN=<tu_access_token>
 export DOCUSIGN_RETURN_URL=https://example.com/docusign/return
 export DOCUSIGN_DOCUMENT_URL_TTL_SECONDS=1800
@@ -653,12 +675,32 @@ Se implementó endpoint manual para iniciar firma sobre el último documento con
 - Requiere: `phone`, `trip_id`, `signer_email`
 - Opcional: `signer_name`, `embedded_signing=true|false`
 - Crea `envelope` en DocuSign y actualiza tracking en `TripDocuments` (`signature_status`, `docusign_envelope_id`, etc.)
+- En el cierre automático por respuesta `NO`, este paso ahora se dispara solo si existe `Employees.email` y DocuSign está habilitado
 
 Ejemplo:
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/jobs/documents/signature/start?phone=%2B56974340422&trip_id=TRIP-20260306-001&signer_email=usuario@empresa.com&signer_name=Javier%20Calderon&embedded_signing=true"
 ```
+
+### 5.4. Obtener access token OAuth de DocuSign
+
+Si configuras `DOCUSIGN_INTEGRATION_KEY`, `DOCUSIGN_SECRET_KEY` y `DOCUSIGN_RETURN_URL`, el backend expone dos ayudas para completar Authorization Code Grant:
+
+- `GET /docusign/callback`
+- `POST /jobs/docusign/oauth/exchange`
+
+Flujo:
+
+1. Autoriza la app en DocuSign con redirect URI igual a `DOCUSIGN_RETURN_URL`
+2. DocuSign redirigirá a `/docusign/callback?code=...`
+3. Canjea el code:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/jobs/docusign/oauth/exchange?code=<authorization_code>&redirect_uri=http://localhost:8000/docusign/callback"
+```
+
+La respuesta devuelve `access_token` y `refresh_token` cuando el canje fue exitoso.
 
 #### Automatización con `cron` (macOS/Linux)
 
@@ -775,11 +817,19 @@ Para mantener trazabilidad del MVP:
 - Se validó localmente el flujo mínimo end-to-end con Google Sheets real.
 - Se corrigieron bugs de normalización de teléfonos y consistencia de `Conversations`.
 
+### 2026-03-31
+
+- Se conectó DocuSign demo por Authorization Code Grant y se documentó el flujo de obtención de `access_token`.
+- Se agregaron endpoints auxiliares `GET /docusign/callback` y `POST /jobs/docusign/oauth/exchange` para completar OAuth local.
+- Se agregó soporte de `DOCUSIGN_INTEGRATION_KEY` y `DOCUSIGN_SECRET_KEY` por variables de entorno.
+- Se validó generación real de PDF consolidado para `TRIP-20260224-003` con 9 gastos y total `426755.0 CLP`.
+- Se validó creación real de envelope DocuSign y obtención de `signing_url` para `TRIP-20260224-003`.
+- El flujo de cierre automático quedó alineado a: PDF consolidado adjunto por WhatsApp + link de firma enviado por mensaje.
+
 ## Próximos Entregables Inmediatos
 
 - Integrar validación real de firma Twilio en entorno de pruebas/productivo.
-- Implementar storage privado para boletas (sin depender de URL temporal de Twilio).
-- Implementar cierre de viaje por `end_date` + timeout de 24 horas.
-- Generar documento consolidado de boletas y conectar firma DocuSign.
 - Configurar cron/job externo para invocar `POST /jobs/reminders/run` cada 5-10 minutos.
 - Afinar mapeo de timezone (especialmente países con múltiples husos horarios, ej. USA).
+- Automatizar renovación de `DOCUSIGN_ACCESS_TOKEN` para evitar refresh manual cada 8 horas.
+- Guardar/trackear el documento firmado final una vez completada la firma en DocuSign.

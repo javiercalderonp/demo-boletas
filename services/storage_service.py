@@ -1,16 +1,27 @@
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from app.config import Settings
 
 
 class StorageUploadError(RuntimeError):
     pass
+
+
+class _PreserveAuthorizationRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is None:
+            return None
+
+        auth_header = req.headers.get("Authorization") or req.unredirected_hdrs.get("Authorization")
+        if auth_header and str(newurl).startswith("https://"):
+            redirected.add_unredirected_header("Authorization", auth_header)
+        return redirected
 
 
 @dataclass
@@ -96,19 +107,20 @@ class GCSStorageService:
 
     def _download_media(self, media_url: str, media_content_type: str | None) -> tuple[bytes, str]:
         headers = {"User-Agent": "TravelExpenseAgent/1.0"}
-        basic_auth = self._twilio_basic_auth_header()
-        if basic_auth:
-            headers["Authorization"] = basic_auth
+        auth_header = self._media_authorization_header()
+        if auth_header:
+            headers["Authorization"] = auth_header
 
         request = Request(media_url, headers=headers)
         try:
-            with urlopen(request, timeout=20) as response:
+            opener = build_opener(_PreserveAuthorizationRedirectHandler)
+            with opener.open(request, timeout=20) as response:
                 content = response.read()
                 response_mime = response.headers.get_content_type()
         except HTTPError as exc:  # pragma: no cover - depends on external network
-            raise StorageUploadError(f"Error HTTP descargando media Twilio: {exc.code}") from exc
+            raise StorageUploadError(f"Error HTTP descargando media WhatsApp: {exc.code}") from exc
         except URLError as exc:  # pragma: no cover - depends on external network
-            raise StorageUploadError("No se pudo descargar la imagen desde Twilio") from exc
+            raise StorageUploadError("No se pudo descargar la imagen desde WhatsApp") from exc
 
         if not content:
             raise StorageUploadError("La imagen descargada está vacía")
@@ -116,7 +128,14 @@ class GCSStorageService:
         mime_type = self._resolve_mime_type(media_content_type, response_mime)
         return content, mime_type
 
-    def _twilio_basic_auth_header(self) -> str | None:
+    def _media_authorization_header(self) -> str | None:
+        provider = (self.settings.whatsapp_provider or "meta").strip().lower()
+        if provider == "meta":
+            token = (self.settings.meta_access_token or "").strip()
+            return f"Bearer {token}" if token else None
+
+        import base64
+
         sid = (self.settings.twilio_account_sid or "").strip()
         token = (self.settings.twilio_auth_token or "").strip()
         if not sid or not token:

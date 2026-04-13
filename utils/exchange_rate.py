@@ -4,6 +4,7 @@ RATES = {
     "USD": 950,
     "PEN": 260,
     "CNY": 130,
+    "EUR": 1030,
     "CLP": 1,
 }
 
@@ -11,4 +12,3 @@ RATES = {
 def convert_to_clp(amount: float, currency: str) -> float:
     rate = RATES.get((currency or "CLP").upper(), 1)
     return float(amount) * rate
-

@@ -106,11 +106,18 @@ _COUNTRY_TO_CURRENCY: dict[str, str] = {
     "peru": "PEN",
     "perú": "PEN",
     "china": "CNY",
+    "spain": "EUR",
+    "españa": "EUR",
+    "france": "EUR",
+    "italy": "EUR",
+    "germany": "EUR",
     "usa": "USD",
     "eeuu": "USD",
     "estados unidos": "USD",
     "united states": "USD",
 }
+
+_KNOWN_CURRENCY_CODES = {"CLP", "USD", "PEN", "CNY", "EUR"}
 
 
 @dataclass
@@ -120,6 +127,11 @@ class ExpenseService:
 
     def enrich_draft_expense(self, draft_expense: dict[str, Any]) -> dict[str, Any]:
         draft = dict(draft_expense or {})
+        normalized_currency = self._normalize_currency_candidate(draft.get("currency"))
+        if normalized_currency:
+            draft["currency"] = normalized_currency
+        elif "currency" in draft and str(draft.get("currency", "") or "").strip():
+            draft["currency"] = ""
         merchant = str(draft.get("merchant", "") or "").strip()
         if self._should_infer_merchant_with_llm(draft):
             inferred_merchant = self.infer_merchant_with_llm(draft)
@@ -153,6 +165,16 @@ class ExpenseService:
                     draft.get("currency"),
                 )
 
+        if not str(draft.get("currency", "") or "").strip():
+            inferred_from_country = self.infer_currency_from_country(draft.get("country"))
+            if inferred_from_country:
+                draft["currency"] = inferred_from_country
+                logger.info(
+                    "Expense currency inferred from country country=%r currency=%r",
+                    draft.get("country"),
+                    draft["currency"],
+                )
+
         draft = self._reconcile_country_currency(draft)
         draft = self._apply_chile_guardrails(draft)
 
@@ -173,6 +195,30 @@ class ExpenseService:
                     draft.get("country"),
                 )
         return draft
+
+    def _normalize_currency_candidate(self, currency: Any) -> str | None:
+        if currency is None:
+            return None
+        raw = str(currency).strip()
+        if not raw:
+            return None
+        upper = raw.upper()
+        if upper in _KNOWN_CURRENCY_CODES:
+            return upper
+        if "€" in raw or "EURO" in upper:
+            return "EUR"
+        if "US$" in upper or "USD" in upper or "DOLAR" in upper or "DÓLAR" in upper:
+            return "USD"
+        if "S/" in upper or "PEN" in upper or "SOL" in upper:
+            return "PEN"
+        if "CNY" in upper or "RMB" in upper or "YUAN" in upper:
+            return "CNY"
+        if "CLP" in upper or "PESO" in upper:
+            return "CLP"
+        alpha = "".join(ch for ch in upper if ch.isalpha())
+        if alpha in _KNOWN_CURRENCY_CODES:
+            return alpha
+        return None
 
     def infer_currency_from_country(self, country: Any) -> str | None:
         normalized = str(country or "").strip().lower()
@@ -329,14 +375,24 @@ class ExpenseService:
                 missing.append(field)
         return missing
 
-    def build_summary_message(self, draft_expense: dict[str, Any]) -> str:
-        return (
+    def build_summary_message(
+        self,
+        draft_expense: dict[str, Any],
+        *,
+        include_text_actions: bool = True,
+    ) -> str:
+        summary = (
             "Detecte este gasto:\n"
             f"Merchant: {draft_expense.get('merchant', '-')}\n"
             f"Fecha: {draft_expense.get('date', '-')}\n"
             f"Total: {draft_expense.get('total', '-')} {draft_expense.get('currency', '-')}\n"
             f"Categoria: {draft_expense.get('category', '-')}\n"
-            f"Pais: {draft_expense.get('country', '-')}\n\n"
+            f"Pais: {draft_expense.get('country', '-')}"
+        )
+        if not include_text_actions:
+            return summary
+        return (
+            f"{summary}\n\n"
             "1. Confirmar\n"
             "2. Corregir\n"
             "3. Cancelar"

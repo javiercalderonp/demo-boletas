@@ -40,6 +40,9 @@ class Settings:
     app_name: str = os.getenv("APP_NAME", "Travel Expense AI Agent")
     app_env: str = os.getenv("APP_ENV", "dev")
     debug: bool = _as_bool(os.getenv("DEBUG"), default=True)
+    public_base_url: str = os.getenv("PUBLIC_BASE_URL", "")
+
+    whatsapp_provider: str = os.getenv("WHATSAPP_PROVIDER", "meta").strip().lower()
 
     twilio_account_sid: str = os.getenv("TWILIO_ACCOUNT_SID", "")
     twilio_auth_token: str = os.getenv("TWILIO_AUTH_TOKEN", "")
@@ -47,6 +50,16 @@ class Settings:
     twilio_validate_signature: bool = _as_bool(
         os.getenv("TWILIO_VALIDATE_SIGNATURE"), default=False
     )
+
+    meta_access_token: str = os.getenv("META_ACCESS_TOKEN", "")
+    meta_phone_number_id: str = os.getenv("META_PHONE_NUMBER_ID", "")
+    meta_waba_id: str = os.getenv("META_WABA_ID", "")
+    meta_verify_token: str = os.getenv("META_VERIFY_TOKEN", "")
+    meta_app_secret: str = os.getenv("META_APP_SECRET", "")
+    meta_validate_signature: bool = _as_bool(
+        os.getenv("META_VALIDATE_SIGNATURE"), default=False
+    )
+    meta_graph_version: str = os.getenv("META_GRAPH_VERSION", "v22.0")
 
     google_application_credentials: str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
     google_sheets_spreadsheet_id: str = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "")
@@ -64,6 +77,8 @@ class Settings:
         "DOCUSIGN_BASE_URL", "https://demo.docusign.net/restapi"
     )
     docusign_account_id: str = os.getenv("DOCUSIGN_ACCOUNT_ID", "")
+    docusign_integration_key: str = os.getenv("DOCUSIGN_INTEGRATION_KEY", "")
+    docusign_secret_key: str = os.getenv("DOCUSIGN_SECRET_KEY", "")
     docusign_access_token: str = os.getenv("DOCUSIGN_ACCESS_TOKEN", "")
     docusign_return_url: str = os.getenv(
         "DOCUSIGN_RETURN_URL", "https://example.com/docusign/return"
@@ -75,6 +90,9 @@ class Settings:
     document_ai_project_id: str = os.getenv("DOCUMENT_AI_PROJECT_ID", "")
     document_ai_location: str = os.getenv("DOCUMENT_AI_LOCATION", "us")
     document_ai_processor_id: str = os.getenv("DOCUMENT_AI_PROCESSOR_ID", "")
+    document_ai_timeout_seconds: int = int(
+        os.getenv("DOCUMENT_AI_TIMEOUT_SECONDS", "12") or "12"
+    )
 
     expense_category_llm_enabled: bool = _as_bool(
         os.getenv("EXPENSE_CATEGORY_LLM_ENABLED"), default=False

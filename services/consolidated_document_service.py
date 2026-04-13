@@ -180,7 +180,15 @@ class ConsolidatedDocumentService:
             from reportlab.lib.pagesizes import A4
             from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
             from reportlab.lib.units import mm
-            from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+            from reportlab.platypus import (
+                Image,
+                PageBreak,
+                Paragraph,
+                SimpleDocTemplate,
+                Spacer,
+                Table,
+                TableStyle,
+            )
         except ImportError as exc:
             raise RuntimeError("Falta dependencia reportlab para generar PDF") from exc
 
@@ -364,6 +372,21 @@ class ConsolidatedDocumentService:
             )
         )
         story.append(detail_table)
+        story.append(PageBreak())
+        story.extend(
+            self._build_signature_section(
+                phone=phone,
+                trip=trip,
+                paragraph_class=Paragraph,
+                spacer_class=Spacer,
+                table_class=Table,
+                table_style_class=TableStyle,
+                text_style=styles["Normal"],
+                heading_style=styles["Heading3"],
+                mm=mm,
+                colors=colors,
+            )
+        )
 
         doc.build(story)
         return stream.getvalue()
@@ -467,6 +490,125 @@ class ConsolidatedDocumentService:
             )
         )
         return [header_table, spacer_class(1, 6)]
+
+    def _build_signature_section(
+        self,
+        *,
+        phone: str,
+        trip: dict[str, Any],
+        paragraph_class,
+        spacer_class,
+        table_class,
+        table_style_class,
+        text_style,
+        heading_style,
+        mm,
+        colors,
+    ) -> list[Any]:
+        employee = self.sheets_service.get_employee_by_phone(phone) or {}
+        full_name = str(employee.get("name", "") or "").strip() or "Nombre no informado"
+        rut = str(employee.get("rut", "") or "").strip() or "RUT no informado"
+        destination = str(trip.get("destination", "") or "").strip() or "-"
+        signed_at = datetime.now(timezone.utc)
+        signed_day = signed_at.strftime("%d")
+        signed_month = signed_at.strftime("%m")
+        signed_year = signed_at.strftime("%Y")
+
+        items: list[Any] = [
+            paragraph_class("Firma del colaborador", heading_style),
+            spacer_class(1, 8),
+            paragraph_class(
+                (
+                    "Al firmar este documento, el colaborador declara que la información "
+                    "registrada en este reporte de viáticos es correcta y completa."
+                ),
+                text_style,
+            ),
+            spacer_class(1, 8),
+            paragraph_class(
+                (
+                    "Los desembolsos anteriores señalados han sido necesarios para la "
+                    "realización de la labor encomendada a mi persona."
+                ),
+                text_style,
+            ),
+            spacer_class(1, 8),
+            paragraph_class(
+                (
+                    "Me afirmo y ratifico con lo expresado, en señal de lo cual firmo el "
+                    f"presente documento en la ciudad de {self._escape_text(destination)}, "
+                    f"al día {signed_day} del mes {signed_month} de {signed_year}."
+                ),
+                text_style,
+            ),
+            spacer_class(1, 12),
+        ]
+
+        signature_placeholder = paragraph_class(
+            (
+                "<b>Firma:</b><br/><br/><br/>"
+                "<font size='1'>[[DS_SIGN_HERE]]</font>"
+            ),
+            text_style,
+        )
+
+        signature_box = table_class(
+            [
+                ["Firma del colaborador", signature_placeholder],
+                ["Nombre completo", full_name],
+                ["RUT", rut],
+                ["Destino", destination],
+            ],
+            colWidths=[48 * mm, 122 * mm],
+            rowHeights=[38 * mm, 12 * mm, 12 * mm, 12 * mm],
+        )
+        signature_box.setStyle(
+            table_style_class(
+                [
+                    ("GRID", (0, 0), (-1, -1), 0.8, colors.black),
+                    ("BACKGROUND", (0, 0), (0, -1), colors.whitesmoke),
+                    ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                    ("FONTNAME", (1, 1), (1, -1), "Helvetica"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ]
+            )
+        )
+        items.append(signature_box)
+        items.append(spacer_class(1, 8))
+        manager_box = table_class(
+            [
+                ["Firma gerente de área", ""],
+                ["Nombre completo", "Rodrigo Guajardo"],
+                ["RUT", "18.638.282-8"],
+                ["Cargo", "Gerente de área"],
+            ],
+            colWidths=[48 * mm, 122 * mm],
+            rowHeights=[32 * mm, 12 * mm, 12 * mm, 12 * mm],
+        )
+        manager_box.setStyle(
+            table_style_class(
+                [
+                    ("GRID", (0, 0), (-1, -1), 0.8, colors.black),
+                    ("BACKGROUND", (0, 0), (0, -1), colors.whitesmoke),
+                    ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                    ("FONTNAME", (1, 1), (1, -1), "Helvetica"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ]
+            )
+        )
+        items.append(manager_box)
+        items.append(spacer_class(1, 8))
+        items.append(
+            paragraph_class(
+                "La firma electrónica del colaborador debe quedar dentro del recuadro superior derecho.",
+                text_style,
+            )
+        )
+        return items
 
     def _resolve_logo_path(self) -> Path | None:
         raw_path = str(self.storage_service.settings.consolidated_report_logo_path or "").strip()

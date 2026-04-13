@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlparse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.config import Settings
+from services.consolidated_document_service import ConsolidatedDocumentService
+from services.docusign_service import DocusignError, DocusignService
 from services.sheets_service import SheetsService
 from services.whatsapp_service import WhatsAppService
 from utils.helpers import json_loads, normalize_whatsapp_phone, parse_iso_date, utc_now_iso
@@ -71,6 +74,8 @@ class SchedulerService:
     settings: Settings
     sheets_service: SheetsService
     whatsapp_service: WhatsAppService
+    consolidated_document_service: ConsolidatedDocumentService
+    docusign_service: DocusignService
 
     def start(self) -> None:
         # MVP: se ejecuta por endpoint + cron externo/job scheduler.
@@ -215,7 +220,7 @@ class SchedulerService:
             responded_at=now,
             closed_at=now,
         )
-        return "Viaje cerrado. Gracias, quedó registrado sin boletas pendientes."
+        return self._deliver_trip_closure_package(phone=phone, trip_id=trip_id)
 
     @property
     def _window_minutes(self) -> int:
@@ -445,7 +450,14 @@ class SchedulerService:
             return item
 
         try:
-            send_result = self.whatsapp_service.send_outbound_text(phone, prompt_message)
+            send_result = self.whatsapp_service.send_outbound_buttons(
+                phone,
+                body=prompt_message,
+                buttons=[
+                    {"id": "closure_no_finish_trip", "title": "Terminar viaje"},
+                    {"id": "closure_yes_more_receipts", "title": "Tengo mas boletas"},
+                ],
+            )
         except Exception as exc:  # pragma: no cover - depends on Twilio/network
             logger.exception("Trip close prompt send failed trip_id=%s phone=%s", trip_id, phone)
             item["outcome"] = "error"
@@ -556,14 +568,10 @@ class SchedulerService:
         deadline_utc: datetime,
         timezone_name: str,
     ) -> str:
-        trip_id = str(trip.get("trip_id", "") or "").strip()
-        destination = str(trip.get("destination", "") or "").strip()
-        end_date = str(trip.get("end_date", "") or "").strip()
         local_deadline = deadline_utc.astimezone(ZoneInfo(timezone_name)).strftime("%Y-%m-%d %H:%M")
-        destination_text = f" ({destination})" if destination else ""
         return (
-            f"Tu viaje {trip_id}{destination_text} terminó el {end_date}.\n"
-            "¿Tienes más boletas por subir? Responde solo *SI* o *NO*.\n"
+            "Tu viaje esta por terminar.\n"
+            "¿Qué quieres hacer?\n"
             f"Si no respondes antes de {local_deadline} ({timezone_name}), cerraré el viaje automáticamente."
         )
 
@@ -657,9 +665,29 @@ class SchedulerService:
         normalized = normalized.strip(" .,!?:;*\"'")
         if not normalized:
             return None
-        if normalized in {"si", "sí", "s", "yes", "y", "1"}:
+        if normalized in {
+            "si",
+            "sí",
+            "s",
+            "yes",
+            "y",
+            "1",
+            "tengo mas boletas",
+            "tengo más boletas",
+            "tengo mas boletas que subir",
+            "tengo más boletas que subir",
+            "closure_yes_more_receipts",
+        }:
             return "yes"
-        if normalized in {"no", "n", "0", "2"}:
+        if normalized in {
+            "no",
+            "n",
+            "0",
+            "2",
+            "terminar viaje",
+            "cerrar viaje",
+            "closure_no_finish_trip",
+        }:
             return "no"
         return None
 
@@ -783,3 +811,177 @@ class SchedulerService:
                 "closure_deadline_at": "",
             },
         )
+
+    def _deliver_trip_closure_package(self, *, phone: str, trip_id: str) -> str:
+        trip = self.sheets_service.get_trip_by_id(trip_id) or {}
+        document_label = f"reporte_viaticos_{trip_id}.pdf"
+
+        if not self.consolidated_document_service.storage_service.enabled:
+            return (
+                "Viaje cerrado. Quedó registrado sin boletas pendientes.\n"
+                "No pude enviarte el PDF porque el storage privado no está habilitado."
+            )
+
+        try:
+            document = self.consolidated_document_service.generate_for_trip(
+                phone=phone,
+                trip_id=trip_id,
+                include_signed_url=True,
+            )
+        except Exception as exc:
+            logger.exception("Consolidated document generation failed trip_id=%s phone=%s", trip_id, phone)
+            return (
+                "Viaje cerrado. Quedó registrado sin boletas pendientes.\n"
+                "No pude generar el PDF consolidado en este momento."
+                f"{self._debug_suffix(exc)}"
+            )
+
+        signed_url = str(document.get("signed_url", "") or "").strip()
+        if signed_url:
+            try:
+                self.whatsapp_service.send_outbound_document(
+                    phone,
+                    signed_url,
+                    filename=document_label,
+                    caption="Adjunto tu PDF consolidado del viaje.",
+                )
+            except Exception as exc:
+                logger.exception("Trip closure PDF send failed trip_id=%s phone=%s", trip_id, phone)
+
+        signer_name, signer_email = self._resolve_trip_signer(phone=phone)
+        if not signer_email:
+            return (
+                "Viaje cerrado. Te envié el PDF consolidado por este chat.\n"
+                "Aún no pude generar el link de firma porque el empleado no tiene email configurado."
+            )
+        if not self.docusign_service.enabled:
+            return (
+                "Viaje cerrado. Te envié el PDF consolidado por este chat.\n"
+                "DocuSign no está configurado todavía, así que aún no pude enviarte el link de firma."
+            )
+
+        document_id = str(document.get("document_id", "") or "").strip()
+        object_key = str(document.get("object_key", "") or "").strip()
+        if not document_id or not object_key:
+            return (
+                "Viaje cerrado. Te envié el PDF consolidado por este chat.\n"
+                "No pude iniciar la firma porque faltó metadata del documento consolidado."
+            )
+
+        try:
+            document_url = self.consolidated_document_service.storage_service.generate_signed_url(
+                object_key=object_key,
+                ttl_seconds=max(self.settings.docusign_document_url_ttl_seconds, 600),
+            )
+            envelope = self.docusign_service.create_envelope_from_remote_pdf(
+                signer_name=signer_name,
+                signer_email=signer_email,
+                document_name=f"Reporte viaticos {trip_id}",
+                document_url=document_url,
+                client_user_id=phone,
+            )
+            envelope_id = str(envelope.get("envelopeId", "") or "").strip()
+            if not envelope_id:
+                raise DocusignError("DocuSign no devolvio envelopeId")
+            signing_url = self.docusign_service.create_recipient_view(
+                envelope_id=envelope_id,
+                signer_name=signer_name,
+                signer_email=signer_email,
+                client_user_id=phone,
+                return_url=self._build_signing_return_url(document_id=document_id),
+            )
+            status_time = str(envelope.get("statusDateTime", "") or "").strip() or utc_now_iso()
+            self.sheets_service.update_trip_document(
+                document_id,
+                {
+                    "updated_at": status_time,
+                    "signature_provider": "docusign",
+                    "signature_status": "pending",
+                    "docusign_envelope_id": envelope_id,
+                    "signature_url": signing_url,
+                    "signature_sent_at": status_time,
+                    "signature_error": "",
+                },
+            )
+        except Exception as exc:
+            logger.exception("DocuSign trip closure start failed trip_id=%s phone=%s", trip_id, phone)
+            self.sheets_service.update_trip_document(
+                document_id,
+                {
+                    "signature_provider": "docusign",
+                    "signature_status": "error",
+                    "signature_error": str(exc),
+                },
+            )
+            if "access token invalido o expirado" in str(exc).lower():
+                return (
+                    "Viaje cerrado. Te envié el PDF consolidado por este chat.\n"
+                    "No pude generar el link de firma porque el token de DocuSign está vencido o inválido."
+                )
+            return (
+                "Viaje cerrado. Te envié el PDF consolidado por este chat.\n"
+                "No pude generar el link de firma DocuSign en este momento."
+                f"{self._debug_suffix(exc)}"
+            )
+
+        try:
+            shareable_signing_url = self._build_shareable_signing_url(
+                document_id=document_id,
+                signing_url=signing_url,
+            )
+            self.whatsapp_service.send_outbound_text(
+                phone,
+                "Tu viaje quedo cerrado y ya esta listo para firma.",
+            )
+            link_message = self.whatsapp_service.send_outbound_text(
+                phone,
+                shareable_signing_url,
+            )
+            self.whatsapp_service.send_outbound_text(
+                phone,
+                "Apreta el enlace para firmar el documento.",
+                reply_to_message_id=str(link_message.get("id", "") or "").strip() or None,
+            )
+        except Exception as exc:
+            logger.exception("Trip closure signature link send failed trip_id=%s phone=%s", trip_id, phone)
+            return (
+                "Viaje cerrado. Te envié el PDF consolidado por este chat.\n"
+                "El link de firma se generó correctamente, "
+                f"pero no pude mandártelo por WhatsApp: {signing_url}"
+            )
+
+        destination = str(trip.get("destination", "") or "").strip()
+        destination_text = f" ({destination})" if destination else ""
+        return (
+            f"Viaje cerrado{destination_text}. Te envié el PDF consolidado y el link de firma por este chat."
+        )
+
+    def _resolve_trip_signer(self, *, phone: str) -> tuple[str, str]:
+        employee = self.sheets_service.get_employee_by_phone(phone) or {}
+        signer_name = str(employee.get("name", "") or "").strip() or "Empleado"
+        signer_email = str(employee.get("email", "") or "").strip()
+        return signer_name, signer_email
+
+    def _build_shareable_signing_url(self, *, document_id: str, signing_url: str) -> str:
+        base_url = str(getattr(self.settings, "public_base_url", "") or "").strip().rstrip("/")
+        if not base_url:
+            return signing_url
+        parsed = urlparse(base_url)
+        hostname = (parsed.hostname or "").strip().lower()
+        if hostname in {"127.0.0.1", "localhost"}:
+            return signing_url
+        return f"{base_url}/r/sign/{document_id}"
+
+    def _build_signing_return_url(self, *, document_id: str) -> str:
+        base_url = str(getattr(self.settings, "public_base_url", "") or "").strip().rstrip("/")
+        if base_url:
+            parsed = urlparse(base_url)
+            hostname = (parsed.hostname or "").strip().lower()
+            if hostname not in {"127.0.0.1", "localhost"}:
+                return f"{base_url}/docusign/callback?source=signing_complete&document_id={document_id}"
+        return str(getattr(self.settings, "docusign_return_url", "") or "").strip()
+
+    def _debug_suffix(self, exc: Exception) -> str:
+        if not self.settings.debug:
+            return ""
+        return f"\nDetalle técnico: {exc}"

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import base64
 import mimetypes
 import re
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 _ENTITY_TYPE_ALIASES: dict[str, tuple[str, ...]] = {
@@ -68,6 +67,18 @@ _GENERIC_MERCHANT_TERMS = {
 
 class OCRProcessingError(RuntimeError):
     pass
+
+
+class _PreserveAuthorizationRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is None:
+            return None
+
+        auth_header = req.headers.get("Authorization") or req.unredirected_hdrs.get("Authorization")
+        if auth_header and str(newurl).startswith("https://"):
+            redirected.add_unredirected_header("Authorization", auth_header)
+        return redirected
 
 
 @dataclass
@@ -136,17 +147,18 @@ class OCRService:
             raise OCRProcessingError("MediaUrl0 vacío")
 
         headers = {"User-Agent": "TravelExpenseAgent/1.0"}
-        basic_auth = self._twilio_basic_auth_header()
-        if basic_auth:
-            headers["Authorization"] = basic_auth
+        auth_header = self._media_authorization_header()
+        if auth_header:
+            headers["Authorization"] = auth_header
 
         request = Request(media_url, headers=headers)
         try:
-            with urlopen(request, timeout=20) as response:
+            opener = build_opener(_PreserveAuthorizationRedirectHandler)
+            with opener.open(request, timeout=20) as response:
                 content = response.read()
                 response_mime = response.headers.get_content_type()
         except HTTPError as exc:  # pragma: no cover - depende de red externa
-            raise OCRProcessingError(f"Error HTTP descargando media Twilio: {exc.code}") from exc
+            raise OCRProcessingError(f"Error HTTP descargando media WhatsApp: {exc.code}") from exc
         except URLError as exc:  # pragma: no cover - depende de red externa
             raise OCRProcessingError("No se pudo descargar la imagen de la boleta") from exc
 
@@ -156,9 +168,16 @@ class OCRService:
         mime_type = self._resolve_mime_type(media_url, media_content_type, response_mime)
         return content, mime_type
 
-    def _twilio_basic_auth_header(self) -> str | None:
+    def _media_authorization_header(self) -> str | None:
         if not self.settings:
             return None
+        provider = (getattr(self.settings, "whatsapp_provider", "meta") or "meta").strip().lower()
+        if provider == "meta":
+            token = (getattr(self.settings, "meta_access_token", "") or "").strip()
+            return f"Bearer {token}" if token else None
+
+        import base64
+
         sid = (getattr(self.settings, "twilio_account_sid", "") or "").strip()
         token = (getattr(self.settings, "twilio_auth_token", "") or "").strip()
         if not sid or not token:
@@ -185,6 +204,7 @@ class OCRService:
     def _process_document_ai(self, content: bytes, mime_type: str):
         try:
             from google.api_core.client_options import ClientOptions
+            from google.api_core.exceptions import DeadlineExceeded
             from google.cloud import documentai
         except ImportError as exc:  # pragma: no cover - depende de instalación local
             raise OCRProcessingError(
@@ -203,8 +223,16 @@ class OCRService:
         )
         raw_document = documentai.RawDocument(content=content, mime_type=mime_type)
         request = documentai.ProcessRequest(name=name, raw_document=raw_document)
+        timeout_seconds = float(getattr(self.settings, "document_ai_timeout_seconds", 12) or 12)
         try:
-            result = client.process_document(request=request)
+            result = client.process_document(
+                request=request,
+                timeout=max(timeout_seconds, 1.0),
+            )
+        except DeadlineExceeded as exc:  # pragma: no cover - depende de API externa
+            raise OCRProcessingError(
+                f"Document AI excedió el tiempo límite de {timeout_seconds:.0f}s"
+            ) from exc
         except Exception as exc:  # pragma: no cover - depende de API externa
             raise OCRProcessingError(f"Document AI no pudo procesar la boleta: {exc}") from exc
         return result.document
@@ -302,7 +330,7 @@ class OCRService:
             if entity_type not in aliases:
                 continue
             value = (self._entity_text_value(entity) or "").upper()
-            if value in {"CLP", "USD", "PEN", "CNY"}:
+            if value in {"CLP", "USD", "PEN", "CNY", "EUR"}:
                 return value
             if "PESO" in value:
                 return "CLP"
@@ -310,6 +338,8 @@ class OCRService:
                 return "PEN"
             if "DOLAR" in value or "USD" in value:
                 return "USD"
+            if "EURO" in value or "EUR" in value or "€" in value:
+                return "EUR"
         return None
 
     def _entity_text_value(self, entity: Any) -> str | None:
@@ -403,6 +433,8 @@ class OCRService:
             return "PEN"
         if "USD" in upper or "US$" in upper or "DOLAR" in upper:
             return "USD"
+        if "EUR" in upper or "EURO" in upper or "€" in text:
+            return "EUR"
         # En boletas chilenas de POS a veces solo aparece "$" sin texto "PESO/CLP".
         if self._looks_like_chile_receipt(upper):
             return "CLP"

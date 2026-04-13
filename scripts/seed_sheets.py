@@ -30,7 +30,7 @@ SCOPES = [
 ]
 
 SHEET_HEADERS: dict[str, list[str]] = {
-    "Employees": ["phone", "name", "rut", "active"],
+    "Employees": ["phone", "name", "rut", "email", "active"],
     "Trips": [
         "trip_id",
         "phone",
@@ -101,6 +101,7 @@ class SeedConfig:
     employee_phone: str
     employee_name: str
     employee_rut: str
+    employee_email: str
     collaborator_phone: str
 
 
@@ -145,6 +146,11 @@ def parse_args() -> SeedConfig:
         help="RUT del empleado demo",
     )
     parser.add_argument(
+        "--employee-email",
+        default="",
+        help="Email del empleado demo para firma DocuSign",
+    )
+    parser.add_argument(
         "--collaborator-phone",
         default="+56970000000",
         help="Teléfono colaborador demo para shared expense",
@@ -167,6 +173,7 @@ def parse_args() -> SeedConfig:
         employee_phone=args.employee_phone,
         employee_name=args.employee_name,
         employee_rut=args.employee_rut,
+        employee_email=args.employee_email,
         collaborator_phone=args.collaborator_phone,
     )
 
@@ -218,8 +225,8 @@ def demo_rows(cfg: SeedConfig) -> dict[str, list[list[Any]]]:
 
     return {
         "Employees": [
-            [cfg.employee_phone, cfg.employee_name, cfg.employee_rut, "TRUE"],
-            [cfg.collaborator_phone, "Colaborador Demo", "98.765.432-1", "TRUE"],
+            [cfg.employee_phone, cfg.employee_name, cfg.employee_rut, cfg.employee_email, "TRUE"],
+            [cfg.collaborator_phone, "Colaborador Demo", "98.765.432-1", "", "TRUE"],
         ],
         "Trips": [
             [

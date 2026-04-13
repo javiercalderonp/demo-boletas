@@ -18,15 +18,16 @@ FIELD_PROMPTS = {
     "merchant": "¿Cuál es el comercio/merchant?",
     "date": "¿Cuál es la fecha? (formato YYYY-MM-DD)",
     "total": "¿Cuál es el total del gasto? (solo número)",
-    "currency": "¿Cuál es la moneda?\n1. CLP\n2. USD\n3. PEN\n4. CNY",
+    "currency": "¿Cuál es la moneda?\n1. CLP\n2. USD\n3. PEN\n4. CNY\n5. EUR",
     "category": "¿Cuál es la categoría?\n1. Meals\n2. Transport\n3. Lodging\n4. Other",
     "country": "¿En qué país fue el gasto?\n1. Chile\n2. Peru\n3. China\n4. Otro (escribir texto)",
     "trip_id": "No encontré viaje activo. Indica el trip_id del viaje.",
 }
 
-CURRENCY_OPTIONS = {"1": "CLP", "2": "USD", "3": "PEN", "4": "CNY"}
+CURRENCY_OPTIONS = {"1": "CLP", "2": "USD", "3": "PEN", "4": "CNY", "5": "EUR"}
 CATEGORY_OPTIONS = {"1": "Meals", "2": "Transport", "3": "Lodging", "4": "Other"}
 COUNTRY_OPTIONS = {"1": "Chile", "2": "Peru", "3": "China"}
+OTHER_COUNTRY_SENTINEL = "__other_country__"
 CORRECTION_FIELD_OPTIONS = {
     "1": "merchant",
     "2": "date",
@@ -237,6 +238,18 @@ class ConversationService:
             return self._to_confirm_summary(draft)
 
         parsed_value = self._parse_field_value(current_field, message)
+        if current_field == "country" and parsed_value == OTHER_COUNTRY_SENTINEL:
+            return {
+                "state": NEEDS_INFO,
+                "current_step": current_field,
+                "context_json": {
+                    "draft_expense": draft,
+                    "missing_fields": missing,
+                    "last_question": current_field,
+                },
+                "reply": "Escribe el país del gasto.",
+                "action": "noop",
+            }
         if parsed_value is None:
             answer = self._answer_general_question_if_needed(message)
             if answer:
@@ -415,6 +428,8 @@ class ConversationService:
         if field_name == "category":
             return CATEGORY_OPTIONS.get(text) or text
         if field_name == "country":
+            if text.lower() in {"4", "otro", "other_country"}:
+                return OTHER_COUNTRY_SENTINEL
             return COUNTRY_OPTIONS.get(text) or text
         if field_name == "total":
             try:
