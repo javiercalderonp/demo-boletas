@@ -19,6 +19,10 @@ class TwilioDailyLimitExceededError(RuntimeError):
     """Raised when Twilio blocks outbound send due to daily quota."""
 
 
+class MetaAccessTokenExpiredError(RuntimeError):
+    """Raised when Meta rejects the request because the access token expired."""
+
+
 @dataclass
 class WhatsAppService:
     settings: Settings
@@ -89,6 +93,8 @@ class WhatsAppService:
                     message,
                     reply_to_message_id=reply_to_message_id,
                 )
+            except MetaAccessTokenExpiredError:
+                raise
             except Exception:
                 if reply_to_message_id:
                     logger.exception(
@@ -659,6 +665,10 @@ class WhatsAppService:
                 raw = response.read().decode("utf-8") if response else ""
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            if self._is_meta_access_token_expired(exc.code, detail):
+                raise MetaAccessTokenExpiredError(
+                    "Meta access token expired. Update META_ACCESS_TOKEN and retry."
+                ) from exc
             raise RuntimeError(f"Meta API error HTTP {exc.code}: {detail}") from exc
         except URLError as exc:
             raise RuntimeError("No se pudo conectar con Meta WhatsApp Cloud API.") from exc
@@ -677,3 +687,21 @@ class WhatsAppService:
         if normalized.startswith("+"):
             normalized = normalized[1:]
         return normalized
+
+    def _is_meta_access_token_expired(self, status_code: int, detail: str) -> bool:
+        if status_code != 401:
+            return False
+        try:
+            payload = json.loads(detail or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        error = payload.get("error", {}) if isinstance(payload, dict) else {}
+        code = error.get("code")
+        subcode = error.get("error_subcode")
+        message = str(error.get("message") or detail or "").lower()
+        return (
+            code == 190
+            and subcode == 463
+            or "session has expired" in message
+            or "error validating access token" in message
+        )

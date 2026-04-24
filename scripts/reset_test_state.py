@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Resetea conversación y recrea un viaje de prueba usando el último viaje del usuario.
+"""Resetea conversación y recrea una rendición de prueba usando el último caso del usuario.
 
 Uso:
   python scripts/reset_test_state.py --phone +569XXXXXXXX
 
 Comportamiento:
-- Busca el último viaje del teléfono indicado.
-- Marca viajes activos actuales como `completed` para evitar ambigüedad.
-- Crea un nuevo viaje con los mismos datos base y fechas frescas desde hoy.
+- Busca el último caso/rendición del teléfono indicado.
+- Marca casos activos actuales como `completed` para evitar ambigüedad.
+- Crea un nuevo caso con los mismos datos base y fechas frescas desde hoy.
 - Resetea la conversación a WAIT_RECEIPT.
 """
 
@@ -24,26 +24,26 @@ from utils.helpers import make_id, normalize_whatsapp_phone
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Reset de conversación y recreación de viaje de prueba")
+    parser = argparse.ArgumentParser(description="Reset de conversación y recreación de rendición de prueba")
     parser.add_argument("--phone", required=True, help="Teléfono E.164 del usuario de prueba")
     parser.add_argument(
         "--duration-days",
         type=int,
         default=3,
-        help="Duración del nuevo viaje en días desde hoy, incluyendo hoy",
+        help="Duración del nuevo caso en días desde hoy, incluyendo hoy",
     )
     return parser.parse_args()
 
 
-def _pick_latest_trip(trips: list[dict]) -> dict | None:
-    latest_trip = None
+def _pick_latest_case(cases: list[dict]) -> dict | None:
+    latest_case = None
     latest_end_date = ""
-    for trip in trips:
-        end_date = str(trip.get("end_date", "") or "").strip()
-        if latest_trip is None or end_date >= latest_end_date:
-            latest_trip = trip
+    for expense_case in cases:
+        end_date = str(expense_case.get("due_date", expense_case.get("end_date", "")) or "").strip()
+        if latest_case is None or end_date >= latest_end_date:
+            latest_case = expense_case
             latest_end_date = end_date
-    return latest_trip
+    return latest_case
 
 
 def main() -> None:
@@ -61,36 +61,39 @@ def main() -> None:
     if not employee:
         raise SystemExit(f"No existe empleado activo para {phone}")
 
-    trips = sheets.list_active_trips_by_phone(phone)
-    if not trips:
-        for row in sheets._get_records(SHEET_NAMES["trips"]):  # noqa: SLF001 - utility script
+    cases = sheets.list_active_expense_cases_by_phone(phone)
+    if not cases:
+        for row in sheets._get_records(SHEET_NAMES["expense_cases"]):  # noqa: SLF001 - utility script
             if normalize_whatsapp_phone(row.get("phone", "")) == phone:
-                trips.append(row)
-    base_trip = _pick_latest_trip(trips)
-    if not base_trip:
-        raise SystemExit(f"No encontré viajes previos para {phone}")
+                cases.append(row)
+    base_case = _pick_latest_case(cases)
+    if not base_case:
+        raise SystemExit(f"No encontré casos previos para {phone}")
 
-    for trip in sheets.list_active_trips_by_phone(phone):
-        trip_id = str(trip.get("trip_id", "") or "").strip()
-        if not trip_id:
+    for expense_case in sheets.list_active_expense_cases_by_phone(phone):
+        case_id = str(expense_case.get("case_id", expense_case.get("trip_id", "")) or "").strip()
+        if not case_id:
             continue
-        sheets.update_trip(
-            trip_id,
+        sheets.update_expense_case(
+            case_id,
             {
-                **trip,
+                **expense_case,
                 "status": "completed",
-                "closure_status": str(trip.get("closure_status", "") or "").strip() or "reset_for_retest",
+                "closure_status": str(expense_case.get("closure_status", "") or "").strip() or "reset_for_retest",
             },
         )
 
     start_date = date.today()
     end_date = start_date + timedelta(days=max(args.duration_days - 1, 0))
-    new_trip_id = make_id("TRIP")
-    new_trip = dict(base_trip)
-    new_trip.update(
+    new_case_id = make_id("CASE")
+    new_case = dict(base_case)
+    new_case.update(
         {
-            "trip_id": new_trip_id,
+            "case_id": new_case_id,
+            "trip_id": new_case_id,
             "phone": phone,
+            "opened_at": start_date.isoformat(),
+            "due_date": end_date.isoformat(),
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
             "status": "active",
@@ -103,7 +106,7 @@ def main() -> None:
             "closure_reason": "",
         }
     )
-    sheets._append_row(SHEET_NAMES["trips"], new_trip)  # noqa: SLF001 - utility script
+    sheets._append_row(SHEET_NAMES["expense_cases"], new_case)  # noqa: SLF001 - utility script
 
     reset_conversation = {
         "phone": phone,
@@ -116,11 +119,11 @@ def main() -> None:
     print("Reset completado")
     print(f"phone={phone}")
     print(f"employee_name={employee.get('name', '')}")
-    print(f"new_trip_id={new_trip_id}")
-    print(f"destination={new_trip.get('destination', '')}")
-    print(f"country={new_trip.get('country', '')}")
-    print(f"start_date={new_trip.get('start_date', '')}")
-    print(f"end_date={new_trip.get('end_date', '')}")
+    print(f"new_case_id={new_case_id}")
+    print(f"context_label={new_case.get('context_label', new_case.get('destination', ''))}")
+    print(f"country={new_case.get('country', '')}")
+    print(f"opened_at={new_case.get('opened_at', new_case.get('start_date', ''))}")
+    print(f"due_date={new_case.get('due_date', new_case.get('end_date', ''))}")
 
 
 if __name__ == "__main__":

@@ -22,33 +22,33 @@ class ConsolidatedDocumentService:
     sheets_service: SheetsService
     storage_service: GCSStorageService
 
-    def generate_for_trip(
+    def generate_for_case(
         self,
         *,
         phone: str,
-        trip_id: str,
+        case_id: str,
         include_signed_url: bool = True,
     ) -> dict[str, Any]:
         normalized_phone = normalize_whatsapp_phone(phone)
-        target_trip_id = str(trip_id or "").strip()
+        target_case_id = str(case_id or "").strip()
         if not normalized_phone:
             raise ValueError("phone invalido")
-        if not target_trip_id:
-            raise ValueError("trip_id vacio")
+        if not target_case_id:
+            raise ValueError("case_id vacio")
         if not self.storage_service.enabled:
             raise RuntimeError("Storage privado no habilitado para guardar el documento")
 
-        trip = self.sheets_service.get_trip_by_id(target_trip_id)
-        if not trip:
-            raise ValueError(f"No existe trip_id={target_trip_id}")
+        expense_case = self.sheets_service.get_expense_case_by_id(target_case_id)
+        if not expense_case:
+            raise ValueError(f"No existe case_id={target_case_id}")
 
-        trip_phone = normalize_whatsapp_phone(trip.get("phone"))
-        if trip_phone and trip_phone != normalized_phone:
-            raise ValueError("El trip no pertenece al telefono indicado")
+        case_phone = normalize_whatsapp_phone(expense_case.get("phone"))
+        if case_phone and case_phone != normalized_phone:
+            raise ValueError("El caso no pertenece al teléfono indicado")
 
-        expenses = self.sheets_service.list_expenses_by_phone_trip(
+        expenses = self.sheets_service.list_expenses_by_phone_case(
             phone=normalized_phone,
-            trip_id=target_trip_id,
+            case_id=target_case_id,
         )
         sorted_expenses = sorted(
             expenses,
@@ -59,24 +59,25 @@ class ConsolidatedDocumentService:
             ),
         )
 
-        report_data = self._build_report_data(trip=trip, expenses=sorted_expenses)
+        report_data = self._build_report_data(expense_case=expense_case, expenses=sorted_expenses)
         pdf_content = self._render_pdf(
             phone=normalized_phone,
-            trip_id=target_trip_id,
-            trip=trip,
+            case_id=target_case_id,
+            expense_case=expense_case,
             report_data=report_data,
         )
 
         upload_result = self.storage_service.upload_report_pdf(
             phone=normalized_phone,
-            trip_id=target_trip_id,
+            trip_id=target_case_id,
             content=pdf_content,
         )
 
         document = {
             "document_id": make_id("DOC"),
             "phone": normalized_phone,
-            "trip_id": target_trip_id,
+            "case_id": target_case_id,
+            "trip_id": target_case_id,
             "storage_provider": upload_result["storage_provider"],
             "object_key": upload_result["object_key"],
             "expense_count": len(sorted_expenses),
@@ -96,7 +97,7 @@ class ConsolidatedDocumentService:
             "signed_object_key": "",
             "signature_error": "",
         }
-        self.sheets_service.create_trip_document(document)
+        self.sheets_service.create_expense_case_document(document)
 
         response = document.copy()
         if include_signed_url:
@@ -105,10 +106,19 @@ class ConsolidatedDocumentService:
             )
         return response
 
+    def generate_for_trip(
+        self,
+        *,
+        phone: str,
+        trip_id: str,
+        include_signed_url: bool = True,
+    ) -> dict[str, Any]:
+        return self.generate_for_case(phone=phone, case_id=trip_id, include_signed_url=include_signed_url)
+
     def _build_report_data(
         self,
         *,
-        trip: dict[str, Any],
+        expense_case: dict[str, Any],
         expenses: list[dict[str, Any]],
     ) -> dict[str, Any]:
         total_clp = 0.0
@@ -149,7 +159,7 @@ class ConsolidatedDocumentService:
         sorted_categories = sorted(by_category.items(), key=lambda x: x[0].lower())
         sorted_days = sorted(by_day.items(), key=lambda x: x[0])
         return {
-            "trip": trip,
+            "expense_case": expense_case,
             "total_clp": total_clp,
             "by_category": sorted_categories,
             "by_day": sorted_days,
@@ -171,8 +181,8 @@ class ConsolidatedDocumentService:
         self,
         *,
         phone: str,
-        trip_id: str,
-        trip: dict[str, Any],
+        case_id: str,
+        expense_case: dict[str, Any],
         report_data: dict[str, Any],
     ) -> bytes:
         try:
@@ -200,7 +210,7 @@ class ConsolidatedDocumentService:
             rightMargin=12 * mm,
             topMargin=12 * mm,
             bottomMargin=12 * mm,
-            title=f"Reporte Consolidado de Viaticos {trip_id}",
+            title=f"Reporte Consolidado de Rendicion {case_id}",
         )
 
         styles = getSampleStyleSheet()
@@ -223,7 +233,7 @@ class ConsolidatedDocumentService:
 
         story.extend(
             self._build_header_with_logo(
-                trip_id=trip_id,
+                trip_id=case_id,
                 image_class=Image,
                 paragraph_class=Paragraph,
                 spacer_class=Spacer,
@@ -239,12 +249,12 @@ class ConsolidatedDocumentService:
 
         trip_summary = [
             ["Telefono", phone],
-            ["ID Viaje", trip_id],
-            ["Destino", str(trip.get("destination", "") or "-")],
-            ["Pais", str(trip.get("country", "") or "-")],
-            ["Fecha Inicio", str(trip.get("start_date", "") or "-")],
-            ["Fecha Fin", str(trip.get("end_date", "") or "-")],
-            ["Boletas", str(len(report_data["detail_rows"]))],
+            ["ID Caso", case_id],
+            ["Referencia", str(expense_case.get("context_label", expense_case.get("destination", "")) or "-")],
+            ["Pais", str(expense_case.get("country", "") or "-")],
+            ["Apertura", str(expense_case.get("opened_at", expense_case.get("start_date", "")) or "-")],
+            ["Cierre", str(expense_case.get("due_date", expense_case.get("end_date", "")) or "-")],
+            ["Documentos", str(len(report_data["detail_rows"]))],
             ["Total CLP", self._format_clp(report_data["total_clp"])],
         ]
         trip_table = Table(trip_summary, colWidths=[45 * mm, 130 * mm])
@@ -376,7 +386,7 @@ class ConsolidatedDocumentService:
         story.extend(
             self._build_signature_section(
                 phone=phone,
-                trip=trip,
+                trip=expense_case,
                 paragraph_class=Paragraph,
                 spacer_class=Spacer,
                 table_class=Table,
@@ -462,26 +472,24 @@ class ConsolidatedDocumentService:
         text_style,
         mm,
     ) -> list[Any]:
-        logo_flowable: Any = paragraph_class("", text_style)
-        logo_path = self._resolve_logo_path()
-        if logo_path:
-            try:
-                logo_image = image_class(str(logo_path))
-                self._fit_image_size(logo_image, max_width=34 * mm, max_height=18 * mm)
-                logo_flowable = logo_image
-            except Exception:
-                logo_flowable = paragraph_class("", text_style)
+        company_name = self._resolve_company_name_for_case(trip_id=trip_id)
+        company_line = ""
+        if company_name:
+            company_line = f"{self._escape_text(company_name)}<br/>"
 
         title = paragraph_class(
-            f"<b>Reporte Consolidado de Viaticos</b><br/>Viaje: {self._escape_text(trip_id)}",
+            (
+                f"{company_line}"
+                f"<b>Reporte Consolidado de Rendición</b><br/>"
+                f"Caso: {self._escape_text(trip_id)}"
+            ),
             text_style,
         )
-        header_table = table_class([[title, logo_flowable]], colWidths=[140 * mm, 35 * mm])
+        header_table = table_class([[title]], colWidths=[175 * mm])
         header_table.setStyle(
             table_style_class(
                 [
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("ALIGN", (1, 0), (1, 0), "RIGHT"),
                     ("LEFTPADDING", (0, 0), (-1, -1), 0),
                     ("RIGHTPADDING", (0, 0), (-1, -1), 0),
                     ("TOPPADDING", (0, 0), (-1, -1), 0),
@@ -508,7 +516,7 @@ class ConsolidatedDocumentService:
         employee = self.sheets_service.get_employee_by_phone(phone) or {}
         full_name = str(employee.get("name", "") or "").strip() or "Nombre no informado"
         rut = str(employee.get("rut", "") or "").strip() or "RUT no informado"
-        destination = str(trip.get("destination", "") or "").strip() or "-"
+        context_label = str(trip.get("context_label", trip.get("destination", "")) or "").strip() or "-"
         signed_at = datetime.now(timezone.utc)
         signed_day = signed_at.strftime("%d")
         signed_month = signed_at.strftime("%m")
@@ -520,7 +528,7 @@ class ConsolidatedDocumentService:
             paragraph_class(
                 (
                     "Al firmar este documento, el colaborador declara que la información "
-                    "registrada en este reporte de viáticos es correcta y completa."
+                    "registrada en este reporte de rendición es correcta y completa."
                 ),
                 text_style,
             ),
@@ -528,7 +536,7 @@ class ConsolidatedDocumentService:
             paragraph_class(
                 (
                     "Los desembolsos anteriores señalados han sido necesarios para la "
-                    "realización de la labor encomendada a mi persona."
+                    "actividad o gestión asociada a esta rendición."
                 ),
                 text_style,
             ),
@@ -536,7 +544,7 @@ class ConsolidatedDocumentService:
             paragraph_class(
                 (
                     "Me afirmo y ratifico con lo expresado, en señal de lo cual firmo el "
-                    f"presente documento en la ciudad de {self._escape_text(destination)}, "
+                    f"presente documento con referencia {self._escape_text(context_label)}, "
                     f"al día {signed_day} del mes {signed_month} de {signed_year}."
                 ),
                 text_style,
@@ -557,7 +565,7 @@ class ConsolidatedDocumentService:
                 ["Firma del colaborador", signature_placeholder],
                 ["Nombre completo", full_name],
                 ["RUT", rut],
-                ["Destino", destination],
+                ["Referencia", context_label],
             ],
             colWidths=[48 * mm, 122 * mm],
             rowHeights=[38 * mm, 12 * mm, 12 * mm, 12 * mm],
@@ -577,31 +585,6 @@ class ConsolidatedDocumentService:
         )
         items.append(signature_box)
         items.append(spacer_class(1, 8))
-        manager_box = table_class(
-            [
-                ["Firma gerente de área", ""],
-                ["Nombre completo", "Rodrigo Guajardo"],
-                ["RUT", "18.638.282-8"],
-                ["Cargo", "Gerente de área"],
-            ],
-            colWidths=[48 * mm, 122 * mm],
-            rowHeights=[32 * mm, 12 * mm, 12 * mm, 12 * mm],
-        )
-        manager_box.setStyle(
-            table_style_class(
-                [
-                    ("GRID", (0, 0), (-1, -1), 0.8, colors.black),
-                    ("BACKGROUND", (0, 0), (0, -1), colors.whitesmoke),
-                    ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-                    ("FONTNAME", (1, 1), (1, -1), "Helvetica"),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("TOPPADDING", (0, 0), (-1, -1), 6),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-                ]
-            )
-        )
-        items.append(manager_box)
-        items.append(spacer_class(1, 8))
         items.append(
             paragraph_class(
                 "La firma electrónica del colaborador debe quedar dentro del recuadro superior derecho.",
@@ -609,6 +592,23 @@ class ConsolidatedDocumentService:
             )
         )
         return items
+
+    def _resolve_company_name_for_case(self, *, trip_id: str) -> str:
+        expense_case = self.sheets_service.get_expense_case_by_id(trip_id) or {}
+        company_id = str(expense_case.get("company_id", "") or "").strip()
+        phone = normalize_whatsapp_phone(expense_case.get("phone", ""))
+        if not company_id and phone:
+            employee = self.sheets_service.get_employee_by_phone(phone) or {}
+            company_id = str(employee.get("company_id", "") or "").strip()
+        if not company_id:
+            return ""
+
+        target_company_id = company_id.lower()
+        for company in self.sheets_service.list_companies():
+            if str(company.get("company_id", "") or "").strip().lower() != target_company_id:
+                continue
+            return str(company.get("name", "") or "").strip()
+        return ""
 
     def _resolve_logo_path(self) -> Path | None:
         raw_path = str(self.storage_service.settings.consolidated_report_logo_path or "").strip()

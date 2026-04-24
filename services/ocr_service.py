@@ -16,6 +16,8 @@ _ENTITY_TYPE_ALIASES: dict[str, tuple[str, ...]] = {
         "vendor_name",
         "seller_name",
         "company_name",
+        "issuer_name",
+        "provider_name",
     ),
     "date": (
         "receipt_date",
@@ -41,11 +43,74 @@ _ENTITY_TYPE_ALIASES: dict[str, tuple[str, ...]] = {
         "supplier_address.country",
         "vendor_address.country",
     ),
+    "invoice_number": (
+        "invoice_id",
+        "invoice_number",
+        "receipt_number",
+        "document_number",
+        "folio",
+    ),
+    "tax_amount": (
+        "tax_amount",
+        "total_tax_amount",
+        "vat_amount",
+        "iva",
+    ),
+    "gross_amount": (
+        "gross_amount",
+        "subtotal",
+        "net_amount",
+        "total_honorarios",
+        "monto_bruto",
+    ),
+    "withholding_amount": (
+        "withholding_amount",
+        "retention_amount",
+        "retencion",
+        "retención",
+        "tax_withheld",
+    ),
+    "net_amount": (
+        "net_payable",
+        "amount_paid",
+        "total_boleta",
+        "monto_liquido",
+        "monto_líquido",
+    ),
+    "issuer_tax_id": (
+        "supplier_tax_id",
+        "vendor_tax_id",
+        "seller_tax_id",
+        "supplier_registration",
+    ),
+    "receiver_tax_id": (
+        "receiver_tax_id",
+        "customer_tax_id",
+        "buyer_tax_id",
+    ),
+    "receiver_name": (
+        "receiver_name",
+        "customer_name",
+        "buyer_name",
+    ),
+    "service_description": (
+        "service_description",
+        "description",
+        "concept",
+        "detalle",
+    ),
+    "payment_method": (
+        "payment_method",
+        "payment_type",
+    ),
 }
 
 _GENERIC_MERCHANT_TERMS = {
     "comprobante de venta",
     "boleta",
+    "boleta de honorarios",
+    "boleta de honorarios electronica",
+    "boleta de honorarios electrónica",
     "boleta electronica",
     "boleta electrónica",
     "factura",
@@ -62,6 +127,37 @@ _GENERIC_MERCHANT_TERMS = {
     "visa débito",
     "mastercard",
     "copia cliente",
+}
+
+_DOCUMENT_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "boleta_honorarios": (
+        "boleta de honorarios",
+        "boleta honorarios",
+        "boleta de honorarios electronica",
+        "boleta de honorarios electrónica",
+        "honorarios",
+        "retencion",
+        "retención",
+    ),
+    "factura": (
+        "factura",
+        "invoice",
+    ),
+    "boleta": (
+        "boleta",
+        "boleta electronica",
+        "boleta electrónica",
+    ),
+    "ticket": (
+        "ticket",
+    ),
+    "comprobante": (
+        "comprobante",
+        "comprobante de venta",
+        "voucher",
+        "recibo",
+        "receipt",
+    ),
 }
 
 
@@ -108,6 +204,7 @@ class OCRService:
     def _placeholder_extract(self, media_url: str) -> dict[str, Any]:
         url = (media_url or "").lower()
         today = date.today().isoformat()
+        document_type = "comprobante"
 
         currency = "CLP"
         country = None
@@ -127,6 +224,32 @@ class OCRService:
             merchant = "Uber"
         elif "hotel" in url:
             merchant = "Hotel"
+        elif "dog" in url or "perro" in url:
+            return {
+                "merchant": None,
+                "date": None,
+                "total": None,
+                "currency": None,
+                "country": None,
+                "category": None,
+                "document_type": None,
+                "is_document": False,
+                "ocr_text": None,
+                "invoice_number": None,
+                "tax_amount": None,
+                "issuer_tax_id": None,
+                "receiver_tax_id": None,
+                "payment_method": None,
+            }
+
+        if "honorario" in url:
+            document_type = "boleta_honorarios"
+        elif "factura" in url or "invoice" in url:
+            document_type = "factura"
+        elif "boleta" in url:
+            document_type = "boleta"
+        elif "ticket" in url:
+            document_type = "ticket"
 
         # Intencionalmente deja category/country a veces vacíos para probar slot filling.
         return {
@@ -136,6 +259,19 @@ class OCRService:
             "currency": currency,
             "country": country,
             "category": None,
+            "document_type": document_type,
+            "is_document": True,
+            "invoice_number": None,
+            "tax_amount": None,
+            "issuer_tax_id": None,
+            "receiver_tax_id": None,
+            "payment_method": None,
+            "gross_amount": total if document_type == "boleta_honorarios" else None,
+            "withholding_rate": 15.25 if document_type == "boleta_honorarios" else None,
+            "withholding_amount": 1906.25 if document_type == "boleta_honorarios" else None,
+            "net_amount": 10593.75 if document_type == "boleta_honorarios" else None,
+            "receiver_name": None,
+            "service_description": None,
         }
 
     def _download_media(
@@ -253,6 +389,28 @@ class OCRService:
             or self._infer_currency_from_text(text)
         )
         country = self._pick_entity_text(entities, "country") or self._infer_country_from_text(text)
+        document_type = self._classify_document_type(
+            text=text,
+            merchant=merchant,
+            parsed_date=parsed_date,
+            total=total,
+            currency=currency,
+        )
+
+        invoice_number = self._pick_entity_text(entities, "invoice_number") or self._extract_invoice_number_from_text(text)
+        tax_amount = self._extract_tax_amount(entities, text)
+        issuer_tax_id = self._pick_entity_text(entities, "issuer_tax_id") or self._extract_tax_id_from_text(text, role="issuer")
+        receiver_tax_id = self._pick_entity_text(entities, "receiver_tax_id") or self._extract_tax_id_from_text(text, role="receiver")
+        payment_method = self._pick_entity_text(entities, "payment_method")
+        gross_amount = self._extract_professional_fee_amount(entities, text, "gross_amount")
+        withholding_amount = self._extract_professional_fee_amount(entities, text, "withholding_amount")
+        net_amount = self._extract_professional_fee_amount(entities, text, "net_amount")
+        withholding_rate = self._extract_withholding_rate_from_text(text)
+        receiver_name = self._pick_entity_text(entities, "receiver_name")
+        service_description = self._pick_entity_text(entities, "service_description")
+
+        if document_type == "boleta_honorarios" and net_amount is not None:
+            total = net_amount
 
         return {
             "merchant": merchant,
@@ -260,8 +418,84 @@ class OCRService:
             "total": total,
             "currency": currency,
             "country": country,
+            "document_type": document_type,
+            "is_document": bool(document_type),
             "ocr_text": text[:4000] if text else None,
+            "invoice_number": invoice_number,
+            "tax_amount": tax_amount,
+            "issuer_tax_id": issuer_tax_id,
+            "receiver_tax_id": receiver_tax_id,
+            "payment_method": payment_method,
+            "gross_amount": gross_amount,
+            "withholding_rate": withholding_rate,
+            "withholding_amount": withholding_amount,
+            "net_amount": net_amount,
+            "receiver_name": receiver_name,
+            "service_description": service_description,
         }
+
+    def _classify_document_type(
+        self,
+        *,
+        text: str,
+        merchant: str | None,
+        parsed_date: str | None,
+        total: float | None,
+        currency: str | None,
+    ) -> str | None:
+        normalized_text = re.sub(r"\s+", " ", text or "").strip().lower()
+        for document_type in ("boleta_honorarios", "factura", "boleta", "ticket", "comprobante"):
+            keywords = _DOCUMENT_KEYWORDS[document_type]
+            if any(keyword in normalized_text for keyword in keywords):
+                return document_type
+
+        if self._looks_like_expense_document(
+            text=text,
+            merchant=merchant,
+            parsed_date=parsed_date,
+            total=total,
+            currency=currency,
+        ):
+            return "comprobante"
+        return None
+
+    def _looks_like_expense_document(
+        self,
+        *,
+        text: str,
+        merchant: str | None,
+        parsed_date: str | None,
+        total: float | None,
+        currency: str | None,
+    ) -> bool:
+        upper = (text or "").upper()
+        signal_count = 0
+
+        if merchant:
+            signal_count += 1
+        if parsed_date:
+            signal_count += 1
+        if total is not None:
+            signal_count += 1
+        if currency:
+            signal_count += 1
+
+        textual_markers = (
+            r"\bTOTAL\b",
+            r"\bFECHA\b",
+            r"\bDATE\b",
+            r"\bRUT\b",
+            r"\bRUC\b",
+            r"\bCAJA\b",
+            r"\bTERMINAL\b",
+            r"\bTRANSACCION\b",
+            r"\bTRANSACCI[ÓO]N\b",
+            r"\bNETO\b",
+            r"\bIVA\b",
+        )
+        marker_hits = sum(1 for pattern in textual_markers if re.search(pattern, upper))
+
+        return signal_count >= 3 or (signal_count >= 2 and marker_hits >= 2)
 
     def _flatten_entities(self, entities: list[Any]) -> list[Any]:
         flat: list[Any] = []
@@ -334,11 +568,11 @@ class OCRService:
                 return value
             if "PESO" in value:
                 return "CLP"
-            if "SOL" in value or "PEN" in value:
+            if re.search(r"\bSOL(?:ES)?\b", value) or re.search(r"\bPEN\b", value) or "S/" in value:
                 return "PEN"
-            if "DOLAR" in value or "USD" in value:
+            if "DOLAR" in value or re.search(r"\bUSD\b", value) or "US$" in value:
                 return "USD"
-            if "EURO" in value or "EUR" in value or "€" in value:
+            if "EURO" in value or re.search(r"\bEUR\b", value) or "€" in value:
                 return "EUR"
         return None
 
@@ -429,18 +663,20 @@ class OCRService:
         upper = (text or "").upper()
         if re.search(r"\bMONEDA\s*:\s*PESO(?:S)?\b", upper):
             return "CLP"
-        if "PEN" in upper or "S/" in upper or "SOLES" in upper or "SOL" in upper:
-            return "PEN"
-        if "USD" in upper or "US$" in upper or "DOLAR" in upper:
-            return "USD"
-        if "EUR" in upper or "EURO" in upper or "€" in text:
-            return "EUR"
-        # En boletas chilenas de POS a veces solo aparece "$" sin texto "PESO/CLP".
+        # Prioriza evidencia fuerte de Chile antes de heurísticas de PEN/USD:
+        # substrings cortos como "PEN" o "SOL" aparecen incidentalmente en
+        # palabras comunes (PENDIENTE, SOLICITUD, SOLARIUM, etc.).
         if self._looks_like_chile_receipt(upper):
             return "CLP"
-        if "CLP" in upper:
+        if re.search(r"\bPEN\b", upper) or "S/" in upper or re.search(r"\bSOLES\b", upper):
+            return "PEN"
+        if re.search(r"\bUSD\b", upper) or "US$" in upper or "DOLAR" in upper or "DÓLAR" in upper:
+            return "USD"
+        if re.search(r"\bEUR\b", upper) or "EURO" in upper or "€" in text:
+            return "EUR"
+        if re.search(r"\bCLP\b", upper):
             return "CLP"
-        if "CNY" in upper or "RMB" in upper:
+        if re.search(r"\bCNY\b", upper) or "RMB" in upper or "YUAN" in upper:
             return "CNY"
         return None
 
@@ -489,6 +725,115 @@ class OCRService:
             if token in upper_text:
                 return True
         return False
+
+    def _extract_invoice_number_from_text(self, text: str) -> str | None:
+        if not text:
+            return None
+        # Match patterns like "Folio: 123", "N° 456", "Invoice #789", "Nro. Factura: 001"
+        patterns = [
+            r"(?:folio|n[°º]|nro\.?\s*(?:factura|boleta)?|invoice\s*#?)\s*[:.]?\s*(\d[\d\-]+)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        return None
+
+    def _extract_tax_amount(self, entities: list[Any], text: str) -> float | None:
+        # Try entities first
+        aliases = set(_ENTITY_TYPE_ALIASES.get("tax_amount", ()))
+        for entity in entities:
+            entity_type = (getattr(entity, "type_", "") or "").lower()
+            if entity_type in aliases:
+                amount = self._parse_amount_text(self._entity_text_value(entity))
+                if amount is not None:
+                    return amount
+        # Fallback: extract from text
+        if not text:
+            return None
+        match = re.search(
+            r"(?:IVA|impuesto|tax|I\.V\.A\.?)\s*[:.]?\s*\$?\s*([0-9][0-9\., ]+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return self._parse_amount_text(match.group(1))
+        return None
+
+    def _extract_professional_fee_amount(self, entities: list[Any], text: str, target: str) -> float | None:
+        aliases = set(_ENTITY_TYPE_ALIASES.get(target, ()))
+        for entity in entities:
+            entity_type = (getattr(entity, "type_", "") or "").lower()
+            if entity_type in aliases:
+                amount = self._parse_amount_text(self._entity_text_value(entity))
+                if amount is not None:
+                    return amount
+
+        label_map = {
+            "gross_amount": (
+                "total honorarios",
+                "monto bruto",
+                "total bruto",
+                "bruto",
+                "honorarios",
+            ),
+            "withholding_amount": (
+                "retencion",
+                "retención",
+                "monto retenido",
+                "impuesto retenido",
+            ),
+            "net_amount": (
+                "total boleta",
+                "total liquido",
+                "total líquido",
+                "liquido a pagar",
+                "líquido a pagar",
+                "liquido",
+                "líquido",
+            ),
+        }
+        for label in label_map.get(target, ()):
+            pattern = rf"{re.escape(label)}([^\n\r]{{0,80}})"
+            match = re.search(pattern, text or "", flags=re.IGNORECASE)
+            if match:
+                candidates = re.findall(r"([0-9][0-9\., ]+)\s*(%)?", match.group(1))
+                for candidate, percent_marker in candidates:
+                    if percent_marker:
+                        continue
+                    amount = self._parse_amount_text(candidate)
+                    if amount is not None:
+                        return amount
+        return None
+
+    def _extract_withholding_rate_from_text(self, text: str) -> float | None:
+        match = re.search(
+            r"(?:retenci[oó]n|ppm)[^\d]{0,20}(\d{1,2}(?:[,.]\d{1,2})?)\s*%",
+            text or "",
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None
+        return self._parse_amount_text(match.group(1).replace(",", "."))
+
+    def _extract_tax_id_from_text(self, text: str, *, role: str = "issuer") -> str | None:
+        """Extract tax IDs (RUT, RUC, RFC, CUIT, NIT) from OCR text.
+
+        For 'issuer', returns the first tax ID found (typically the seller).
+        For 'receiver', tries to find a second tax ID if present.
+        """
+        if not text:
+            return None
+        # Find all tax ID occurrences
+        pattern = r"(?:RUT|RUC|RFC|CUIT|NIT)\s*[:.]?\s*([\d\.\-]+[\dkK]?)"
+        matches = list(re.finditer(pattern, text, flags=re.IGNORECASE))
+        if not matches:
+            return None
+        if role == "issuer":
+            return matches[0].group(0).strip()
+        if role == "receiver" and len(matches) >= 2:
+            return matches[1].group(0).strip()
+        return None
 
     def _normalize_merchant_name(self, merchant: str | None) -> str | None:
         if not merchant:

@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import logging
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from app.config import Settings
+
+logger = logging.getLogger(__name__)
+_IAM_SIGNING_SCOPES = (
+    "https://www.googleapis.com/auth/iam",
+    "https://www.googleapis.com/auth/cloud-platform",
+)
 
 
 class StorageUploadError(RuntimeError):
@@ -30,6 +37,7 @@ class GCSStorageService:
 
     def __post_init__(self) -> None:
         self._bucket = None
+        self._client = None
         if self.enabled:
             self._connect()
 
@@ -40,14 +48,23 @@ class GCSStorageService:
     def _connect(self) -> None:
         try:
             from google.cloud import storage
+            import google.auth
         except ImportError as exc:  # pragma: no cover - dependency setup
             raise RuntimeError(
                 "Faltan dependencias para GCS. Instala google-cloud-storage."
             ) from exc
 
-        client = storage.Client.from_service_account_json(
-            self.settings.google_application_credentials
-        )
+        credentials_path = (self.settings.google_application_credentials or "").strip()
+        if credentials_path:
+            client = storage.Client.from_service_account_json(credentials_path)
+        else:
+            # Force ADC tokens with scopes required for IAM SignBlob fallback.
+            credentials, project_id = google.auth.default(scopes=list(_IAM_SIGNING_SCOPES))
+            client = storage.Client(
+                project=project_id or None,
+                credentials=credentials,
+            )
+        self._client = client
         self._bucket = client.bucket(self.settings.gcs_bucket_name)
 
     def upload_receipt_from_url(
@@ -83,7 +100,31 @@ class GCSStorageService:
         ttl = max(ttl, 1)
         blob = self._bucket.blob(object_key)
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
-        return str(blob.generate_signed_url(version="v4", expiration=expires_at, method="GET"))
+        try:
+            return str(
+                blob.generate_signed_url(
+                    version="v4",
+                    expiration=expires_at,
+                    method="GET",
+                )
+            )
+        except AttributeError as exc:
+            if "you need a private key to sign credentials" not in str(exc).lower():
+                raise
+
+            signing_kwargs = self._build_iam_signing_kwargs()
+            if not signing_kwargs:
+                raise
+
+            logger.info("Falling back to IAM-based GCS signed URL generation")
+            return str(
+                blob.generate_signed_url(
+                    version="v4",
+                    expiration=expires_at,
+                    method="GET",
+                    **signing_kwargs,
+                )
+            )
 
     def upload_report_pdf(
         self,
@@ -177,3 +218,57 @@ class GCSStorageService:
         ) or "no-trip"
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         return f"{prefix}/{safe_phone}/{safe_trip_id}/consolidated_{timestamp}.pdf"
+
+    def _build_iam_signing_kwargs(self) -> dict[str, str] | None:
+        credentials = self._credentials_with_iam_scopes(getattr(self._client, "_credentials", None))
+        if credentials is None:
+            return None
+
+        service_account_email = str(
+            getattr(credentials, "service_account_email", "")
+            or getattr(self._client, "_service_account_email", "")
+            or ""
+        ).strip()
+        if not service_account_email:
+            return None
+
+        # Force refresh to guarantee the access token includes IAM signing scopes.
+        try:
+            from google.auth.transport.requests import Request
+        except ImportError:
+            return None
+        credentials.refresh(Request())
+        token = str(getattr(credentials, "token", "") or "").strip()
+
+        if not token:
+            return None
+
+        return {
+            "service_account_email": service_account_email,
+            "access_token": token,
+        }
+
+    def _credentials_with_iam_scopes(self, credentials):
+        if credentials is None:
+            return None
+
+        try:
+            from google.auth.credentials import with_scopes_if_required
+
+            scoped = with_scopes_if_required(credentials, list(_IAM_SIGNING_SCOPES))
+            if scoped is not None and scoped is not credentials:
+                return scoped
+        except Exception:
+            pass
+
+        has_with_scopes = callable(getattr(type(credentials), "with_scopes", None)) or (
+            "with_scopes" in getattr(credentials, "__dict__", {})
+            and callable(getattr(credentials, "with_scopes", None))
+        )
+        if has_with_scopes:
+            try:
+                return credentials.with_scopes(list(_IAM_SIGNING_SCOPES))
+            except Exception:
+                logger.warning("Could not apply IAM scopes to ADC credentials", exc_info=True)
+                return credentials
+        return credentials

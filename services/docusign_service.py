@@ -4,6 +4,7 @@ import json
 import logging
 import base64
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -18,9 +19,18 @@ class DocusignError(RuntimeError):
     pass
 
 
+class DocusignHttpError(DocusignError):
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 @dataclass
 class DocusignService:
     settings: Settings
+
+    def __post_init__(self) -> None:
+        self._token_refresh_lock = Lock()
 
     @property
     def enabled(self) -> bool:
@@ -46,7 +56,7 @@ class DocusignService:
 
         clean_signer_name = str(signer_name or "").strip()
         clean_signer_email = str(signer_email or "").strip()
-        clean_document_name = str(document_name or "").strip() or "Reporte viaticos"
+        clean_document_name = str(document_name or "").strip() or "Rendicion de gastos"
         clean_document_url = str(document_url or "").strip()
 
         if not clean_signer_name:
@@ -77,7 +87,7 @@ class DocusignService:
             signer_payload["clientUserId"] = str(client_user_id)
 
         payload = {
-            "emailSubject": email_subject or "Firma requerida - reporte de viaticos",
+            "emailSubject": email_subject or "Firma requerida - rendicion de gastos",
             "documents": [
                 {
                     "documentId": "1",
@@ -183,12 +193,53 @@ class DocusignService:
             "Accept": "application/json",
             "User-Agent": "TravelExpenseAgent/1.0",
         }
-        return self._request_json_absolute(
+        token_response = self._request_json_absolute(
             method="POST",
             url="https://account-d.docusign.com/oauth/token",
             headers=headers,
             body=body,
         )
+        self._persist_tokens_from_response(token_response)
+        return token_response
+
+    def refresh_access_token(self) -> dict[str, Any]:
+        integration_key = str(self.settings.docusign_integration_key or "").strip()
+        secret_key = str(self.settings.docusign_secret_key or "").strip()
+        refresh_token = str(self.settings.docusign_refresh_token or "").strip()
+        if not integration_key:
+            raise DocusignError("DOCUSIGN_INTEGRATION_KEY vacio")
+        if not secret_key:
+            raise DocusignError("DOCUSIGN_SECRET_KEY vacio")
+        if not refresh_token:
+            raise DocusignError("DOCUSIGN_REFRESH_TOKEN vacio")
+
+        basic_token = base64.b64encode(f"{integration_key}:{secret_key}".encode("utf-8")).decode(
+            "ascii"
+        )
+        body = urlencode(
+            {
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+            }
+        ).encode("utf-8")
+        headers = {
+            "Authorization": f"Basic {basic_token}",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "User-Agent": "TravelExpenseAgent/1.0",
+        }
+        token_response = self._request_json_absolute(
+            method="POST",
+            url="https://account-d.docusign.com/oauth/token",
+            headers=headers,
+            body=body,
+        )
+        self._persist_tokens_from_response(token_response)
+        logger.info(
+            "DocuSign access token refreshed expires_in=%s",
+            token_response.get("expires_in"),
+        )
+        return token_response
 
     def _request_json(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         base_url = str(self.settings.docusign_base_url or "").strip().rstrip("/")
@@ -196,6 +247,24 @@ class DocusignService:
             raise DocusignError("DOCUSIGN_BASE_URL vacio")
 
         url = f"{base_url}{path}"
+        body = None
+        if payload is not None:
+            body = json.dumps(payload).encode("utf-8")
+        return self._request_json_with_auto_refresh(
+            method=method,
+            url=url,
+            body=body,
+            allow_refresh=True,
+        )
+
+    def _request_json_with_auto_refresh(
+        self,
+        *,
+        method: str,
+        url: str,
+        body: bytes | None,
+        allow_refresh: bool,
+    ) -> dict[str, Any]:
         token = str(self.settings.docusign_access_token or "").strip()
         if not token:
             raise DocusignError("DOCUSIGN_ACCESS_TOKEN vacio")
@@ -206,12 +275,21 @@ class DocusignService:
             "Content-Type": "application/json",
             "User-Agent": "TravelExpenseAgent/1.0",
         }
-        body = None
-        if payload is not None:
-            body = json.dumps(payload).encode("utf-8")
-
         request = Request(url, method=method.upper(), headers=headers, data=body)
-        return self._read_json_response(request)
+        try:
+            return self._read_json_response(request)
+        except DocusignHttpError as exc:
+            if exc.status_code != 401 or not allow_refresh or not self._can_auto_refresh_token():
+                raise
+            logger.warning("DocuSign token expired; refreshing token and retrying request")
+            with self._token_refresh_lock:
+                self.refresh_access_token()
+            return self._request_json_with_auto_refresh(
+                method=method,
+                url=url,
+                body=body,
+                allow_refresh=False,
+            )
 
     def _request_json_absolute(
         self,
@@ -224,6 +302,21 @@ class DocusignService:
         request = Request(url, method=method.upper(), headers=headers, data=body)
         return self._read_json_response(request)
 
+    def _can_auto_refresh_token(self) -> bool:
+        return bool(
+            str(self.settings.docusign_integration_key or "").strip()
+            and str(self.settings.docusign_secret_key or "").strip()
+            and str(self.settings.docusign_refresh_token or "").strip()
+        )
+
+    def _persist_tokens_from_response(self, token_response: dict[str, Any]) -> None:
+        access_token = str(token_response.get("access_token", "") or "").strip()
+        refresh_token = str(token_response.get("refresh_token", "") or "").strip()
+        if access_token:
+            self.settings.docusign_access_token = access_token
+        if refresh_token:
+            self.settings.docusign_refresh_token = refresh_token
+
     def _read_json_response(self, request: Request) -> dict[str, Any]:
         try:
             with urlopen(request, timeout=20) as response:
@@ -232,8 +325,8 @@ class DocusignService:
             details = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
             logger.warning("DocuSign HTTP error status=%s details=%s", exc.code, details)
             if exc.code == 401:
-                raise DocusignError("DocuSign access token invalido o expirado") from exc
-            raise DocusignError(f"DocuSign respondio HTTP {exc.code}") from exc
+                raise DocusignHttpError(401, "DocuSign access token invalido o expirado") from exc
+            raise DocusignHttpError(exc.code, f"DocuSign respondio HTTP {exc.code}") from exc
         except URLError as exc:
             raise DocusignError("No se pudo conectar con DocuSign") from exc
 

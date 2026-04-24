@@ -10,8 +10,10 @@ from typing import Any, Optional
 from urllib.parse import urlparse
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from app.api import backoffice_router
 from app.config import settings
 from services.consolidated_document_service import ConsolidatedDocumentService
 from services.conversation_service import (
@@ -20,8 +22,11 @@ from services.conversation_service import (
     CORRECTION_FIELD_OPTIONS,
     COUNTRY_OPTIONS,
     CURRENCY_OPTIONS,
+    DOCUMENT_TYPE_OPTIONS,
     ConversationService,
 )
+from services.backoffice_auth_service import BackofficeAuthService
+from services.backoffice_service import BackofficeService
 from services.docusign_service import DocusignError, DocusignService
 from services.expense_service import ExpenseService
 from services.llm_service import LLMService
@@ -29,16 +34,23 @@ from services.ocr_service import OCRService
 from services.scheduler_service import SchedulerService
 from services.sheets_service import SheetsService
 from services.storage_service import GCSStorageService
-from services.travel_service import TravelService
-from services.whatsapp_service import TwilioDailyLimitExceededError, WhatsAppService
+from services.expense_case_service import ExpenseCaseService
+from services.statuses import ExpenseStatus, RendicionStatus
+from services.whatsapp_service import (
+    MetaAccessTokenExpiredError,
+    TwilioDailyLimitExceededError,
+    WhatsAppService,
+)
 from utils.helpers import make_id, normalize_whatsapp_phone, utc_now_iso
 
 logger = logging.getLogger(__name__)
 
 
 STICKY_CONTEXT_KEYS = (
+    "message_log",
     "scheduler",
     "pending_receipts",
+    "submission_closure",
     "trip_closure",
     "active_receipt_message_id",
     "receipt_batch_notice",
@@ -46,12 +58,20 @@ STICKY_CONTEXT_KEYS = (
 )
 ACTIVE_RECEIPT_STATES = {"PROCESSING", "NEEDS_INFO", "CONFIRM_SUMMARY"}
 MAX_PROCESSED_MESSAGE_IDS = 50
+RECEIPT_BATCH_NOTICE_DELAY_SECONDS = 2
+MAX_MESSAGE_LOG_ITEMS = 100
+NO_DOCUMENT_IDENTIFIED_REPLY = (
+    "No se identificaron boletas/documentos en esa imagen. "
+    "Envíame una boleta, factura, ticket o comprobante para procesarlo."
+)
 
 
 @dataclass
 class ServiceContainer:
     sheets: SheetsService
-    travel: TravelService
+    backoffice_auth: BackofficeAuthService
+    backoffice: BackofficeService
+    expense_case: ExpenseCaseService
     storage: GCSStorageService
     consolidated_document: ConsolidatedDocumentService
     docusign: DocusignService
@@ -64,10 +84,28 @@ class ServiceContainer:
 
 def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name, debug=settings.debug)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[settings.backoffice_frontend_origin, "http://localhost:3000"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     sheets_service = SheetsService(settings=settings)
+    backoffice_auth_service = BackofficeAuthService(
+        settings=settings,
+        sheets_service=sheets_service,
+    )
+    backoffice_auth_service.ensure_default_admin()
     llm_service = LLMService(settings=settings)
-    expense_service = ExpenseService(sheets_service=sheets_service, llm_service=llm_service)
+    from services.review_score_service import ReviewScoreService
+    review_score_service = ReviewScoreService()
+    expense_service = ExpenseService(
+        sheets_service=sheets_service,
+        llm_service=llm_service,
+        review_score_service=review_score_service,
+    )
     whatsapp_service = WhatsAppService(settings=settings)
     storage_service = GCSStorageService(settings=settings)
     docusign_service = DocusignService(settings=settings)
@@ -77,7 +115,9 @@ def create_app() -> FastAPI:
     )
     container = ServiceContainer(
         sheets=sheets_service,
-        travel=TravelService(sheets_service=sheets_service),
+        backoffice_auth=backoffice_auth_service,
+        backoffice=BackofficeService(sheets_service=sheets_service),
+        expense_case=ExpenseCaseService(sheets_service=sheets_service),
         storage=storage_service,
         consolidated_document=consolidated_document_service,
         docusign=docusign_service,
@@ -94,6 +134,7 @@ def create_app() -> FastAPI:
         ),
     )
     app.state.services = container
+    app.include_router(backoffice_router)
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -145,11 +186,11 @@ def create_app() -> FastAPI:
         if source == "signing_complete" and not error:
             clean_document_id = str(document_id or "").strip()
             if clean_document_id:
-                document = container.sheets.get_trip_document_by_id(clean_document_id) or {}
+                document = container.sheets.get_expense_case_document_by_id(clean_document_id) or {}
                 current_status = str(document.get("signature_status", "") or "").strip().lower()
                 if document and current_status != "completed":
                     completed_at = utc_now_iso()
-                    container.sheets.update_trip_document(
+                    container.sheets.update_expense_case_document(
                         clean_document_id,
                         {
                             "updated_at": completed_at,
@@ -158,12 +199,28 @@ def create_app() -> FastAPI:
                             "signature_error": "",
                         },
                     )
+                    # Update rendición confirmation status on the case
+                    case_id = str(document.get("case_id", document.get("trip_id", "")) or "").strip()
+                    if case_id:
+                        container.sheets.update_expense_case(
+                            case_id,
+                            {
+                                "user_confirmed_at": completed_at,
+                                "user_confirmation_status": "confirmed",
+                                "rendicion_status": RendicionStatus.APPROVED,
+                            },
+                        )
+                        expense_case = container.backoffice.sync_case_settlement(case_id)
+                    else:
+                        expense_case = None
                     phone = str(document.get("phone", "") or "").strip()
                     if phone:
                         try:
                             container.whatsapp.send_outbound_text(
                                 phone,
-                                "Recibimos la firma del documento. El viaje quedó oficialmente cerrado.",
+                                container.backoffice.build_case_settlement_whatsapp_message(
+                                    expense_case or {}
+                                ),
                             )
                         except Exception:
                             logger.exception(
@@ -238,19 +295,19 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/jobs/reminders/run")
-    async def run_trip_reminders(
+    async def run_submission_reminders(
         dry_run: bool = False,
         x_scheduler_token: Optional[str] = Header(default=None, alias="X-Scheduler-Token"),
     ) -> dict[str, Any]:
         configured_token = (settings.scheduler_endpoint_token or "").strip()
         if configured_token and x_scheduler_token != configured_token:
             raise HTTPException(status_code=401, detail="Unauthorized scheduler token")
-        return container.scheduler.run_trip_reminders(dry_run=dry_run)
+        return container.scheduler.run_submission_reminders(dry_run=dry_run)
 
     @app.post("/jobs/documents/consolidated/generate")
     async def generate_consolidated_document(
         phone: str = Query(..., description="Telefono del empleado en formato E.164"),
-        trip_id: str = Query(..., description="Identificador del viaje"),
+        case_id: str = Query(..., description="Identificador del caso o rendición"),
         include_signed_url: bool = Query(
             True, description="Incluye URL temporal firmada para descarga"
         ),
@@ -260,9 +317,9 @@ def create_app() -> FastAPI:
         if configured_token and x_scheduler_token != configured_token:
             raise HTTPException(status_code=401, detail="Unauthorized scheduler token")
         try:
-            return container.consolidated_document.generate_for_trip(
+            return container.consolidated_document.generate_for_case(
                 phone=phone,
-                trip_id=trip_id,
+                case_id=case_id,
                 include_signed_url=include_signed_url,
             )
         except ValueError as exc:
@@ -271,9 +328,9 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except Exception as exc:  # pragma: no cover - runtime dependency/errors
             logger.exception(
-                "Consolidated document generation failed due to upstream dependency phone=%s trip_id=%s",
+                "Consolidated document generation failed due to upstream dependency phone=%s case_id=%s",
                 phone,
-                trip_id,
+                case_id,
             )
             raise HTTPException(
                 status_code=503,
@@ -283,7 +340,7 @@ def create_app() -> FastAPI:
     @app.post("/jobs/documents/signature/start")
     async def start_docusign_signature(
         phone: str = Query(..., description="Telefono del empleado en formato E.164"),
-        trip_id: str = Query(..., description="Identificador del viaje"),
+        case_id: str = Query(..., description="Identificador del caso o rendición"),
         signer_email: str = Query(..., description="Email del firmante"),
         signer_name: str = Query("", description="Nombre del firmante (opcional)"),
         embedded_signing: bool = Query(
@@ -299,12 +356,12 @@ def create_app() -> FastAPI:
         if not container.docusign.enabled:
             raise HTTPException(status_code=503, detail="DocuSign no esta configurado")
 
-        latest_document = container.sheets.get_latest_trip_document_by_phone_trip(phone, trip_id)
+        latest_document = container.sheets.get_latest_expense_case_document_by_phone_case(phone, case_id)
         if not latest_document:
             raise HTTPException(
                 status_code=404,
                 detail=(
-                    "No existe documento consolidado para ese phone/trip_id. "
+                    "No existe documento consolidado para ese phone/case_id. "
                     "Primero genera el consolidado."
                 ),
             )
@@ -329,7 +386,7 @@ def create_app() -> FastAPI:
             envelope = container.docusign.create_envelope_from_remote_pdf(
                 signer_name=signer_name_final,
                 signer_email=signer_email,
-                document_name=f"Reporte viaticos {trip_id}",
+                document_name=f"Rendicion de gastos {case_id}",
                 document_url=document_url,
                 client_user_id=phone if embedded_signing else None,
             )
@@ -348,7 +405,7 @@ def create_app() -> FastAPI:
                 )
 
             status_time = str(envelope.get("statusDateTime", "") or "").strip() or utc_now_iso()
-            container.sheets.update_trip_document(
+            container.sheets.update_expense_case_document(
                 document_id,
                 {
                     "updated_at": status_time,
@@ -363,7 +420,7 @@ def create_app() -> FastAPI:
 
             return {
                 "document_id": document_id,
-                "trip_id": str(latest_document.get("trip_id", "") or ""),
+                "case_id": str(latest_document.get("case_id", latest_document.get("trip_id", "")) or ""),
                 "signature_provider": "docusign",
                 "signature_status": "pending",
                 "docusign_envelope_id": envelope_id,
@@ -371,7 +428,7 @@ def create_app() -> FastAPI:
             }
         except DocusignError as exc:
             if document_id:
-                container.sheets.update_trip_document(
+                container.sheets.update_expense_case_document(
                     document_id,
                     {
                         "signature_provider": "docusign",
@@ -383,7 +440,7 @@ def create_app() -> FastAPI:
 
     @app.get("/r/sign/{document_id}")
     async def redirect_short_signing_url(document_id: str) -> RedirectResponse:
-        document = container.sheets.get_trip_document_by_id(document_id)
+        document = container.sheets.get_expense_case_document_by_id(document_id)
         if not document:
             raise HTTPException(status_code=404, detail="Documento no encontrado")
         signing_url = str(document.get("signature_url", "") or "").strip()
@@ -433,7 +490,7 @@ def create_app() -> FastAPI:
                 media_entries = _extract_media_entries(payload)
                 if not media_entries:
                     xml = container.whatsapp.build_twiml_message(
-                        "No pude leer las imágenes adjuntas. Reenvía la boleta, por favor."
+                        "No pude leer las imágenes adjuntas. Reenvía el comprobante, por favor."
                     )
                     return Response(
                         content=xml,
@@ -445,6 +502,14 @@ def create_app() -> FastAPI:
                 conversation = container.conversation.ensure_conversation(
                     container.sheets.get_conversation(phone)
                 )
+                _log_inbound_media_message(
+                    container,
+                    phone,
+                    media_entries,
+                    caption=body,
+                    message_id=str(payload.get("MessageSid") or payload.get("SmsSid") or "").strip()
+                    or None,
+                )
                 context = conversation.get("context_json", {})
                 pending_receipts = _get_pending_receipts(context)
                 state = str(conversation.get("state", "WAIT_RECEIPT") or "WAIT_RECEIPT")
@@ -452,8 +517,8 @@ def create_app() -> FastAPI:
                 if state in ACTIVE_RECEIPT_STATES:
                     queued_count = _enqueue_media_entries(container, phone, media_entries)
                     xml = container.whatsapp.build_twiml_message(
-                        "Recibí tu boleta y la dejé en cola. "
-                        f"Tienes {queued_count} boleta(s) pendientes; "
+                        "Recibí tu documento y lo dejé en cola. "
+                        f"Tienes {queued_count} documento(s) pendientes; "
                         "las revisaré una por una."
                     )
                     return Response(
@@ -466,7 +531,6 @@ def create_app() -> FastAPI:
                 if pending_receipts:
                     _enqueue_media_entries(container, phone, media_entries)
                     started = _maybe_schedule_next_pending_media(
-                        background_tasks=background_tasks,
                         container=container,
                         phone=phone,
                     )
@@ -474,7 +538,7 @@ def create_app() -> FastAPI:
                         container.whatsapp.build_empty_twiml()
                         if started
                         else container.whatsapp.build_twiml_message(
-                            "Recibí tu boleta y la dejé en cola para procesarla."
+                            "Recibí tu documento y lo dejé en cola para procesarlo."
                         )
                     )
                     return Response(
@@ -489,8 +553,7 @@ def create_app() -> FastAPI:
                 if extra_entries:
                     _enqueue_media_entries(container, phone, extra_entries)
                 _set_processing_lock(container, phone)
-                background_tasks.add_task(
-                    _process_media_message_async,
+                _spawn_media_processing_task(
                     container,
                     phone,
                     {
@@ -500,9 +563,8 @@ def create_app() -> FastAPI:
                         "InboundMessageId": first_entry.get("message_id", ""),
                     },
                 )
-                xml = container.whatsapp.build_twiml_message(
-                    "Recibí tu boleta y ya la estoy procesando."
-                )
+                reply = "Boleta recibida. Ya la estoy procesando."
+                xml = container.whatsapp.build_twiml_message(reply)
                 return Response(
                     content=xml,
                     media_type="application/xml",
@@ -510,13 +572,20 @@ def create_app() -> FastAPI:
                     background=background_tasks,
                 )
             else:
+                _log_inbound_text_message(
+                    container,
+                    phone,
+                    body,
+                    message_id=str(payload.get("MessageSid") or payload.get("SmsSid") or "").strip()
+                    or None,
+                )
                 response_text = _handle_text_message(container, phone, body)
                 _maybe_schedule_next_pending_media(
-                    background_tasks=background_tasks,
                     container=container,
                     phone=phone,
                 )
 
+            _log_outbound_message(container, phone, _coerce_response_to_text(response_text))
             xml = container.whatsapp.build_twiml_message(_coerce_response_to_text(response_text))
             return Response(content=xml, media_type="application/xml", status_code=status.HTTP_200_OK)
         except Exception as exc:  # pragma: no cover - runtime dependency/errors
@@ -529,6 +598,70 @@ def create_app() -> FastAPI:
                 message += f"\nDetalle técnico: {exc}"
             xml = container.whatsapp.build_twiml_message(message)
             return Response(content=xml, media_type="application/xml", status_code=status.HTTP_200_OK)
+
+    # ── Test simulation endpoint (debug only) ──────────────────────
+    @app.post("/test/simulate")
+    async def test_simulate(request: Request) -> dict[str, Any]:
+        """Synchronous test endpoint for conversation simulation. Only in debug mode."""
+        if not settings.debug:
+            raise HTTPException(status_code=404, detail="Not found")
+
+        payload = await request.json()
+        phone = normalize_whatsapp_phone(payload.get("phone", ""))
+        msg_type = payload.get("type", "text")  # "media" or "text"
+        body = payload.get("body", "")
+        media_url = payload.get("media_url", "")
+        media_content_type = payload.get("media_content_type", "image/png")
+
+        if not phone:
+            raise HTTPException(status_code=400, detail="phone is required")
+
+        employee = container.sheets.get_employee_by_phone(phone)
+        if not employee:
+            return {"reply": "Número no registrado como empleado.", "state": "error"}
+
+        if msg_type == "media":
+            if not media_url:
+                raise HTTPException(status_code=400, detail="media_url is required for type=media")
+            fake_payload = {
+                "MediaUrl0": media_url,
+                "MediaContentType0": media_content_type,
+                "MessageSid": f"SIM{make_id('MSG')}",
+            }
+            reply = _handle_media_message(container, phone, fake_payload)
+        else:
+            reply = _handle_text_message(container, phone, body)
+
+        conversation = container.sheets.get_conversation(phone)
+        reply_text = reply if isinstance(reply, str) else "\n".join(reply) if isinstance(reply, list) else str(reply)
+
+        return {
+            "reply": reply_text,
+            "state": conversation.get("state", "") if conversation else "",
+            "current_step": conversation.get("current_step", "") if conversation else "",
+        }
+
+    @app.post("/test/reset")
+    async def test_reset(request: Request) -> dict[str, Any]:
+        """Reset conversation state for testing. Only in debug mode."""
+        if not settings.debug:
+            raise HTTPException(status_code=404, detail="Not found")
+
+        payload = await request.json()
+        phone = normalize_whatsapp_phone(payload.get("phone", ""))
+        if not phone:
+            raise HTTPException(status_code=400, detail="phone is required")
+
+        container.sheets.update_conversation(
+            phone,
+            {
+                "phone": phone,
+                "state": "WAIT_RECEIPT",
+                "current_step": "",
+                "context_json": container.conversation.default_context(),
+            },
+        )
+        return {"status": "reset", "phone": phone}
 
     return app
 
@@ -598,7 +731,7 @@ def _handle_media_message(container: ServiceContainer, phone: str, payload: dict
         logger.exception("OCR processing failed for phone=%s", phone)
         ocr_data = {}
         ocr_warning = (
-            "No pude extraer datos automáticamente de la boleta. "
+            "No pude extraer datos automáticamente del comprobante. "
             "Te pediré los datos manualmente."
         )
         if settings.debug:
@@ -637,25 +770,84 @@ def _handle_media_message(container: ServiceContainer, phone: str, payload: dict
                 },
             )
             return (
-                "No pude almacenar la boleta en el storage privado. "
+                "No pude almacenar el comprobante en el storage privado. "
                 "Inténtalo nuevamente en unos segundos."
             )
 
     ocr_data["receipt_storage_provider"] = storage_result.get("receipt_storage_provider", "")
     ocr_data["receipt_object_key"] = storage_result.get("receipt_object_key", "")
 
-    trip_started_at = time.perf_counter()
-    trip = container.travel.get_active_trip_for_phone(phone)
+    if not bool(ocr_data.get("is_document")):
+        container.sheets.update_conversation(
+            phone,
+            {
+                "state": "WAIT_RECEIPT",
+                "current_step": "",
+                "context_json": _clear_active_receipt_message_id(
+                    _merge_context_preserving_sticky(
+                        _get_latest_context(container, phone),
+                        container.conversation.default_context(),
+                    )
+                ),
+            },
+        )
+        logger.info("Image rejected as non-document phone=%s media_id=%s", phone, media_id or None)
+        reply = NO_DOCUMENT_IDENTIFIED_REPLY
+        if ocr_warning:
+            reply = f"{ocr_warning}\n\n{reply}"
+        return reply
+
+    case_lookup_started_at = time.perf_counter()
+    expense_case_service = getattr(container, "expense_case", None) or getattr(container, "travel", None)
+    expense_case = (
+        expense_case_service.get_active_case_for_phone(phone)
+        if hasattr(expense_case_service, "get_active_case_for_phone")
+        else expense_case_service.get_active_trip_for_phone(phone)
+    )
     logger.info(
-        "Active trip lookup completed phone=%s elapsed_ms=%d found=%s trip_id=%s",
+        "Active expense case lookup completed phone=%s elapsed_ms=%d found=%s case_id=%s",
         phone,
-        int((time.perf_counter() - trip_started_at) * 1000),
-        bool(trip),
-        str((trip or {}).get("trip_id") or "").strip() or None,
+        int((time.perf_counter() - case_lookup_started_at) * 1000),
+        bool(expense_case),
+        str((expense_case or {}).get("case_id") or "").strip() or None,
     )
 
+    if not expense_case:
+        review_draft = container.expense.enrich_draft_expense(ocr_data)
+        review_expense = container.expense.create_expense_for_review(
+            phone=phone,
+            draft_expense=review_draft,
+            review_reason="no_active_case",
+        )
+        container.sheets.update_conversation(
+            phone,
+            {
+                "state": "WAIT_RECEIPT",
+                "current_step": "",
+                "context_json": _clear_active_receipt_message_id(
+                    _merge_context_preserving_sticky(
+                        _get_latest_context(container, phone),
+                        container.conversation.default_context(),
+                    )
+                ),
+            },
+        )
+        logger.info(
+            "Receipt routed to backoffice review phone=%s expense_id=%s review_reason=%s",
+            phone,
+            review_expense.get("expense_id"),
+            review_expense.get("review_reason"),
+        )
+        review_reply = (
+            "No encontré un caso activo asociado a tu usuario. "
+            "Un operador deberá revisarlo."
+        )
+        if ocr_warning:
+            review_reply = f"{ocr_warning}\n\n{review_reply}"
+        return review_reply
+
     transition_started_at = time.perf_counter()
-    transition = container.conversation.process_ocr_result(phone, ocr_data, trip)
+    transition = container.conversation.process_ocr_result(phone, ocr_data, expense_case)
     logger.info(
         "Conversation transition completed phone=%s elapsed_ms=%d target_state=%s current_step=%s draft=%s",
         phone,
@@ -678,7 +870,7 @@ def _handle_media_message(container: ServiceContainer, phone: str, payload: dict
     )
     reply = transition.get(
         "reply",
-        "Recibí tu boleta. Estoy procesándola.",
+        "Recibí tu comprobante. Estoy procesándolo.",
     )
     if ocr_warning:
         reply = f"{ocr_warning}\n\n{reply}"
@@ -693,6 +885,7 @@ def _handle_media_message(container: ServiceContainer, phone: str, payload: dict
 
 def _handle_text_message(container: ServiceContainer, phone: str, body: str) -> str | list[str]:
     conversation = container.sheets.get_conversation(phone)
+    is_new_conversation = not conversation
     if not conversation:
         conversation = container.sheets.update_conversation(
             phone,
@@ -703,33 +896,67 @@ def _handle_text_message(container: ServiceContainer, phone: str, body: str) -> 
             },
         )
 
-    closure_reply = container.scheduler.handle_trip_closure_user_response(
+    closure_reply = container.scheduler.handle_submission_closure_user_response(
         phone=phone,
         message=body,
     )
     if closure_reply:
         return closure_reply
 
-    result = container.conversation.handle_text_message(conversation, body)
+    simple_confirmation_reply = container.scheduler.handle_simple_document_confirmation_user_response(
+        phone=phone,
+        message=body,
+    )
+    if simple_confirmation_reply:
+        return simple_confirmation_reply
+
+    direct_close_reply = container.scheduler.handle_direct_submission_close_command(
+        phone=phone,
+        message=body,
+    )
+    if direct_close_reply:
+        return direct_close_reply
+
+    result = container.conversation.handle_text_message(conversation, body, phone=phone)
 
     if result.get("action") == "save_expense":
         draft = result.get("context_json", {}).get("draft_expense", {})
         try:
+            latest_context = _get_latest_context(container, phone)
+            source_message_id = _get_active_receipt_message_id(latest_context)
+            if isinstance(draft, dict) and source_message_id:
+                draft = {**draft, "source_message_id": source_message_id}
             saved = container.expense.save_confirmed_expense(phone, draft)
-            has_pending_receipts = bool(_get_pending_receipts(_get_latest_context(container, phone)))
-            budget_message = None
-            closing_line = "Envíame otra boleta cuando quieras."
-            if has_pending_receipts:
-                closing_line = "Recibido. Ahora voy con la siguiente boleta."
+            has_pending_receipts = bool(_get_pending_receipts(latest_context))
+            policy_message = None
+            saved_status = str(saved.get("status", "") or "").strip().lower()
+            if saved_status == ExpenseStatus.PENDING_REVIEW:
+                reply_messages = [
+                    "No encontré un caso activo asociado a tu usuario. Un operador deberá revisarlo.",
+                ]
+                if has_pending_receipts:
+                    reply_messages.append("Ahora voy con el siguiente documento.")
+                else:
+                    reply_messages.append("Si tienes más comprobantes, envíamelos cuando quieras.")
             else:
-                budget_message = container.expense.build_budget_progress_message(
+                closing_line = "Si tienes más comprobantes, envíamelos cuando quieras."
+                if has_pending_receipts:
+                    closing_line = "Recibido. Ahora voy con el siguiente documento."
+                case_id = str(saved.get("case_id", saved.get("trip_id", "")) or "")
+                policy_status_message = container.expense.build_policy_status_message(
                     phone=phone,
-                    trip_id=str(saved.get("trip_id", "") or ""),
+                    case_id=case_id,
                 )
-            reply_messages: list[str] = ["Gasto guardado con éxito."]
-            if budget_message:
-                reply_messages.append(budget_message)
-            reply_messages.append(closing_line)
+                policy_alert_message = container.expense.build_policy_alert_message(
+                    phone=phone,
+                    case_id=case_id,
+                )
+                reply_messages = ["Gasto guardado con éxito."]
+                if policy_status_message:
+                    reply_messages.append(policy_status_message)
+                if policy_alert_message:
+                    reply_messages.append(policy_alert_message)
+                reply_messages.append(closing_line)
             container.sheets.update_conversation(
                 phone,
                 {
@@ -768,7 +995,35 @@ def _handle_text_message(container: ServiceContainer, phone: str, body: str) -> 
             "context_json": merged_result_context,
         },
     )
-    return result.get("reply", "No pude procesar tu mensaje.")
+    reply = result.get("reply", "No pude procesar tu mensaje.")
+    if (
+        is_new_conversation
+        and target_state == "WAIT_RECEIPT"
+        and result.get("action") == "noop"
+        and reply == "Envíame una foto de la boleta, factura o comprobante para procesar el gasto."
+    ):
+        reply = _build_initial_wait_receipt_reply(container, phone)
+    return reply
+
+
+def _build_initial_wait_receipt_reply(container: ServiceContainer, phone: str) -> str:
+    greeting_name = _get_employee_greeting_name(container, phone)
+    greeting = f"Hola, {greeting_name}." if greeting_name else "Hola."
+    return (
+        f"{greeting} Envíame una foto de la boleta, factura o comprobante "
+        "para procesar el gasto."
+    )
+
+
+def _get_employee_greeting_name(container: ServiceContainer, phone: str) -> str:
+    employee = container.sheets.get_employee_by_phone(phone) or {}
+    first_name = str(employee.get("first_name", "") or "").strip()
+    if first_name:
+        return first_name
+    full_name = str(employee.get("name", "") or "").strip()
+    if full_name:
+        return full_name.split()[0]
+    return ""
 
 
 def _process_media_message_async(
@@ -780,8 +1035,11 @@ def _process_media_message_async(
     inbound_message_id = str(
         payload.get("InboundMessageId") or payload.get("MessageSid") or payload.get("SmsSid") or ""
     ).strip() or None
+    should_auto_advance = False
+    processing_succeeded = False
     try:
         response_text = _handle_media_message(container, phone, payload)
+        processing_succeeded = True
     except Exception as exc:  # pragma: no cover - runtime dependency/errors
         logger.exception(
             "Async media processing failed for phone=%s inbound_message_id=%s",
@@ -790,13 +1048,20 @@ def _process_media_message_async(
         )
         _reset_receipt_processing_state(container, phone, reason="async_processing_failure")
         response_text = (
-            "No pude procesar tu boleta en este intento. "
+            "No pude procesar tu comprobante en este intento. "
             "Por favor reenvíala o escribe 'reiniciar'."
         )
         if settings.debug:
             response_text += f"\nDetalle técnico: {exc}"
     try:
         _send_outbound_response(container, phone, response_text)
+        if processing_succeeded:
+            conversation = container.conversation.ensure_conversation(
+                container.sheets.get_conversation(phone)
+            )
+            should_auto_advance = (
+                str(conversation.get("state", "WAIT_RECEIPT") or "WAIT_RECEIPT") == "WAIT_RECEIPT"
+            )
         logger.info(
             "Receipt outbound response sent phone=%s elapsed_ms=%d",
             phone,
@@ -818,6 +1083,36 @@ def _process_media_message_async(
             logger.warning("Fallback plain-text outbound response sent phone=%s", phone)
         except Exception:  # pragma: no cover - runtime dependency/errors
             logger.exception("Fallback plain-text outbound response also failed phone=%s", phone)
+    finally:
+        if should_auto_advance:
+            _maybe_process_next_pending_media_inline(container, phone)
+
+
+def _spawn_media_processing_task(
+    container: ServiceContainer,
+    phone: str,
+    payload: dict[str, Any],
+) -> None:
+    async def runner() -> None:
+        await asyncio.to_thread(_process_media_message_async, container, phone, payload)
+
+    asyncio.create_task(runner())
+
+
+def _spawn_receipt_batch_notice_task(
+    container: ServiceContainer,
+    phone: str,
+    notice_token: str,
+) -> None:
+    asyncio.create_task(_debounced_send_receipt_batch_notice(container, phone, notice_token))
+
+
+async def _run_media_processing_during_request(
+    container: ServiceContainer,
+    phone: str,
+    payload: dict[str, Any],
+) -> None:
+    await asyncio.to_thread(_process_media_message_async, container, phone, payload)
 
 
 async def _handle_meta_webhook(
@@ -869,7 +1164,8 @@ async def _handle_meta_webhook(
         employee = container.sheets.get_employee_by_phone(phone)
         if not employee:
             logger.warning("Meta webhook phone not registered phone=%s", phone)
-            container.whatsapp.send_outbound_text(
+            _safe_send_outbound_text(
+                container,
                 phone,
                 "Tu número no está registrado como empleado activo.",
             )
@@ -887,6 +1183,13 @@ async def _handle_meta_webhook(
             _mark_inbound_message_processed(container, phone, inbound_message_id)
 
         if media_entries:
+            _log_inbound_media_message(
+                container,
+                phone,
+                media_entries,
+                caption=body,
+                message_id=inbound_message_id or None,
+            )
             conversation = container.conversation.ensure_conversation(
                 container.sheets.get_conversation(phone)
             )
@@ -897,7 +1200,6 @@ async def _handle_meta_webhook(
             if state in ACTIVE_RECEIPT_STATES:
                 _enqueue_media_entries(container, phone, media_entries)
                 _schedule_receipt_batch_notice(
-                    background_tasks=background_tasks,
                     container=container,
                     phone=phone,
                     received_count=len(media_entries),
@@ -908,13 +1210,18 @@ async def _handle_meta_webhook(
 
             if pending_receipts:
                 _enqueue_media_entries(container, phone, media_entries)
-                started = _maybe_schedule_next_pending_media(
-                    background_tasks=background_tasks,
+                next_payload = _dequeue_next_pending_media_payload(
                     container=container,
                     phone=phone,
                 )
+                started = next_payload is not None
+                if next_payload is not None:
+                    await _run_media_processing_during_request(
+                        container,
+                        phone,
+                        next_payload,
+                    )
                 _schedule_receipt_batch_notice(
-                    background_tasks=background_tasks,
                     container=container,
                     phone=phone,
                     received_count=len(media_entries),
@@ -928,17 +1235,12 @@ async def _handle_meta_webhook(
             if extra_entries:
                 _enqueue_media_entries(container, phone, extra_entries)
             _set_processing_lock(container, phone)
-            background_tasks.add_task(
-                _process_media_message_async,
-                container,
-                phone,
-                {
-                    "MediaId0": first_entry.get("media_id", ""),
-                    "MediaUrl0": first_entry.get("media_url", ""),
-                    "MediaContentType0": first_entry.get("media_content_type"),
-                    "InboundMessageId": first_entry.get("message_id", ""),
-                },
-            )
+            first_payload = {
+                "MediaId0": first_entry.get("media_id", ""),
+                "MediaUrl0": first_entry.get("media_url", ""),
+                "MediaContentType0": first_entry.get("media_content_type"),
+                "InboundMessageId": first_entry.get("message_id", ""),
+            }
             logger.warning(
                 "Meta image queued for processing phone=%s media_id=%s mime=%s",
                 phone,
@@ -946,22 +1248,29 @@ async def _handle_meta_webhook(
                 first_entry.get("media_content_type", ""),
             )
             _schedule_receipt_batch_notice(
-                background_tasks=background_tasks,
                 container=container,
                 phone=phone,
                 received_count=len(media_entries),
                 started_processing=True,
                 reply_to_message_id=inbound_message_id,
             )
+            await _run_media_processing_during_request(container, phone, first_payload)
             continue
 
+        _log_inbound_text_message(
+            container,
+            phone,
+            body,
+            message_id=inbound_message_id or None,
+        )
         response_text = _handle_text_message(container, phone, body)
-        _maybe_schedule_next_pending_media(
-            background_tasks=background_tasks,
+        next_payload = _dequeue_next_pending_media_payload(
             container=container,
             phone=phone,
         )
-        _send_outbound_response(container, phone, response_text)
+        _safe_send_outbound_response(container, phone, response_text)
+        if next_payload is not None:
+            await _run_media_processing_during_request(container, phone, next_payload)
 
     return Response(
         content=json.dumps({"processed": len(events)}),
@@ -993,6 +1302,55 @@ def _extract_media_entries(payload: dict[str, Any]) -> list[dict[str, str]]:
     return entries
 
 
+def _safe_send_outbound_text(
+    container: ServiceContainer,
+    phone: str,
+    message: str,
+    *,
+    reply_to_message_id: str | None = None,
+) -> None:
+    try:
+        container.whatsapp.send_outbound_text(
+            phone,
+            message,
+            reply_to_message_id=reply_to_message_id,
+        )
+        _log_outbound_message(container, phone, message)
+    except MetaAccessTokenExpiredError:
+        logger.exception(
+            "Meta outbound text skipped because the access token expired phone=%s",
+            phone,
+        )
+    except TwilioDailyLimitExceededError:
+        logger.warning(
+            "No se pudo enviar respuesta por WhatsApp: límite diario de Twilio alcanzado phone=%s",
+            phone,
+        )
+    except Exception:
+        logger.exception("Failed to send outbound WhatsApp text phone=%s", phone)
+
+
+def _safe_send_outbound_response(
+    container: ServiceContainer,
+    phone: str,
+    response_text: str | list[str],
+) -> None:
+    try:
+        _send_outbound_response(container, phone, response_text)
+    except MetaAccessTokenExpiredError:
+        logger.exception(
+            "Meta outbound response skipped because the access token expired phone=%s",
+            phone,
+        )
+    except TwilioDailyLimitExceededError:
+        logger.warning(
+            "No se pudo enviar respuesta por WhatsApp: límite diario de Twilio alcanzado phone=%s",
+            phone,
+        )
+    except Exception:
+        logger.exception("Failed to send outbound WhatsApp response phone=%s", phone)
+
+
 def _send_outbound_response(
     container: ServiceContainer,
     phone: str,
@@ -1011,6 +1369,7 @@ def _send_outbound_response(
         _send_single_outbound_response(container, phone, cleaned_messages[0])
         for follow_up_message in cleaned_messages[1:]:
             container.whatsapp.send_outbound_text(phone, follow_up_message)
+            _log_outbound_message(container, phone, follow_up_message)
         return
 
     _send_single_outbound_response(container, phone, response_text)
@@ -1054,6 +1413,7 @@ def _send_single_outbound_response(
                 ],
                 reply_to_message_id=reply_to_message_id,
             )
+            _log_outbound_message(container, phone, body)
             return
 
     interactive_prompt = _build_interactive_prompt(
@@ -1079,6 +1439,7 @@ def _send_single_outbound_response(
                 items=choices,
                 reply_to_message_id=reply_to_message_id,
             )
+        _log_outbound_message(container, phone, prompt_body)
         return
 
     container.whatsapp.send_outbound_text(
@@ -1086,6 +1447,7 @@ def _send_single_outbound_response(
         response_text,
         reply_to_message_id=reply_to_message_id,
     )
+    _log_outbound_message(container, phone, response_text)
 
 
 def _build_interactive_prompt(
@@ -1094,6 +1456,15 @@ def _build_interactive_prompt(
     current_step: str,
     response_text: str,
 ) -> dict[str, Any] | None:
+    if state == "NEEDS_INFO" and current_step == "document_type":
+        return {
+            "body": "No pude identificar con seguridad si este documento es una boleta o una factura. ¿Cuál de las dos es?",
+            "choices": [
+                {"id": "1", "title": "Boleta"},
+                {"id": "2", "title": "Factura"},
+            ],
+        }
+
     if state == "CONFIRM_SUMMARY" and current_step == "select_correction_field":
         return {
             "body": "¿Qué campo quieres corregir?",
@@ -1152,13 +1523,15 @@ def _merge_dicts_preserving_existing(base_value: dict[str, Any], new_value: dict
 def _summarize_receipt_payload(payload: Any) -> dict[str, Any]:
     data = payload if isinstance(payload, dict) else {}
     summary = {
+        "document_type": str(data.get("document_type", "") or "").strip() or None,
+        "is_document": bool(data.get("is_document")),
         "merchant": str(data.get("merchant", "") or "").strip() or None,
         "date": str(data.get("date", "") or "").strip() or None,
         "total": data.get("total"),
         "currency": str(data.get("currency", "") or "").strip() or None,
         "country": str(data.get("country", "") or "").strip() or None,
         "category": str(data.get("category", "") or "").strip() or None,
-        "trip_id": str(data.get("trip_id", "") or "").strip() or None,
+        "case_id": str(data.get("case_id", data.get("trip_id", "")) or "").strip() or None,
     }
     ocr_text = str(data.get("ocr_text", "") or "")
     if ocr_text:
@@ -1214,6 +1587,117 @@ def _merge_context_preserving_sticky(
     if "pending_receipts" not in merged:
         merged["pending_receipts"] = []
     return merged
+
+
+def _get_message_log(context: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(context, dict):
+        return []
+    raw = context.get("message_log")
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def _append_message_log(
+    container: ServiceContainer,
+    phone: str,
+    entry: dict[str, Any],
+) -> None:
+    conversation = container.conversation.ensure_conversation(
+        container.sheets.get_conversation(phone)
+    )
+    context = conversation.get("context_json", {})
+    message_log = _get_message_log(context)
+    normalized_entry = {
+        "id": str(entry.get("id") or make_id("msg")).strip(),
+        "speaker": str(entry.get("speaker") or "").strip() or "system",
+        "type": str(entry.get("type") or "").strip() or "text",
+        "text": str(entry.get("text") or "").strip(),
+        "created_at": str(entry.get("created_at") or utc_now_iso()).strip(),
+    }
+    if entry.get("message_id"):
+        normalized_entry["message_id"] = str(entry.get("message_id")).strip()
+    message_log.append(normalized_entry)
+    message_log = message_log[-MAX_MESSAGE_LOG_ITEMS:]
+    updated_context = _merge_context_preserving_sticky(
+        context,
+        {**context, "message_log": message_log},
+    )
+    container.sheets.update_conversation(
+        phone,
+        {
+            "state": conversation.get("state", "WAIT_RECEIPT"),
+            "current_step": conversation.get("current_step", ""),
+            "context_json": updated_context,
+        },
+    )
+
+
+def _log_inbound_text_message(
+    container: ServiceContainer,
+    phone: str,
+    text: str,
+    *,
+    message_id: str | None = None,
+) -> None:
+    cleaned_text = str(text or "").strip()
+    if not cleaned_text:
+        return
+    _append_message_log(
+        container,
+        phone,
+        {
+            "speaker": "person",
+            "type": "text",
+            "text": cleaned_text,
+            "message_id": message_id,
+        },
+    )
+
+
+def _log_inbound_media_message(
+    container: ServiceContainer,
+    phone: str,
+    media_entries: list[dict[str, Any]],
+    *,
+    caption: str = "",
+    message_id: str | None = None,
+) -> None:
+    count = len(media_entries)
+    if count <= 0 and not str(caption or "").strip():
+        return
+    label = "Envio un comprobante adjunto." if count == 1 else f"Envio {count} comprobantes adjuntos."
+    cleaned_caption = str(caption or "").strip()
+    text = label if not cleaned_caption else f"{label}\n{cleaned_caption}"
+    _append_message_log(
+        container,
+        phone,
+        {
+            "speaker": "person",
+            "type": "media",
+            "text": text,
+            "message_id": message_id,
+        },
+    )
+
+
+def _log_outbound_message(
+    container: ServiceContainer,
+    phone: str,
+    text: str,
+) -> None:
+    cleaned_text = str(text or "").strip()
+    if not cleaned_text:
+        return
+    _append_message_log(
+        container,
+        phone,
+        {
+            "speaker": "bot",
+            "type": "text",
+            "text": cleaned_text,
+        },
+    )
 
 
 def _get_latest_context(container: ServiceContainer, phone: str) -> dict[str, Any]:
@@ -1456,22 +1940,21 @@ def _enqueue_media_entries(
     return len(pending)
 
 
-def _maybe_schedule_next_pending_media(
+def _dequeue_next_pending_media_payload(
     *,
-    background_tasks: BackgroundTasks,
     container: ServiceContainer,
     phone: str,
-) -> bool:
+) -> dict[str, str] | None:
     conversation = container.conversation.ensure_conversation(
         container.sheets.get_conversation(phone)
     )
     state = str(conversation.get("state", "WAIT_RECEIPT") or "WAIT_RECEIPT")
     if state in ACTIVE_RECEIPT_STATES:
-        return False
+        return None
     context = conversation.get("context_json", {})
     pending = _get_pending_receipts(context)
     if not pending:
-        return False
+        return None
     next_media = pending.pop(0)
     updated_context = _merge_context_preserving_sticky(
         context,
@@ -1489,23 +1972,45 @@ def _maybe_schedule_next_pending_media(
             "context_json": processing_context,
         },
     )
-    background_tasks.add_task(
-        _process_media_message_async,
-        container,
-        phone,
-        {
-            "MediaId0": next_media.get("media_id", ""),
-            "MediaUrl0": next_media.get("media_url", ""),
-            "MediaContentType0": next_media.get("media_content_type", ""),
-            "InboundMessageId": next_media.get("message_id", ""),
-        },
+    return {
+        "MediaId0": next_media.get("media_id", ""),
+        "MediaUrl0": next_media.get("media_url", ""),
+        "MediaContentType0": next_media.get("media_content_type", ""),
+        "InboundMessageId": next_media.get("message_id", ""),
+    }
+
+
+def _maybe_schedule_next_pending_media(
+    *,
+    container: ServiceContainer,
+    phone: str,
+) -> bool:
+    next_payload = _dequeue_next_pending_media_payload(
+        container=container,
+        phone=phone,
     )
+    if next_payload is None:
+        return False
+    _spawn_media_processing_task(container, phone, next_payload)
+    return True
+
+
+def _maybe_process_next_pending_media_inline(
+    container: ServiceContainer,
+    phone: str,
+) -> bool:
+    next_payload = _dequeue_next_pending_media_payload(
+        container=container,
+        phone=phone,
+    )
+    if next_payload is None:
+        return False
+    _process_media_message_async(container, phone, next_payload)
     return True
 
 
 def _schedule_receipt_batch_notice(
     *,
-    background_tasks: BackgroundTasks,
     container: ServiceContainer,
     phone: str,
     received_count: int,
@@ -1540,12 +2045,7 @@ def _schedule_receipt_batch_notice(
             "context_json": merged_context,
         },
     )
-    background_tasks.add_task(
-        _debounced_send_receipt_batch_notice,
-        container,
-        phone,
-        notice_token,
-    )
+    _spawn_receipt_batch_notice_task(container, phone, notice_token)
 
 
 async def _debounced_send_receipt_batch_notice(
@@ -1553,7 +2053,7 @@ async def _debounced_send_receipt_batch_notice(
     phone: str,
     notice_token: str,
 ) -> None:
-    await asyncio.sleep(5)
+    await asyncio.sleep(RECEIPT_BATCH_NOTICE_DELAY_SECONDS)
 
     conversation = container.conversation.ensure_conversation(
         container.sheets.get_conversation(phone)
@@ -1565,12 +2065,19 @@ async def _debounced_send_receipt_batch_notice(
         return
 
     received_count = int(notice.get("received_count") or 0)
-    if received_count <= 1:
+    started_processing = bool(notice.get("started_processing"))
+    if received_count <= 0:
         _clear_receipt_batch_notice(container, phone)
         return
 
     reply_to_message_id = str(notice.get("reply_to_message_id") or "").strip() or None
-    message = f"Recibí {received_count} boletas. Las revisaré una por una."
+    if received_count == 1:
+        if started_processing:
+            _clear_receipt_batch_notice(container, phone)
+            return
+        message = "Recibí tu documento. Lo revisaré apenas termine el actual."
+    else:
+        message = f"Recibí {received_count} documento(s). Los revisaré uno por uno."
 
     try:
         container.whatsapp.send_outbound_text(
@@ -1578,9 +2085,10 @@ async def _debounced_send_receipt_batch_notice(
             message,
             reply_to_message_id=reply_to_message_id,
         )
+        _log_outbound_message(container, phone, message)
     except TwilioDailyLimitExceededError:
         logger.warning(
-            "No se pudo enviar aviso agregado de boletas: límite diario de Twilio alcanzado phone=%s",
+            "No se pudo enviar aviso agregado de documentos: límite diario de Twilio alcanzado phone=%s",
             phone,
         )
     except Exception:
@@ -1589,7 +2097,12 @@ async def _debounced_send_receipt_batch_notice(
         _clear_receipt_batch_notice(container, phone)
 
 
-def _set_processing_lock(container: ServiceContainer, phone: str) -> None:
+def _set_processing_lock(
+    container: ServiceContainer,
+    phone: str,
+    *,
+    current_step: str = "",
+) -> None:
     conversation = container.conversation.ensure_conversation(
         container.sheets.get_conversation(phone)
     )
@@ -1602,7 +2115,7 @@ def _set_processing_lock(container: ServiceContainer, phone: str) -> None:
         phone,
         {
             "state": "PROCESSING",
-            "current_step": "",
+            "current_step": current_step,
             "context_json": processing_context,
         },
     )
@@ -1611,6 +2124,7 @@ def _set_processing_lock(container: ServiceContainer, phone: str) -> None:
 def _clear_active_receipt_message_id(context: dict[str, Any] | None) -> dict[str, Any]:
     normalized = dict(context) if isinstance(context, dict) else {}
     normalized.pop("active_receipt_message_id", None)
+    normalized.pop("prefilled_case_id", None)
     return normalized
 
 

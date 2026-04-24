@@ -76,21 +76,23 @@ INVALID_MERCHANT_CONTAINS = (
     "COPIA CLIENTE",
 )
 
-TRAVEL_AGENT_CHAT_CONTEXT = """
-Eres el asistente de un agente de viaticos por WhatsApp.
+EXPENSE_AGENT_CHAT_CONTEXT = """
+Eres el asistente de una plataforma de rendicion de gastos por WhatsApp.
 Contexto base del MVP:
-- El usuario puede enviar una foto de boleta por WhatsApp para registrar gastos.
-- Campos obligatorios del gasto: merchant, date, total, currency, category, country, trip_id.
+- El usuario puede enviar una foto de boleta, factura o comprobante por WhatsApp para registrar gastos.
+- El usuario tambien puede enviar varias fotos/comprobantes en un mismo mensaje o en mensajes seguidos; se procesan uno por uno.
+- Campos obligatorios del gasto: merchant, date, total, currency, category, country, case_id.
 - Si faltan datos, el bot pregunta uno por uno.
 - Cuando el gasto esta completo, el bot envia un resumen para confirmar:
   1) Confirmar 2) Corregir 3) Cancelar.
 - Al confirmar, el gasto se guarda con estado pending_approval.
-- Si el usuario quiere empezar un gasto nuevo, debe enviar otra foto de boleta.
+- Si el usuario quiere registrar mas gastos, puede seguir enviando comprobantes por este mismo chat.
 - Si quiere cancelar/reiniciar flujo puede escribir: cancelar o reiniciar.
 Instrucciones:
 - Responde en espanol claro y corto.
+- Si preguntan si pueden enviar mas de una boleta/comprobante, responde que si y aclara que puedes procesarlos uno por uno.
 - No inventes capacidades que no esten en el contexto.
-- Si no sabes algo, dilo y sugiere enviar boleta o escribir con mas detalle.
+- Si no sabes algo, dilo y sugiere enviar un comprobante o escribir con mas detalle.
 """.strip()
 
 
@@ -129,11 +131,15 @@ class LLMService:
         if not prompt:
             return None
 
+        quick_answer = self._answer_known_question(prompt)
+        if quick_answer:
+            return quick_answer
+
         payload = {
             "model": getattr(self.settings, "openai_model", "gpt-4o-mini"),
             "temperature": 0.2,
             "messages": [
-                {"role": "system", "content": TRAVEL_AGENT_CHAT_CONTEXT},
+                {"role": "system", "content": EXPENSE_AGENT_CHAT_CONTEXT},
                 {"role": "user", "content": prompt},
             ],
         }
@@ -145,6 +151,124 @@ class LLMService:
 
         cleaned = " ".join(str(answer or "").split()).strip()
         return cleaned or None
+
+    def _answer_known_question(self, question: str) -> str | None:
+        normalized = " ".join(str(question or "").strip().lower().split())
+        if not normalized:
+            return None
+
+        multi_receipt_signals = ("mas de una", "más de una", "varias", "multiples", "múltiples")
+        receipt_signals = ("boleta", "boletas", "factura", "facturas", "comprobante", "comprobantes", "foto", "fotos")
+        if any(signal in normalized for signal in multi_receipt_signals) and any(
+            signal in normalized for signal in receipt_signals
+        ):
+            return (
+                "Sí, puedes enviar varias boletas o comprobantes. "
+                "Si mandas más de uno, los iré procesando uno por uno por este chat."
+            )
+        return None
+
+    def classify_document(self, draft_expense: dict[str, Any]) -> dict[str, Any]:
+        """Classify document as receipt, invoice, or professional fee receipt.
+
+        Returns dict with document_type, classification_confidence, and reasoning.
+        """
+        if not self.category_classification_enabled:
+            return {}
+
+        ocr_text = str(draft_expense.get("ocr_text", "") or "").strip()
+        if not ocr_text:
+            return {}
+
+        payload = {
+            "model": getattr(self.settings, "openai_model", "gpt-4o-mini"),
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You classify expense documents into one of three types: receipt, invoice, or professional_fee_receipt. "
+                        "A receipt (boleta) is a simpler document issued to a final consumer, typically from a store, restaurant, or service. "
+                        "An invoice (factura) is a formal tax document between businesses, usually containing tax IDs (RUT, RUC, RFC, CUIT, NIT), "
+                        "invoice number/folio, itemized details, and buyer/seller tax information. "
+                        "A professional_fee_receipt is a Chilean boleta de honorarios for independent/professional services, "
+                        "usually mentioning honorarios, SII, gross amount, withholding/retencion, net/liquid amount, issuer RUT and receiver RUT. "
+                        "Return valid JSON only with keys: document_type, confidence, reasoning. "
+                        "document_type must be one of: receipt, invoice, professional_fee_receipt, unknown. "
+                        "confidence must be a float between 0.0 and 1.0. "
+                        "Use confidence >= 0.7 only when there is clear evidence. "
+                        "Key indicators for invoice: 'factura' keyword, invoice number/folio, buyer tax ID, seller tax ID, formal itemization. "
+                        "Key indicators for receipt: 'boleta' keyword, simple total, POS terminal info, no buyer tax ID. "
+                        "Key indicators for professional_fee_receipt: 'boleta de honorarios', 'honorarios', 'retencion/retención', "
+                        "'total honorarios', 'total boleta', 'monto liquido/líquido'. "
+                        "If evidence is ambiguous or insufficient, return document_type 'unknown' with low confidence."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": self._build_document_classification_prompt(draft_expense),
+                },
+            ],
+        }
+
+        try:
+            parsed = self._chat_json(payload)
+        except Exception as exc:
+            logger.warning("LLM document classification failed: %s", exc)
+            return {}
+
+        document_type = str(parsed.get("document_type", "") or "").strip().lower()
+        if document_type not in ("receipt", "invoice", "professional_fee_receipt", "unknown"):
+            document_type = "unknown"
+
+        confidence = 0.0
+        try:
+            confidence = float(parsed.get("confidence", 0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        confidence = max(0.0, min(1.0, confidence))
+
+        reasoning = str(parsed.get("reasoning", "") or "").strip()
+
+        logger.info(
+            "LLM document classification success type=%s confidence=%.2f reasoning=%s",
+            document_type,
+            confidence,
+            reasoning[:100],
+        )
+        return {
+            "document_type": document_type,
+            "classification_confidence": confidence,
+            "reasoning": reasoning,
+        }
+
+    def _build_document_classification_prompt(self, draft_expense: dict[str, Any]) -> str:
+        merchant = draft_expense.get("merchant")
+        country = draft_expense.get("country")
+        total = draft_expense.get("total")
+        ocr_text = str(draft_expense.get("ocr_text", "") or "").strip()
+        ocr_text_snippet = ocr_text[:3000] if ocr_text else None
+        document_type_hint = draft_expense.get("document_type")
+
+        return (
+            "Classify this expense document as receipt (boleta), invoice (factura), "
+            "or professional_fee_receipt (boleta de honorarios).\n"
+            f"document_type_hint_from_ocr: {document_type_hint!r}\n"
+            f"merchant: {merchant!r}\n"
+            f"country: {country!r}\n"
+            f"total: {total!r}\n"
+            f"ocr_text_snippet: {ocr_text_snippet!r}\n\n"
+            "Look for:\n"
+            "- 'FACTURA' or 'INVOICE' keywords => likely invoice\n"
+            "- 'BOLETA' or 'RECEIPT' keywords => likely receipt\n"
+            "- Tax IDs of both buyer and seller => likely invoice\n"
+            "- Invoice number/folio => likely invoice\n"
+            "- Simple POS receipt with terminal info => likely receipt\n"
+            "- If text says 'boleta electronica' => receipt\n"
+            "- If text says 'factura electronica' => invoice\n"
+            "- If text says 'boleta de honorarios', 'honorarios', or shows retencion/liquido amounts => professional_fee_receipt"
+        )
 
     def classify_expense_category(self, draft_expense: dict[str, Any]) -> str | None:
         if not self.category_classification_enabled:
@@ -169,7 +293,7 @@ class LLMService:
                 {
                     "role": "system",
                     "content": (
-                        "You classify travel expenses into exactly one category. "
+                        "You classify expense documents into exactly one category. "
                         "Allowed categories: Meals, Transport, Lodging, Other. "
                         "Return valid JSON only with keys: category, confidence, reason. "
                         "confidence must be one of: high, medium, low."
@@ -345,7 +469,7 @@ class LLMService:
         ocr_text_snippet = ocr_text[:2000] if ocr_text else None
 
         return (
-            "Classify this travel expense.\n"
+            "Classify this expense document.\n"
             f"merchant: {merchant!r}\n"
             f"country: {country!r}\n"
             f"currency: {currency!r}\n"

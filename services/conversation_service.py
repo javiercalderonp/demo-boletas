@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from services.expense_service import ExpenseService
+from services.expense_service import DOCUMENT_CLASSIFICATION_CONFIDENCE_THRESHOLD, ExpenseService
 from utils.helpers import json_loads
 
 
@@ -12,16 +12,23 @@ PROCESSING = "PROCESSING"
 NEEDS_INFO = "NEEDS_INFO"
 CONFIRM_SUMMARY = "CONFIRM_SUMMARY"
 DONE = "DONE"
-WAIT_TRIP_CLOSURE_CONFIRMATION = "WAIT_TRIP_CLOSURE_CONFIRMATION"
+WAIT_SUBMISSION_CLOSURE_CONFIRMATION = "WAIT_SUBMISSION_CLOSURE_CONFIRMATION"
 
 FIELD_PROMPTS = {
+    "document_type": "No pude identificar con seguridad si este documento es una boleta, factura o boleta de honorarios. ¿Cuál es?",
     "merchant": "¿Cuál es el comercio/merchant?",
     "date": "¿Cuál es la fecha? (formato YYYY-MM-DD)",
     "total": "¿Cuál es el total del gasto? (solo número)",
     "currency": "¿Cuál es la moneda?\n1. CLP\n2. USD\n3. PEN\n4. CNY\n5. EUR",
     "category": "¿Cuál es la categoría?\n1. Meals\n2. Transport\n3. Lodging\n4. Other",
     "country": "¿En qué país fue el gasto?\n1. Chile\n2. Peru\n3. China\n4. Otro (escribir texto)",
-    "trip_id": "No encontré viaje activo. Indica el trip_id del viaje.",
+}
+
+DOCUMENT_TYPE_OPTIONS = {"1": "receipt", "2": "invoice", "3": "professional_fee_receipt"}
+DOCUMENT_TYPE_LABELS = {
+    "receipt": "boleta",
+    "invoice": "factura",
+    "professional_fee_receipt": "boleta de honorarios",
 }
 
 CURRENCY_OPTIONS = {"1": "CLP", "2": "USD", "3": "PEN", "4": "CNY", "5": "EUR"}
@@ -73,7 +80,9 @@ class ConversationService:
             "draft_expense": {},
             "missing_fields": [],
             "last_question": None,
+            "message_log": [],
             "scheduler": {"sent_reminders": {}},
+            "submission_closure": {},
             "trip_closure": {},
         }
 
@@ -99,14 +108,19 @@ class ConversationService:
         normalized_context["draft_expense"] = context.get("draft_expense", {})
         normalized_context["missing_fields"] = context.get("missing_fields", [])
         normalized_context["last_question"] = context.get("last_question")
+        message_log = context.get("message_log")
+        if not isinstance(message_log, list):
+            message_log = []
+        normalized_context["message_log"] = [item for item in message_log if isinstance(item, dict)]
         normalized_context["scheduler"] = {
             **scheduler_ctx,
             "sent_reminders": sent_reminders,
         }
-        trip_closure = context.get("trip_closure")
-        if not isinstance(trip_closure, dict):
-            trip_closure = {}
-        normalized_context["trip_closure"] = trip_closure
+        submission_closure = context.get("submission_closure", context.get("trip_closure"))
+        if not isinstance(submission_closure, dict):
+            submission_closure = {}
+        normalized_context["submission_closure"] = submission_closure
+        normalized_context["trip_closure"] = submission_closure
         conversation["context_json"] = normalized_context
         conversation.setdefault("state", WAIT_RECEIPT)
         conversation.setdefault("current_step", "")
@@ -124,15 +138,47 @@ class ConversationService:
         self,
         phone: str,
         ocr_data: dict[str, Any],
-        trip: dict[str, Any] | None,
+        expense_case: dict[str, Any] | None,
     ) -> dict[str, Any]:
         draft = dict(ocr_data or {})
-        if trip:
-            draft.setdefault("trip_id", trip.get("trip_id"))
+        if expense_case:
+            draft.setdefault("case_id", expense_case.get("case_id"))
             if not draft.get("country_hint"):
-                draft["country_hint"] = trip.get("country")
+                draft["country_hint"] = expense_case.get("country")
+
+        # Clasificar tipo de documento antes de enriquecer
+        classification = self.expense_service.classify_document(draft)
+        if classification:
+            classified_type = classification.get("document_type", "unknown")
+            confidence = classification.get("classification_confidence", 0.0)
+            requires_confirmation = classification.get("requires_user_confirmation", False)
+
+            # Mapear tipos internos de OCR a receipt/invoice
+            if classified_type == "receipt":
+                draft["document_type"] = "receipt"
+            elif classified_type == "invoice":
+                draft["document_type"] = "invoice"
+            elif classified_type == "professional_fee_receipt":
+                draft["document_type"] = "professional_fee_receipt"
+
+            draft["classification_confidence"] = confidence
+            draft["requires_user_confirmation"] = requires_confirmation
 
         draft = self.expense_service.enrich_draft_expense(draft)
+
+        # Si el tipo de documento es incierto, preguntar al usuario primero
+        if draft.get("requires_user_confirmation", False):
+            return {
+                "phone": phone,
+                "state": NEEDS_INFO,
+                "current_step": "document_type",
+                "context_json": {
+                    "draft_expense": draft,
+                    "missing_fields": ["document_type"],
+                    "last_question": "document_type",
+                },
+                "reply": self.prompt_for_field("document_type"),
+            }
 
         missing = self.expense_service.find_missing_required_fields(draft)
         if missing:
@@ -161,7 +207,13 @@ class ConversationService:
             "reply": self.expense_service.build_summary_message(draft),
         }
 
-    def handle_text_message(self, conversation: dict[str, Any], text: str) -> dict[str, Any]:
+    def handle_text_message(
+        self,
+        conversation: dict[str, Any],
+        text: str,
+        *,
+        phone: str = "",
+    ) -> dict[str, Any]:
         conversation = self.ensure_conversation(conversation)
         state = conversation.get("state", WAIT_RECEIPT)
         context = conversation["context_json"]
@@ -173,7 +225,7 @@ class ConversationService:
                 "state": WAIT_RECEIPT,
                 "current_step": "",
                 "context_json": self.default_context(),
-                "reply": "Flujo cancelado y reiniciado. Envíame una boleta para comenzar de nuevo.",
+                "reply": "Flujo cancelado y reiniciado. Envíame un comprobante para comenzar de nuevo.",
                 "action": "cancel",
             }
 
@@ -184,17 +236,14 @@ class ConversationService:
                     "state": WAIT_RECEIPT,
                     "current_step": "",
                     "context_json": context,
-                    "reply": (
-                        f"{answer}\n\n"
-                        "Si quieres registrar un gasto, envíame una foto de la boleta."
-                    ),
+                    "reply": f"{answer}\n\nCuando quieras, envíame los comprobantes y los reviso.",
                     "action": "noop",
                 }
             return {
                 "state": WAIT_RECEIPT,
                 "current_step": "",
                 "context_json": context,
-                "reply": "Envíame una foto de la boleta para procesar el gasto.",
+                "reply": "Envíame una foto de la boleta, factura o comprobante para procesar el gasto.",
                 "action": "noop",
             }
 
@@ -203,7 +252,7 @@ class ConversationService:
                 "state": PROCESSING,
                 "current_step": "",
                 "context_json": context,
-                "reply": "Estoy procesando tu boleta. Espera un momento o envía otra foto si quieres reintentar.",
+                "reply": "Estoy procesando tu documento. Espera un momento o envía otra foto si quieres reintentar.",
                 "action": "noop",
             }
 
@@ -221,7 +270,7 @@ class ConversationService:
             "state": WAIT_RECEIPT,
             "current_step": "",
             "context_json": self.default_context(),
-            "reply": "No entendí el estado actual. Envíame una boleta para comenzar.",
+            "reply": "No entendí el estado actual. Envíame un comprobante para comenzar.",
             "action": "reset",
         }
 
@@ -238,6 +287,42 @@ class ConversationService:
             return self._to_confirm_summary(draft)
 
         parsed_value = self._parse_field_value(current_field, message)
+
+        # Manejo especial para document_type
+        if current_field == "document_type":
+            parsed_value = self._parse_document_type_value(message)
+            if parsed_value is None:
+                return {
+                    "state": NEEDS_INFO,
+                    "current_step": "document_type",
+                    "context_json": {
+                        "draft_expense": draft,
+                        "missing_fields": missing,
+                        "last_question": "document_type",
+                    },
+                    "reply": "No entendí. Por favor indica si es boleta (1), factura (2) o boleta de honorarios (3).",
+                    "action": "noop",
+                }
+            draft["document_type"] = parsed_value
+            draft["requires_user_confirmation"] = False
+            draft = self.expense_service.enrich_draft_expense(draft)
+            missing = self.expense_service.find_missing_required_fields(draft)
+            if missing:
+                next_field = missing[0]
+                doc_label = DOCUMENT_TYPE_LABELS.get(parsed_value, parsed_value)
+                return {
+                    "state": NEEDS_INFO,
+                    "current_step": next_field,
+                    "context_json": {
+                        "draft_expense": draft,
+                        "missing_fields": missing,
+                        "last_question": next_field,
+                    },
+                    "reply": f"Perfecto, registrado como {doc_label}.\n{self.prompt_for_field(next_field)}",
+                    "action": "noop",
+                }
+            return self._to_confirm_summary(draft)
+
         if current_field == "country" and parsed_value == OTHER_COUNTRY_SENTINEL:
             return {
                 "state": NEEDS_INFO,
@@ -368,7 +453,7 @@ class ConversationService:
                 "state": WAIT_RECEIPT,
                 "current_step": "",
                 "context_json": self.default_context(),
-                "reply": "Operación cancelada. Envíame otra boleta cuando quieras.",
+                "reply": "Operación cancelada. Cuando quieras, envíame otro comprobante o varios.",
                 "action": "cancel",
             }
 
@@ -417,6 +502,30 @@ class ConversationService:
 
     def prompt_for_field(self, field_name: str) -> str:
         return FIELD_PROMPTS.get(field_name, f"Falta el campo {field_name}. Indícalo.")
+
+    def _parse_document_type_value(self, message: str) -> str | None:
+        """Parse user response for document type (boleta/factura)."""
+        text = (message or "").strip().lower()
+        if not text:
+            return None
+        # Accept option numbers
+        if text in DOCUMENT_TYPE_OPTIONS:
+            return DOCUMENT_TYPE_OPTIONS[text]
+        # Accept natural language
+        if text in ("honorarios", "boleta de honorarios", "boleta honorarios", "professional_fee_receipt"):
+            return "professional_fee_receipt"
+        if text in ("boleta", "receipt", "ticket"):
+            return "receipt"
+        if text in ("factura", "invoice"):
+            return "invoice"
+        # Partial matches
+        if "honorario" in text or "retencion" in text or "retención" in text:
+            return "professional_fee_receipt"
+        if "boleta" in text or "receipt" in text:
+            return "receipt"
+        if "factura" in text or "invoice" in text:
+            return "invoice"
+        return None
 
     def _parse_field_value(self, field_name: str, message: str) -> Any:
         text = message.strip()

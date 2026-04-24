@@ -15,10 +15,9 @@ Requisitos:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 import gspread
@@ -30,14 +29,60 @@ SCOPES = [
 ]
 
 SHEET_HEADERS: dict[str, list[str]] = {
-    "Employees": ["phone", "name", "rut", "email", "active"],
-    "Trips": [
-        "trip_id",
+    "empresas": [
+        "company_id",
+        "name",
+        "rut",
+        "bank_name",
+        "account_type",
+        "account_number",
+        "account_holder",
+        "account_holder_rut",
+        "finance_email",
+        "active",
+    ],
+    "Employees": [
         "phone",
+        "first_name",
+        "last_name",
+        "name",
+        "rut",
+        "email",
+        "company_id",
+        "bank_name",
+        "account_type",
+        "account_number",
+        "account_holder",
+        "account_holder_rut",
+        "active",
+        "last_activity_at",
+        "created_at",
+        "updated_at",
+    ],
+    "BackofficeUsers": [
+        "id",
+        "name",
+        "email",
+        "password_hash",
+        "role",
+        "active",
+        "created_at",
+        "updated_at",
+    ],
+    "ExpenseCases": [
+        "case_id",
+        "phone",
+        "employee_phone",
+        "company_id",
+        "context_label",
+        "closure_method",
         "destination",
         "country",
+        "opened_at",
+        "due_date",
         "start_date",
         "end_date",
+        "policy_limit",
         "budget",
         "status",
         "closure_status",
@@ -47,10 +92,24 @@ SHEET_HEADERS: dict[str, list[str]] = {
         "closure_responded_at",
         "closed_at",
         "closure_reason",
+        "created_at",
+        "updated_at",
+        "notes",
+        "fondos_entregados",
+        "rendicion_status",
+        "user_confirmed_at",
+        "user_confirmation_status",
+        "settlement_direction",
+        "settlement_status",
+        "settlement_amount_clp",
+        "settlement_net_clp",
+        "settlement_calculated_at",
+        "settlement_resolved_at",
     ],
     "Expenses": [
         "expense_id",
         "phone",
+        "case_id",
         "trip_id",
         "merchant",
         "date",
@@ -63,12 +122,16 @@ SHEET_HEADERS: dict[str, list[str]] = {
         "status",
         "receipt_storage_provider",
         "receipt_object_key",
+        "image_url",
+        "document_url",
         "created_at",
+        "updated_at",
     ],
-    "Conversations": ["phone", "state", "current_step", "context_json", "updated_at"],
-    "TripDocuments": [
+    "Conversations": ["phone", "case_id", "state", "current_step", "context_json", "updated_at"],
+    "ExpenseCaseDocuments": [
         "document_id",
         "phone",
+        "case_id",
         "trip_id",
         "storage_provider",
         "object_key",
@@ -107,7 +170,7 @@ class SeedConfig:
 
 def parse_args() -> SeedConfig:
     parser = argparse.ArgumentParser(
-        description="Inicializa headers y datos demo para Travel_Agent_MVP"
+        description="Inicializa headers y datos demo para Expense_Submission_Agent_MVP"
     )
     parser.add_argument(
         "--spreadsheet-id",
@@ -201,81 +264,122 @@ def clear_rows_keep_headers(ws: gspread.Worksheet) -> None:
         ws.batch_clear([f"A2:Z{row_count}"])
 
 
+def build_demo_employees(cfg: SeedConfig, *, created_at: str) -> list[list[Any]]:
+    employee_specs = [
+        ("Javier", "Calderon", cfg.employee_phone, cfg.employee_rut, cfg.employee_email or "javier.calderon@ripley-demo.cl", "ripley", "Banco de Chile", "Cuenta Corriente", "100000001", cfg.employee_name or "Javier Calderon", cfg.employee_rut, "2026-04-16T09:10:00Z"),
+        ("Camila", "Rojas", "+56961230001", "11.111.111-1", "camila.rojas@ripley-demo.cl", "ripley", "Banco Santander", "Cuenta Vista", "100000002", "Camila Rojas", "11.111.111-1", "2026-04-16T08:45:00Z"),
+        ("Martin", "Poblete", "+56961230002", "12.222.222-2", "martin.poblete@ripley-demo.cl", "ripley", "BCI", "Cuenta Corriente", "100000003", "Martin Poblete", "12.222.222-2", "2026-04-15T18:20:00Z"),
+        ("Valentina", "Soto", "+56961230003", "13.333.333-3", "valentina.soto@acme-demo.cl", "acme", "BancoEstado", "Cuenta Ahorro", "100000004", "Valentina Soto", "13.333.333-3", "2026-04-15T14:05:00Z"),
+        ("Tomas", "Fernandez", "+56961230004", "14.444.444-4", "tomas.fernandez@acme-demo.cl", "acme", "Banco de Chile", "Cuenta Corriente", "100000005", "Tomas Fernandez", "14.444.444-4", "2026-04-14T19:30:00Z"),
+        ("Fernanda", "Muñoz", "+56961230005", "15.555.555-5", "fernanda.munoz@acme-demo.cl", "acme", "Itaú", "Cuenta Vista", "100000006", "Fernanda Muñoz", "15.555.555-5", "2026-04-14T11:15:00Z"),
+        ("Diego", "Silva", "+56961230006", "16.666.666-6", "diego.silva@globex-demo.cl", "globex", "Scotiabank", "Cuenta Corriente", "100000007", "Diego Silva", "16.666.666-6", "2026-04-13T17:40:00Z"),
+        ("Antonia", "Perez", "+56961230007", "17.777.777-7", "antonia.perez@globex-demo.cl", "globex", "Banco Falabella", "Cuenta Vista", "100000008", "Antonia Perez", "17.777.777-7", "2026-04-13T10:20:00Z"),
+        ("Benjamin", "Contreras", "+56961230008", "18.888.888-8", "benjamin.contreras@globex-demo.cl", "globex", "Banco Santander", "Cuenta Corriente", "100000009", "Benjamin Contreras", "18.888.888-8", "2026-04-12T16:50:00Z"),
+        ("Isidora", "Araya", "+56961230009", "19.999.999-9", "isidora.araya@ripley-demo.cl", "ripley", "BancoEstado", "Cuenta Vista", "100000010", "Isidora Araya", "19.999.999-9", "2026-04-12T09:05:00Z"),
+        ("Nicolas", "Guzman", "+56961230010", "20.101.010-0", "nicolas.guzman@acme-demo.cl", "acme", "BCI", "Cuenta Corriente", "100000011", "Nicolas Guzman", "20.101.010-0", "2026-04-11T15:00:00Z"),
+        ("Catalina", "Vega", "+56961230011", "21.121.212-1", "catalina.vega@globex-demo.cl", "globex", "Banco de Chile", "Cuenta Ahorro", "100000012", "Catalina Vega", "21.121.212-1", "2026-04-11T12:35:00Z"),
+        ("Sebastian", "Morales", "+56961230012", "22.232.323-2", "sebastian.morales@ripley-demo.cl", "ripley", "Itaú", "Cuenta Corriente", "100000013", "Sebastian Morales", "22.232.323-2", "2026-04-10T18:10:00Z"),
+        ("Josefa", "Herrera", "+56961230013", "23.343.434-3", "josefa.herrera@acme-demo.cl", "acme", "Scotiabank", "Cuenta Vista", "100000014", "Josefa Herrera", "23.343.434-3", "2026-04-10T10:55:00Z"),
+        ("Matias", "Navarro", "+56961230014", "24.454.545-4", "matias.navarro@globex-demo.cl", "globex", "Banco Falabella", "Cuenta Corriente", "100000015", "Matias Navarro", "24.454.545-4", "2026-04-09T17:25:00Z"),
+    ]
+
+    rows: list[list[Any]] = []
+    for (
+        first_name,
+        last_name,
+        phone,
+        rut,
+        email,
+        company_id,
+        bank_name,
+        account_type,
+        account_number,
+        account_holder,
+        account_holder_rut,
+        last_activity_at,
+    ) in employee_specs:
+        rows.append(
+            [
+                phone,
+                first_name,
+                last_name,
+                f"{first_name} {last_name}",
+                rut,
+                email,
+                company_id,
+                bank_name,
+                account_type,
+                account_number,
+                account_holder,
+                account_holder_rut,
+                "TRUE",
+                last_activity_at,
+                created_at,
+                created_at,
+            ]
+        )
+    return rows
+
+
 def demo_rows(cfg: SeedConfig) -> dict[str, list[list[Any]]]:
-    today = date.today()
-    start_date = today.isoformat()
-    end_date = (today + timedelta(days=2)).isoformat()
     created_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
-    trip_id = f"TRIP-{today.strftime('%Y%m%d')}-001"
-    expense_id = f"EXP-{today.strftime('%Y%m%d')}-001"
-    conversation_context = {
-        "draft_expense": {
-            "merchant": "Starbucks",
-            "date": today.isoformat(),
-            "currency": "USD",
-            "total": 12.5,
-            "category": "Meals",
-            "country": "Chile",
-            "trip_id": trip_id,
-        },
-        "missing_fields": [],
-        "last_question": None,
-    }
-
     return {
-        "Employees": [
-            [cfg.employee_phone, cfg.employee_name, cfg.employee_rut, cfg.employee_email, "TRUE"],
-            [cfg.collaborator_phone, "Colaborador Demo", "98.765.432-1", "", "TRUE"],
-        ],
-        "Trips": [
+        "empresas": [
             [
-                trip_id,
-                cfg.employee_phone,
-                "Lima",
-                "Peru",
-                start_date,
-                end_date,
-                "500000",
-                "active",
-            ]
-        ],
-        "Expenses": [
-            [
-                expense_id,
-                cfg.employee_phone,
-                trip_id,
-                "Starbucks",
-                today.isoformat(),
-                "USD",
-                "12.5",
-                "11875",
-                "Meals",
-                "Chile",
-                "FALSE",
-                "pending_approval",
-                "gcs",
-                "",
-                created_at,
-            ]
-        ],
-        "Conversations": [
-            [
-                cfg.employee_phone,
-                "WAIT_RECEIPT",
-                "",
-                json.dumps({"draft_expense": {}, "missing_fields": [], "last_question": None}),
-                created_at,
+                "ripley",
+                "Ripley Retail Chile SpA",
+                "76.123.456-7",
+                "Banco de Chile",
+                "Cuenta Corriente",
+                "0012345678",
+                "Ripley Retail Chile SpA",
+                "76.123.456-7",
+                "tesoreria@ripley-demo.cl",
+                "TRUE",
             ],
             [
-                cfg.collaborator_phone,
-                "WAIT_RECEIPT",
-                "",
-                json.dumps(conversation_context),
-                created_at,
+                "acme",
+                "Acme Servicios SpA",
+                "77.234.567-8",
+                "Banco Santander",
+                "Cuenta Vista",
+                "9876543210",
+                "Acme Servicios SpA",
+                "77.234.567-8",
+                "pagos@acme-demo.cl",
+                "TRUE",
+            ],
+            [
+                "globex",
+                "Globex Chile Ltda.",
+                "78.345.678-9",
+                "BCI",
+                "Cuenta Corriente",
+                "1122334455",
+                "Globex Chile Ltda.",
+                "78.345.678-9",
+                "finanzas@globex-demo.cl",
+                "TRUE",
             ],
         ],
-        "TripDocuments": [],
+        "Employees": build_demo_employees(cfg, created_at=created_at),
+        "BackofficeUsers": [
+            [
+                "usr-demo-admin",
+                "Demo Admin",
+                "admin@example.com",
+                "pbkdf2_sha256$demo_admin_salt$c50d61b32ad63e371fd7eb113494b6618957faccba1402364269262edcef4889",
+                "admin",
+                "TRUE",
+                created_at,
+                created_at,
+            ]
+        ],
+        "ExpenseCases": [],
+        "Expenses": [],
+        "Conversations": [],
+        "ExpenseCaseDocuments": [],
     }
 
 

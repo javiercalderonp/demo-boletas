@@ -37,7 +37,7 @@ def _as_bool(value: str | None, default: bool = False) -> bool:
 
 @dataclass
 class Settings:
-    app_name: str = os.getenv("APP_NAME", "Travel Expense AI Agent")
+    app_name: str = os.getenv("APP_NAME", "Expense Submission AI Agent")
     app_env: str = os.getenv("APP_ENV", "dev")
     debug: bool = _as_bool(os.getenv("DEBUG"), default=True)
     public_base_url: str = os.getenv("PUBLIC_BASE_URL", "")
@@ -63,6 +63,18 @@ class Settings:
 
     google_application_credentials: str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
     google_sheets_spreadsheet_id: str = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "")
+    google_sheets_timeout_seconds: float = float(
+        os.getenv("GOOGLE_SHEETS_TIMEOUT_SECONDS", "15") or "15"
+    )
+    google_sheets_record_cache_ttl_seconds: float = float(
+        os.getenv("GOOGLE_SHEETS_RECORD_CACHE_TTL_SECONDS", "15") or "15"
+    )
+    google_sheets_stale_cache_ttl_seconds: float = float(
+        os.getenv("GOOGLE_SHEETS_STALE_CACHE_TTL_SECONDS", "300") or "300"
+    )
+    google_sheets_read_cooldown_seconds: float = float(
+        os.getenv("GOOGLE_SHEETS_READ_COOLDOWN_SECONDS", "60") or "60"
+    )
     gcs_bucket_name: str = os.getenv("GCS_BUCKET_NAME", "")
     gcs_receipts_prefix: str = os.getenv("GCS_RECEIPTS_PREFIX", "receipts/")
     gcs_reports_prefix: str = os.getenv("GCS_REPORTS_PREFIX", "reports/")
@@ -80,6 +92,7 @@ class Settings:
     docusign_integration_key: str = os.getenv("DOCUSIGN_INTEGRATION_KEY", "")
     docusign_secret_key: str = os.getenv("DOCUSIGN_SECRET_KEY", "")
     docusign_access_token: str = os.getenv("DOCUSIGN_ACCESS_TOKEN", "")
+    docusign_refresh_token: str = os.getenv("DOCUSIGN_REFRESH_TOKEN", "")
     docusign_return_url: str = os.getenv(
         "DOCUSIGN_RETURN_URL", "https://example.com/docusign/return"
     )
@@ -116,16 +129,21 @@ class Settings:
     scheduler_evening_hour_local: int = int(
         os.getenv("SCHEDULER_EVENING_HOUR_LOCAL", "20") or "20"
     )
+    backoffice_auth_secret: str = os.getenv("BACKOFFICE_AUTH_SECRET", "change-me")
+    backoffice_token_ttl_seconds: int = int(
+        os.getenv("BACKOFFICE_TOKEN_TTL_SECONDS", "28800") or "28800"
+    )
+    backoffice_frontend_origin: str = os.getenv(
+        "BACKOFFICE_FRONTEND_ORIGIN", "http://localhost:3000"
+    )
 
     @property
     def google_sheets_enabled(self) -> bool:
-        return bool(
-            self.google_application_credentials and self.google_sheets_spreadsheet_id
-        )
+        return bool(self.google_sheets_spreadsheet_id)
 
     @property
     def gcs_storage_enabled(self) -> bool:
-        return bool(self.google_application_credentials and self.gcs_bucket_name)
+        return bool(self.gcs_bucket_name)
 
 
 settings = Settings()
