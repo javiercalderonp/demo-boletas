@@ -134,8 +134,9 @@ class Settings:
         os.getenv("BACKOFFICE_TOKEN_TTL_SECONDS", "28800") or "28800"
     )
     backoffice_frontend_origin: str = os.getenv(
-        "BACKOFFICE_FRONTEND_ORIGIN", "http://localhost:3000"
+        "BACKOFFICE_FRONTEND_ORIGIN", "https://viaticos-backoffice.vercel.app"
     )
+    backoffice_frontend_origins: str = os.getenv("BACKOFFICE_FRONTEND_ORIGINS", "")
 
     @property
     def google_sheets_enabled(self) -> bool:

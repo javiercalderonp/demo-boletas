@@ -84,9 +84,21 @@ class ServiceContainer:
 
 def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name, debug=settings.debug)
+    backoffice_origins = [
+        origin.strip()
+        for origin in (
+            settings.backoffice_frontend_origins
+            or settings.backoffice_frontend_origin
+            or ""
+        ).split(",")
+        if origin.strip()
+    ]
+    for origin in ("https://viaticos-backoffice.vercel.app", "http://localhost:3000"):
+        if origin not in backoffice_origins:
+            backoffice_origins.append(origin)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[settings.backoffice_frontend_origin, "http://localhost:3000"],
+        allow_origins=backoffice_origins,
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
