@@ -5,6 +5,7 @@ PROJECT="biaticos-488419"
 REGION="us-central1"
 BACKEND_SERVICE="viaticos-backend"
 BACKOFFICE_DIR="$(cd "$(dirname "$0")" && pwd)/backoffice"
+BACKOFFICE_EXTRA_ALIAS="expenseops-backoffice.vercel.app"
 DEPLOY_COMMIT="$(git -C "$(dirname "$0")" rev-parse --short HEAD)"
 DEPLOY_TIME="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
@@ -54,7 +55,28 @@ deploy_front() {
   NEXT_PUBLIC_DEPLOY_COMMIT="$DEPLOY_COMMIT" \
     NEXT_PUBLIC_DEPLOY_TIME="$DEPLOY_TIME" \
     npx --yes vercel@latest build --prod --yes
-  npx --yes vercel@latest deploy --prebuilt --prod --yes
+  deploy_output="$(
+    npx --yes vercel@latest deploy --prebuilt --prod --yes
+  )"
+  printf '%s\n' "$deploy_output"
+
+  deployment_url="$(
+    printf '%s\n' "$deploy_output" \
+      | sed -n 's/.*"url": "\(https:\/\/[^"]*\)".*/\1/p' \
+      | tail -1
+  )"
+  if [[ -z "$deployment_url" ]]; then
+    deployment_url="$(
+      printf '%s\n' "$deploy_output" \
+        | sed -n 's/^Production: \(https:\/\/[^ ]*\).*/\1/p' \
+        | tail -1
+    )"
+  fi
+  if [[ -n "$deployment_url" ]]; then
+    npx --yes vercel@latest alias set "$deployment_url" "$BACKOFFICE_EXTRA_ALIAS"
+  else
+    echo "WARNING: could not detect Vercel deployment URL for alias $BACKOFFICE_EXTRA_ALIAS" >&2
+  fi
 }
 
 case "${1:-all}" in
