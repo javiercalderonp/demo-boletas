@@ -93,7 +93,12 @@ def create_app() -> FastAPI:
         ).split(",")
         if origin.strip()
     ]
-    for origin in ("https://viaticos-backoffice.vercel.app", "http://localhost:3000"):
+    default_backoffice_origins = (
+        "https://viaticos-backoffice.vercel.app",
+        "https://expenseops-backoffice.vercel.app",
+        "http://localhost:3000",
+    )
+    for origin in default_backoffice_origins:
         if origin not in backoffice_origins:
             backoffice_origins.append(origin)
     app.add_middleware(
