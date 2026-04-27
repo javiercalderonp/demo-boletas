@@ -1192,17 +1192,20 @@ class SchedulerService:
                 expense_case.get("context_label", expense_case.get("destination", "")) or ""
             ).strip()
             context_text = f" ({context_label})" if context_label else ""
-            self.whatsapp_service.send_outbound_buttons(
+            self.whatsapp_service.send_outbound_list(
                 phone,
                 body=f"Rendición cerrada{context_text}. Revisa el PDF consolidado y elige una opción.",
-                buttons=[
+                button_text="Ver opciones",
+                items=[
                     {
                         "id": "simple_confirmation_yes_confirm_consolidated",
                         "title": "Confirmar consolidado",
+                        "description": "Estoy de acuerdo con el PDF.",
                     },
                     {
                         "id": "simple_confirmation_no_review_company",
                         "title": "Revisar con empresa",
+                        "description": "Necesito revisión antes de cerrar.",
                     },
                 ],
             )

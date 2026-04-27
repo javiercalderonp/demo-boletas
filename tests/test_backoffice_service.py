@@ -166,7 +166,7 @@ class BackofficeCaseTransitionTests(unittest.TestCase):
 
         self.assertIn("después de estar aprobada", str(ctx.exception))
 
-    def test_sync_case_settlement_marks_company_owes_employee_as_pending(self):
+    def test_sync_case_settlement_marks_negative_balance_as_employee_owes_company(self):
         sheets = FakeSheetsService(
             case_row={"case_id": "CASE-1", "rendicion_status": "approved", "fondos_entregados": 10000},
             expenses=[
@@ -177,10 +177,10 @@ class BackofficeCaseTransitionTests(unittest.TestCase):
 
         updated = service.sync_case_settlement("CASE-1")
 
-        self.assertEqual(updated["settlement_direction"], "company_owes_employee")
+        self.assertEqual(updated["settlement_direction"], "employee_owes_company")
         self.assertEqual(updated["settlement_status"], "settlement_pending")
         self.assertEqual(updated["settlement_amount_clp"], 6000.0)
-        self.assertEqual(updated["settlement_net_clp"], 6000.0)
+        self.assertEqual(updated["settlement_net_clp"], -6000.0)
 
     def test_sync_case_settlement_marks_balanced_as_settled(self):
         sheets = FakeSheetsService(

@@ -762,13 +762,11 @@ class BackofficeService:
         mark_settled: bool = False,
         resolved_at: str | None = None,
     ) -> dict[str, Any]:
-        net = round((monto_aprobado or 0.0) - (fondos_entregados or 0.0), 2)
+        net = round((fondos_entregados or 0.0) - (monto_aprobado or 0.0), 2)
         amount = round(abs(net), 2)
         calculated_at = utc_now_iso()
 
-        if net > 0:
-            direction = SettlementDirection.COMPANY_OWES_EMPLOYEE
-        elif net < 0:
+        if net != 0:
             direction = SettlementDirection.EMPLOYEE_OWES_COMPANY
         else:
             direction = SettlementDirection.BALANCED

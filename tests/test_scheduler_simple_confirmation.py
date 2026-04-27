@@ -55,6 +55,7 @@ class FakeWhatsAppService:
         self.sent_documents = []
         self.sent_messages = []
         self.sent_buttons = []
+        self.sent_lists = []
 
     def send_outbound_document(self, phone, signed_url, filename=None, caption=None):
         self.sent_documents.append(
@@ -88,6 +89,18 @@ class FakeWhatsAppService:
         )
         return {"id": "btn-msg-1"}
 
+    def send_outbound_list(self, phone, *, body, button_text, items, reply_to_message_id=None):
+        self.sent_lists.append(
+            {
+                "phone": phone,
+                "body": body,
+                "button_text": button_text,
+                "items": items,
+                "reply_to_message_id": reply_to_message_id,
+            }
+        )
+        return {"id": "list-msg-1"}
+
 
 class FakeSheetsService:
     def __init__(self):
@@ -101,7 +114,7 @@ class FakeSheetsService:
             "rendicion_status": "pending_user_confirmation",
             "opened_at": "2026-04-16",
             "due_date": "2026-04-18",
-            "fondos_entregados": 10000,
+            "fondos_entregados": 100000,
             "updated_at": "2026-04-16T10:00:00+00:00",
         }
         self.document_row = {
@@ -116,7 +129,7 @@ class FakeSheetsService:
                 "phone": "+56911111111",
                 "case_id": "CASE-1",
                 "status": "approved",
-                "total_clp": 6000,
+                "total_clp": 110300,
             }
         ]
         self.conversation = {"state": "WAIT_RECEIPT", "context_json": {}}
@@ -209,10 +222,11 @@ class SchedulerSimpleConfirmationTests(unittest.TestCase):
 
         self.assertEqual(message, "")
         self.assertEqual(len(service.whatsapp_service.sent_documents), 1)
-        self.assertEqual(len(service.whatsapp_service.sent_buttons), 1)
-        self.assertIn("elige una opción", service.whatsapp_service.sent_buttons[0]["body"])
+        self.assertEqual(len(service.whatsapp_service.sent_buttons), 0)
+        self.assertEqual(len(service.whatsapp_service.sent_lists), 1)
+        self.assertIn("elige una opción", service.whatsapp_service.sent_lists[0]["body"])
         self.assertEqual(
-            service.whatsapp_service.sent_buttons[0]["buttons"][0]["id"],
+            service.whatsapp_service.sent_lists[0]["items"][0]["id"],
             "simple_confirmation_yes_confirm_consolidated",
         )
         self.assertEqual(
@@ -255,6 +269,10 @@ class SchedulerSimpleConfirmationTests(unittest.TestCase):
         self.assertEqual(
             service.sheets_service.case_row["settlement_direction"],
             "employee_owes_company",
+        )
+        self.assertEqual(
+            service.sheets_service.case_row["settlement_amount_clp"],
+            10300.0,
         )
 
     def test_docusign_closure_package_sends_pdf_link_and_closure_message(self):
