@@ -27,6 +27,9 @@ const navigation = [
   { href: "/conversations", label: "Conversaciones", icon: MessageSquare },
 ];
 
+const deployCommit = process.env.NEXT_PUBLIC_DEPLOY_COMMIT || "local";
+const deployTime = process.env.NEXT_PUBLIC_DEPLOY_TIME || "";
+
 export function Shell({
   title,
   description,
@@ -101,6 +104,9 @@ export function Shell({
             <div className="flex-1 min-w-0">
               <p className="truncate text-sm font-medium text-gray-900">{user?.name}</p>
               <p className="truncate text-xs text-gray-500">{user?.role}</p>
+              <p className="mt-1 truncate font-mono text-[10px] text-gray-400" title={deployTime}>
+                deploy {deployCommit}
+              </p>
             </div>
           </div>
         </div>

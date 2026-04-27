@@ -172,6 +172,8 @@ def create_app() -> FastAPI:
                 settings.docusign_account_id if container.docusign.enabled else None
             ),
             "env": settings.app_env,
+            "deploy_commit": settings.deploy_commit,
+            "deploy_time": settings.deploy_time,
         }
 
     @app.get("/webhook")

@@ -137,6 +137,8 @@ class Settings:
         "BACKOFFICE_FRONTEND_ORIGIN", "https://viaticos-backoffice.vercel.app"
     )
     backoffice_frontend_origins: str = os.getenv("BACKOFFICE_FRONTEND_ORIGINS", "")
+    deploy_commit: str = os.getenv("DEPLOY_COMMIT", "")
+    deploy_time: str = os.getenv("DEPLOY_TIME", "")
 
     @property
     def google_sheets_enabled(self) -> bool:
