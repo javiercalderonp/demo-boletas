@@ -5,6 +5,8 @@ PROJECT="biaticos-488419"
 REGION="us-central1"
 BACKEND_SERVICE="viaticos-backend"
 BACKOFFICE_DIR="$(cd "$(dirname "$0")" && pwd)/backoffice"
+DEPLOY_COMMIT="$(git -C "$(dirname "$0")" rev-parse --short HEAD)"
+DEPLOY_TIME="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 usage() {
   cat <<EOF
@@ -40,13 +42,18 @@ deploy_backend() {
   gcloud run deploy "$BACKEND_SERVICE" \
     --source=. \
     --region="$REGION" \
-    --project="$PROJECT"
+    --project="$PROJECT" \
+    --update-env-vars="DEPLOY_COMMIT=$DEPLOY_COMMIT,DEPLOY_TIME=$DEPLOY_TIME"
 }
 
 deploy_front() {
   cd "$BACKOFFICE_DIR"
-  npm run build
-  npx --yes vercel@latest build --prod --yes
+  NEXT_PUBLIC_DEPLOY_COMMIT="$DEPLOY_COMMIT" \
+    NEXT_PUBLIC_DEPLOY_TIME="$DEPLOY_TIME" \
+    npm run build
+  NEXT_PUBLIC_DEPLOY_COMMIT="$DEPLOY_COMMIT" \
+    NEXT_PUBLIC_DEPLOY_TIME="$DEPLOY_TIME" \
+    npx --yes vercel@latest build --prod --yes
   npx --yes vercel@latest deploy --prebuilt --prod --yes
 }
 
