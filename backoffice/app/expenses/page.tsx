@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import {
   AlertTriangle,
@@ -8,6 +9,7 @@ import {
   Download,
   Ellipsis,
   Filter,
+  Inbox,
   Search,
   Square,
   X,
@@ -414,13 +416,22 @@ export default function ExpensesPage() {
 
         {/* Batch action bar */}
         {selected.size > 0 && (
-          <div className="mb-4 flex items-center gap-3 rounded-xl border border-primary-200 bg-primary-50 px-4 py-3">
-            <span className="text-sm font-medium text-primary-800">
-              {selected.size} documento{selected.size > 1 ? "s" : ""} seleccionado{selected.size > 1 ? "s" : ""}
-            </span>
-            <div className="flex items-center gap-2">
+          <div className="mb-4 rounded-xl border border-primary-200 bg-primary-50 px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-sm font-medium text-primary-800">
+                {selected.size} documento{selected.size > 1 ? "s" : ""} seleccionado{selected.size > 1 ? "s" : ""}
+              </span>
               <button
-                className="rounded-lg bg-emerald-600 px-3.5 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700"
+                className="text-gray-500 transition hover:text-gray-700"
+                onClick={() => setSelected(new Set())}
+                type="button"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                className="rounded-lg bg-emerald-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700"
                 onClick={() =>
                   setBatchConfirm({ action: "approve", ids: [...selected] })
                 }
@@ -429,7 +440,7 @@ export default function ExpensesPage() {
                 Aprobar seleccionados
               </button>
               <button
-                className="rounded-lg bg-red-600 px-3.5 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-red-700"
+                className="rounded-lg bg-red-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-red-700"
                 onClick={() =>
                   setBatchConfirm({ action: "reject", ids: [...selected] })
                 }
@@ -438,13 +449,6 @@ export default function ExpensesPage() {
                 Rechazar seleccionados
               </button>
             </div>
-            <button
-              className="ml-auto text-sm text-gray-500 transition hover:text-gray-700"
-              onClick={() => setSelected(new Set())}
-              type="button"
-            >
-              <X className="h-4 w-4" />
-            </button>
           </div>
         )}
 
@@ -496,127 +500,244 @@ export default function ExpensesPage() {
           {items === null ? (
             <TableSkeleton columns={5} rows={6} />
           ) : (
-            <DataTable
-              columns={[
-                <button
-                  key="select-all"
-                  type="button"
-                  onClick={toggleSelectAll}
-                  className="flex items-center"
-                >
-                  {items.length > 0 &&
-                  selected.size ===
-                    items.filter(
-                      (e) =>
-                        e.review_status !== "approved" &&
-                        e.review_status !== "rejected",
-                    ).length &&
-                  selected.size > 0 ? (
-                    <CheckSquare className="h-4 w-4 text-primary-600" />
-                  ) : (
-                    <Square className="h-4 w-4 text-gray-400" />
-                  )}
-                </button>,
-                "Empleado",
-                "Boleta",
-                "Monto",
-                "Score",
-              ]}
-              rowHrefs={items.map((expense) => `/expenses/${expense.expense_id}`)}
-              rows={items.map((expense) => {
-                const actionable =
-                  expense.review_status !== "approved" &&
-                  expense.review_status !== "rejected";
-                const canApprove = expense.review_status !== "approved";
-                const canReject = expense.review_status !== "rejected";
-                const canObserve = expense.review_status !== "observed";
-                return [
-                  <button
-                    key="check"
-                    type="button"
-                    onClick={() => actionable && toggleSelect(expense.expense_id)}
-                    className={`flex items-center ${actionable ? "cursor-pointer" : "cursor-default opacity-30"}`}
-                  >
-                    {selected.has(expense.expense_id) ? (
-                      <CheckSquare className="h-4 w-4 text-primary-600" />
-                    ) : (
-                      <Square className="h-4 w-4 text-gray-400" />
-                    )}
-                  </button>,
-                  <div
-                    key="emp"
-                    className="min-w-[190px]"
-                  >
-                    <span className="block font-medium text-gray-900">
-                      {expense.employee?.name ||
+            <>
+              {/* Mobile card list */}
+              <div className="block md:hidden">
+                {items.length === 0 ? (
+                  <div className="flex flex-col items-center gap-2 py-14">
+                    <Inbox className="h-8 w-8 text-gray-300" />
+                    <p className="text-sm text-gray-500">Sin resultados</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {items.map((expense) => {
+                      const actionable =
+                        expense.review_status !== "approved" &&
+                        expense.review_status !== "rejected";
+                      const canApprove = expense.review_status !== "approved";
+                      const canReject = expense.review_status !== "rejected";
+                      const canObserve = expense.review_status !== "observed";
+                      const employeeName =
+                        expense.employee?.name ||
                         expense.case?.employee?.name ||
-                        expense.phone}
-                    </span>
-                    <span className="mt-1 block text-xs text-gray-500">
-                      {expense.phone}
-                    </span>
-                  </div>,
-                  <div key="document" className="min-w-[280px]">
-                    <span className="block font-medium text-gray-900">
-                      {expense.merchant || "Comercio sin identificar"}
-                    </span>
-                    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
-                      <span>{expense.date || "Sin fecha"}</span>
-                      <Badge tone={expense.review_status || expense.status || undefined}>
-                        {reviewStatusLabels[expense.review_status || ""] ||
-                          expense.review_status ||
-                          expense.status ||
-                          "-"}
-                      </Badge>
-                    </div>
-                    <div className="mt-3 flex items-center gap-2 opacity-80 transition group-hover:opacity-100 group-focus-within:opacity-100">
-                      {canApprove && (
-                        <button
-                          className="rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700"
-                          onClick={() => runAction(expense.expense_id, "approve")}
-                          type="button"
-                        >
-                          Aprobar
-                        </button>
-                      )}
-                      {(canReject || canObserve) && (
-                        <details className="relative">
-                          <summary className="flex h-8 w-8 cursor-pointer list-none items-center justify-center rounded-md border border-gray-300 bg-white text-gray-600 transition hover:bg-gray-50 [&::-webkit-details-marker]:hidden">
-                            <Ellipsis className="h-4 w-4" />
-                          </summary>
-                          <div className="absolute left-0 top-10 z-10 min-w-[150px] rounded-xl border border-gray-200 bg-white p-1 shadow-lg">
-                            {canReject &&
-                              renderSecondaryExpenseAction({
-                                label: "Rechazar",
-                                tone: "danger",
-                                onClick: () => runAction(expense.expense_id, "reject"),
-                              })}
-                            {canObserve &&
-                              renderSecondaryExpenseAction({
-                                label: "Observar",
-                                tone: "accent",
-                                onClick: () => runAction(expense.expense_id, "observe"),
-                              })}
+                        expense.phone;
+                      return (
+                        <div key={expense.expense_id} className="rounded-xl border border-gray-100 bg-gray-50/60 p-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-semibold text-gray-900">
+                                  {expense.merchant || "Comercio sin identificar"}
+                                </span>
+                              </div>
+                              <div className="mt-1 flex flex-wrap items-center gap-2">
+                                <Badge tone={expense.review_status || expense.status || undefined}>
+                                  {reviewStatusLabels[expense.review_status || ""] ||
+                                    expense.review_status ||
+                                    expense.status ||
+                                    "-"}
+                                </Badge>
+                              </div>
+                              <p className="mt-1.5 text-xs text-gray-600">
+                                <span className="font-medium">{employeeName}</span>
+                                {expense.phone && employeeName !== expense.phone && (
+                                  <span className="text-gray-400"> · {expense.phone}</span>
+                                )}
+                              </p>
+                              <p className="mt-0.5 text-xs text-gray-400">{expense.date || "Sin fecha"}</p>
+                            </div>
+                            <div className="flex shrink-0 flex-col items-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => actionable && toggleSelect(expense.expense_id)}
+                                className={`flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 bg-white transition ${actionable ? "cursor-pointer hover:bg-gray-50" : "cursor-default opacity-30"}`}
+                              >
+                                {selected.has(expense.expense_id) ? (
+                                  <CheckSquare className="h-4 w-4 text-primary-600" />
+                                ) : (
+                                  <Square className="h-4 w-4 text-gray-400" />
+                                )}
+                              </button>
+                              <div className="text-right">
+                                <div className="text-sm font-bold text-gray-900">
+                                  {`${expense.currency || ""} ${expense.total || "-"}`}
+                                </div>
+                                {expense.total_clp && (
+                                  <div className="text-xs text-gray-500">
+                                    {Number(expense.total_clp).toLocaleString("es-CL")} CLP
+                                  </div>
+                                )}
+                                <div className="mt-1">
+                                  <ReviewScoreBadge score={expense.review_score} />
+                                </div>
+                              </div>
+                            </div>
                           </div>
-                        </details>
+
+                          <div className="mt-3 flex flex-wrap items-center gap-2">
+                            <Link
+                              href={`/expenses/${expense.expense_id}`}
+                              className="rounded-lg border border-gray-300 px-3 py-2 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
+                            >
+                              Ver detalle
+                            </Link>
+                            {canApprove && (
+                              <button
+                                className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700"
+                                onClick={() => runAction(expense.expense_id, "approve")}
+                                type="button"
+                              >
+                                Aprobar
+                              </button>
+                            )}
+                            {(canReject || canObserve) && (
+                              <details className="relative">
+                                <summary className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-full transition hover:bg-gray-200 [&::-webkit-details-marker]:hidden">
+                                  <Ellipsis className="h-4 w-4 text-gray-500" />
+                                </summary>
+                                <div className="absolute left-0 top-11 z-10 min-w-[10rem] overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-lg">
+                                  {canReject &&
+                                    renderSecondaryExpenseAction({
+                                      label: "Rechazar",
+                                      tone: "danger",
+                                      onClick: () => runAction(expense.expense_id, "reject"),
+                                    })}
+                                  {canObserve &&
+                                    renderSecondaryExpenseAction({
+                                      label: "Observar",
+                                      tone: "accent",
+                                      onClick: () => runAction(expense.expense_id, "observe"),
+                                    })}
+                                </div>
+                              </details>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Desktop table */}
+              <div className="hidden md:block">
+                <DataTable
+                  columns={[
+                    <button
+                      key="select-all"
+                      type="button"
+                      onClick={toggleSelectAll}
+                      className="flex items-center"
+                    >
+                      {items.length > 0 &&
+                      selected.size ===
+                        items.filter(
+                          (e) =>
+                            e.review_status !== "approved" &&
+                            e.review_status !== "rejected",
+                        ).length &&
+                      selected.size > 0 ? (
+                        <CheckSquare className="h-4 w-4 text-primary-600" />
+                      ) : (
+                        <Square className="h-4 w-4 text-gray-400" />
                       )}
-                    </div>
-                  </div>,
-                  <div key="amount" className="min-w-[130px]">
-                    <span className="block text-sm font-semibold text-gray-900">
-                      {`${expense.currency || ""} ${expense.total || "-"}`}
-                    </span>
-                    <span className="mt-1 block text-xs text-gray-500">
-                      {expense.total_clp ? `${Number(expense.total_clp).toLocaleString("es-CL")} CLP` : ""}
-                    </span>
-                  </div>,
-                  <ReviewScoreBadge
-                    key="score"
-                    score={expense.review_score}
-                  />,
-                ];
-              })}
-            />
+                    </button>,
+                    "Empleado",
+                    "Boleta",
+                    "Monto",
+                    "Score",
+                  ]}
+                  rowHrefs={items.map((expense) => `/expenses/${expense.expense_id}`)}
+                  rows={items.map((expense) => {
+                    const actionable =
+                      expense.review_status !== "approved" &&
+                      expense.review_status !== "rejected";
+                    const canApprove = expense.review_status !== "approved";
+                    const canReject = expense.review_status !== "rejected";
+                    const canObserve = expense.review_status !== "observed";
+                    return [
+                      <button
+                        key="check"
+                        type="button"
+                        onClick={() => actionable && toggleSelect(expense.expense_id)}
+                        className={`flex items-center ${actionable ? "cursor-pointer" : "cursor-default opacity-30"}`}
+                      >
+                        {selected.has(expense.expense_id) ? (
+                          <CheckSquare className="h-4 w-4 text-primary-600" />
+                        ) : (
+                          <Square className="h-4 w-4 text-gray-400" />
+                        )}
+                      </button>,
+                      <div key="emp" className="min-w-[190px]">
+                        <span className="block font-medium text-gray-900">
+                          {expense.employee?.name ||
+                            expense.case?.employee?.name ||
+                            expense.phone}
+                        </span>
+                        <span className="mt-1 block text-xs text-gray-500">
+                          {expense.phone}
+                        </span>
+                      </div>,
+                      <div key="document" className="min-w-[280px]">
+                        <span className="block font-medium text-gray-900">
+                          {expense.merchant || "Comercio sin identificar"}
+                        </span>
+                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                          <span>{expense.date || "Sin fecha"}</span>
+                          <Badge tone={expense.review_status || expense.status || undefined}>
+                            {reviewStatusLabels[expense.review_status || ""] ||
+                              expense.review_status ||
+                              expense.status ||
+                              "-"}
+                          </Badge>
+                        </div>
+                        <div className="mt-3 flex items-center gap-2 opacity-80 transition group-hover:opacity-100 group-focus-within:opacity-100">
+                          {canApprove && (
+                            <button
+                              className="rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700"
+                              onClick={() => runAction(expense.expense_id, "approve")}
+                              type="button"
+                            >
+                              Aprobar
+                            </button>
+                          )}
+                          {(canReject || canObserve) && (
+                            <details className="relative">
+                              <summary className="flex h-8 w-8 cursor-pointer list-none items-center justify-center rounded-md border border-gray-300 bg-white text-gray-600 transition hover:bg-gray-50 [&::-webkit-details-marker]:hidden">
+                                <Ellipsis className="h-4 w-4" />
+                              </summary>
+                              <div className="absolute left-0 top-10 z-10 min-w-[150px] rounded-xl border border-gray-200 bg-white p-1 shadow-lg">
+                                {canReject &&
+                                  renderSecondaryExpenseAction({
+                                    label: "Rechazar",
+                                    tone: "danger",
+                                    onClick: () => runAction(expense.expense_id, "reject"),
+                                  })}
+                                {canObserve &&
+                                  renderSecondaryExpenseAction({
+                                    label: "Observar",
+                                    tone: "accent",
+                                    onClick: () => runAction(expense.expense_id, "observe"),
+                                  })}
+                              </div>
+                            </details>
+                          )}
+                        </div>
+                      </div>,
+                      <div key="amount" className="min-w-[130px]">
+                        <span className="block text-sm font-semibold text-gray-900">
+                          {`${expense.currency || ""} ${expense.total || "-"}`}
+                        </span>
+                        <span className="mt-1 block text-xs text-gray-500">
+                          {expense.total_clp ? `${Number(expense.total_clp).toLocaleString("es-CL")} CLP` : ""}
+                        </span>
+                      </div>,
+                      <ReviewScoreBadge key="score" score={expense.review_score} />,
+                    ];
+                  })}
+                />
+              </div>
+            </>
           )}
         </SectionCard>
       </Shell>

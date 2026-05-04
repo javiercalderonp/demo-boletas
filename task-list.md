@@ -685,6 +685,16 @@
   - Chat con polling, envío de mensajes, y auto-scroll integrado en el detalle de rendición
   - Reemplaza tabla simple de conversaciones
 
+- [x] **Experiencia mobile para Personas, Casos y Gastos**
+  - Breakpoint `md` (768px): mobile muestra cards/lista, desktop/tablet mantiene tabla sin cambios
+  - Personas: card con nombre + badge estado, grilla 2 cols (teléfono, RUT, empresa, gastos), botón "Ver gastos" y menú `···` (Editar, Activar/Desactivar, Eliminar)
+  - Casos: card con badge estado, título rendición + ID, empleado, grilla financiera (Fondos / Aprobado / Saldo), botón "Ver caso" + acción principal contextual (Pedir firma, Liquidación, Cerrar), menú `···`
+  - Gastos: card con merchant + badge review_status, empleado + fecha, monto destacado + score, checkbox táctil de selección, botón "Aprobar" + menú `···` (Rechazar, Observar), "Ver detalle"
+  - Filtros de Casos apilados verticalmente en mobile (`flex-col` → `sm:flex-row`), selects a ancho completo con dos en fila
+  - Batch action bar de Gastos rediseñado: contador + X en fila superior, botones en fila inferior con `flex-wrap`
+  - Sin cambios en `DataTable`, `Shell` ni componentes compartidos; lógica de negocio y handlers intactos
+  - Build limpio, TypeScript sin errores
+
 ### Pendiente
 
 - [ ] **PDF consolidado con balance final**

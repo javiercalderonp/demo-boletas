@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { ChevronDown, MoreHorizontal, Plus, X } from "lucide-react";
+import { ChevronDown, Inbox, MoreHorizontal, Plus, X } from "lucide-react";
 
 import { DataTable } from "@/components/data-table";
 import { Badge } from "@/components/badge";
@@ -577,75 +577,180 @@ export default function EmployeesPage() {
           {items === null ? (
             <TableSkeleton columns={7} rows={5} />
           ) : (
-            <DataTable
-              columns={["Nombre", "Teléfono", "RUT", "Empresa", "Gastos", "Estado", ""]}
-              rowHrefs={items.map((employee) => `/employees/${encodeURIComponent(employee.phone)}`)}
-              rows={items.map((employee) => [
-                <span key="name" className="font-medium text-gray-900">
-                  {employee.first_name || employee.last_name
-                    ? `${employee.first_name || ""} ${employee.last_name || ""}`.trim()
-                    : employee.name}
-                </span>,
-                <span key="phone" className="font-mono text-xs">{employee.phone}</span>,
-                employee.rut || "-",
-                employee.company_id || "-",
-                employee.expense_count ?? 0,
-                <Badge key="state">{employee.active ? "active" : "inactive"}</Badge>,
-                <div className="flex items-center justify-end gap-2" key="actions">
-                  <Link
-                    className="text-sm font-medium text-blue-600 transition hover:text-blue-700"
-                    href={`/expenses?employee_phone=${encodeURIComponent(employee.phone)}`}
-                  >
-                    Ver gastos
-                  </Link>
-                  <details className="relative">
-                    <summary className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-full text-gray-500 transition hover:bg-slate-100 hover:text-gray-700 [&::-webkit-details-marker]:hidden">
-                      <MoreHorizontal className="h-4 w-4" />
-                    </summary>
-                    <div className="absolute right-0 top-11 z-10 min-w-[11rem] overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-lg">
+            <>
+              {/* Mobile card list */}
+              <div className="block md:hidden">
+                {items.length === 0 ? (
+                  <div className="flex flex-col items-center gap-2 py-14">
+                    <Inbox className="h-8 w-8 text-gray-300" />
+                    <p className="text-sm text-gray-500">Sin resultados</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {items.map((employee) => {
+                      const name =
+                        employee.first_name || employee.last_name
+                          ? `${employee.first_name || ""} ${employee.last_name || ""}`.trim()
+                          : employee.name;
+                      return (
+                        <div key={employee.phone} className="rounded-xl border border-gray-100 bg-gray-50/60 p-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-semibold text-gray-900">{name}</span>
+                                <Badge>{employee.active ? "active" : "inactive"}</Badge>
+                              </div>
+                              <dl className="mt-2.5 grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+                                <div>
+                                  <dt className="text-gray-400">Teléfono</dt>
+                                  <dd className="font-mono text-gray-700">{employee.phone}</dd>
+                                </div>
+                                <div>
+                                  <dt className="text-gray-400">RUT</dt>
+                                  <dd className="text-gray-700">{employee.rut || "—"}</dd>
+                                </div>
+                                <div>
+                                  <dt className="text-gray-400">Empresa</dt>
+                                  <dd className="truncate text-gray-700">{employee.company_id || "Sin empresa"}</dd>
+                                </div>
+                                <div>
+                                  <dt className="text-gray-400">Gastos</dt>
+                                  <dd className="text-gray-700">{employee.expense_count ?? 0}</dd>
+                                </div>
+                              </dl>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-2">
+                              <Link
+                                href={`/expenses?employee_phone=${encodeURIComponent(employee.phone)}`}
+                                className="rounded-lg bg-blue-50 px-3 py-2 text-xs font-medium text-blue-600 transition hover:bg-blue-100"
+                              >
+                                Ver gastos
+                              </Link>
+                              <details className="relative">
+                                <summary className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-full transition hover:bg-gray-200 [&::-webkit-details-marker]:hidden">
+                                  <MoreHorizontal className="h-4 w-4 text-gray-500" />
+                                </summary>
+                                <div className="absolute right-0 top-11 z-10 min-w-[11rem] overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-lg">
+                                  <Link
+                                    href={`/employees/${encodeURIComponent(employee.phone)}`}
+                                    className="block px-4 py-2.5 text-sm text-gray-700 transition hover:bg-slate-50 hover:text-gray-900"
+                                  >
+                                    Editar
+                                  </Link>
+                                  {employee.active ? (
+                                    <button
+                                      className="block w-full px-4 py-2.5 text-left text-sm text-gray-700 transition hover:bg-slate-50 hover:text-red-600"
+                                      onClick={() => deactivate(employee.phone)}
+                                      type="button"
+                                    >
+                                      Desactivar
+                                    </button>
+                                  ) : (
+                                    <button
+                                      className="block w-full px-4 py-2.5 text-left text-sm text-gray-700 transition hover:bg-slate-50 hover:text-blue-700"
+                                      onClick={() => activate(employee.phone)}
+                                      type="button"
+                                    >
+                                      Activar
+                                    </button>
+                                  )}
+                                  <button
+                                    className="block w-full px-4 py-2.5 text-left text-sm text-red-600 transition hover:bg-red-50 hover:text-red-700"
+                                    onClick={() =>
+                                      setDeleteModal({
+                                        phone: employee.phone,
+                                        name,
+                                        deleteCases: false,
+                                      })
+                                    }
+                                    type="button"
+                                  >
+                                    Eliminar
+                                  </button>
+                                </div>
+                              </details>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Desktop table */}
+              <div className="hidden md:block">
+                <DataTable
+                  columns={["Nombre", "Teléfono", "RUT", "Empresa", "Gastos", "Estado", ""]}
+                  rowHrefs={items.map((employee) => `/employees/${encodeURIComponent(employee.phone)}`)}
+                  rows={items.map((employee) => [
+                    <span key="name" className="font-medium text-gray-900">
+                      {employee.first_name || employee.last_name
+                        ? `${employee.first_name || ""} ${employee.last_name || ""}`.trim()
+                        : employee.name}
+                    </span>,
+                    <span key="phone" className="font-mono text-xs">{employee.phone}</span>,
+                    employee.rut || "-",
+                    employee.company_id || "-",
+                    employee.expense_count ?? 0,
+                    <Badge key="state">{employee.active ? "active" : "inactive"}</Badge>,
+                    <div className="flex items-center justify-end gap-2" key="actions">
                       <Link
-                        href={`/employees/${encodeURIComponent(employee.phone)}`}
-                        className="block px-4 py-2 text-sm text-gray-700 transition hover:bg-slate-50 hover:text-gray-900"
+                        className="text-sm font-medium text-blue-600 transition hover:text-blue-700"
+                        href={`/expenses?employee_phone=${encodeURIComponent(employee.phone)}`}
                       >
-                        Editar
+                        Ver gastos
                       </Link>
-                      {employee.active ? (
-                        <button
-                          className="block w-full px-4 py-2 text-left text-sm text-gray-700 transition hover:bg-slate-50 hover:text-red-600"
-                          onClick={() => deactivate(employee.phone)}
-                          type="button"
-                        >
-                          Desactivar
-                        </button>
-                      ) : (
-                        <button
-                          className="block w-full px-4 py-2 text-left text-sm text-gray-700 transition hover:bg-slate-50 hover:text-blue-700"
-                          onClick={() => activate(employee.phone)}
-                          type="button"
-                        >
-                          Activar
-                        </button>
-                      )}
-                      <button
-                        className="block w-full px-4 py-2 text-left text-sm text-gray-700 transition hover:bg-red-50 hover:text-red-700"
-                        onClick={() =>
-                          setDeleteModal({
-                            phone: employee.phone,
-                            name: employee.first_name || employee.last_name
-                              ? `${employee.first_name || ""} ${employee.last_name || ""}`.trim()
-                              : employee.name,
-                            deleteCases: false,
-                          })
-                        }
-                        type="button"
-                      >
-                        Eliminar
-                      </button>
-                    </div>
-                  </details>
-                </div>,
-              ])}
-            />
+                      <details className="relative">
+                        <summary className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-full text-gray-500 transition hover:bg-slate-100 hover:text-gray-700 [&::-webkit-details-marker]:hidden">
+                          <MoreHorizontal className="h-4 w-4" />
+                        </summary>
+                        <div className="absolute right-0 top-11 z-10 min-w-[11rem] overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-lg">
+                          <Link
+                            href={`/employees/${encodeURIComponent(employee.phone)}`}
+                            className="block px-4 py-2 text-sm text-gray-700 transition hover:bg-slate-50 hover:text-gray-900"
+                          >
+                            Editar
+                          </Link>
+                          {employee.active ? (
+                            <button
+                              className="block w-full px-4 py-2 text-left text-sm text-gray-700 transition hover:bg-slate-50 hover:text-red-600"
+                              onClick={() => deactivate(employee.phone)}
+                              type="button"
+                            >
+                              Desactivar
+                            </button>
+                          ) : (
+                            <button
+                              className="block w-full px-4 py-2 text-left text-sm text-gray-700 transition hover:bg-slate-50 hover:text-blue-700"
+                              onClick={() => activate(employee.phone)}
+                              type="button"
+                            >
+                              Activar
+                            </button>
+                          )}
+                          <button
+                            className="block w-full px-4 py-2 text-left text-sm text-gray-700 transition hover:bg-red-50 hover:text-red-700"
+                            onClick={() =>
+                              setDeleteModal({
+                                phone: employee.phone,
+                                name: employee.first_name || employee.last_name
+                                  ? `${employee.first_name || ""} ${employee.last_name || ""}`.trim()
+                                  : employee.name,
+                                deleteCases: false,
+                              })
+                            }
+                            type="button"
+                          >
+                            Eliminar
+                          </button>
+                        </div>
+                      </details>
+                    </div>,
+                  ])}
+                />
+              </div>
+            </>
           )}
         </SectionCard>
       </Shell>

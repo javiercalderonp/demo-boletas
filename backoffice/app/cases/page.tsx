@@ -1,12 +1,15 @@
 "use client";
 
+import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   ChevronDown,
   CircleDashed,
   Download,
+  Inbox,
   Landmark,
+  MoreHorizontal,
   Plus,
   Search,
   Send,
@@ -906,8 +909,8 @@ export default function CasesPage() {
           </div>
         )}
         {/* Search and filters */}
-        <div className="mb-5 flex flex-wrap items-center gap-3">
-          <div className="relative flex-1 min-w-[200px] max-w-md">
+        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+          <div className="relative w-full sm:max-w-md sm:flex-1 sm:min-w-[200px]">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
             <input
               type="text"
@@ -917,52 +920,56 @@ export default function CasesPage() {
               className="block w-full rounded-lg border border-gray-300 py-2 pl-9 pr-3 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
             />
           </div>
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
-          >
-            <option value="">Todos los estados</option>
-            {Object.entries(rendicionStatusLabels).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-          <select
-            value={balanceFilter}
-            onChange={(e) =>
-              setBalanceFilter(e.target.value as "" | "positive" | "negative")
-            }
-            className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
-          >
-            <option value="">Todos los saldos</option>
-            <option value="positive">Saldo positivo</option>
-            <option value="negative">Saldo negativo</option>
-          </select>
-          {(searchQuery || statusFilter || balanceFilter) && (
-            <button
-              type="button"
-              onClick={() => {
-                setSearchQuery("");
-                setStatusFilter("");
-                setBalanceFilter("");
-              }}
-              className="text-xs text-gray-500 underline hover:text-gray-700"
+          <div className="flex gap-3">
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100 sm:flex-none"
             >
-              Limpiar filtros
+              <option value="">Todos los estados</option>
+              {Object.entries(rendicionStatusLabels).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            <select
+              value={balanceFilter}
+              onChange={(e) =>
+                setBalanceFilter(e.target.value as "" | "positive" | "negative")
+              }
+              className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100 sm:flex-none"
+            >
+              <option value="">Todos los saldos</option>
+              <option value="positive">Saldo positivo</option>
+              <option value="negative">Saldo negativo</option>
+            </select>
+          </div>
+          <div className="flex items-center justify-between sm:contents">
+            {(searchQuery || statusFilter || balanceFilter) ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery("");
+                  setStatusFilter("");
+                  setBalanceFilter("");
+                }}
+                className="text-xs text-gray-500 underline hover:text-gray-700"
+              >
+                Limpiar filtros
+              </button>
+            ) : <span />}
+            <button
+              onClick={() => {
+                void exportCsv();
+              }}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 sm:ml-auto"
+              type="button"
+            >
+              <Download className="h-4 w-4" />
+              Exportar CSV
             </button>
-          )}
-          <button
-            onClick={() => {
-              void exportCsv();
-            }}
-            className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
-            type="button"
-          >
-            <Download className="h-4 w-4" />
-            Exportar CSV
-          </button>
+          </div>
         </div>
 
         <SectionCard
@@ -983,77 +990,175 @@ export default function CasesPage() {
           {filteredItems === null ? (
             <TableSkeleton columns={6} rows={5} />
           ) : (
-            <DataTable
-              columns={[
-                "Estado",
-                "Rendición",
-                "Empleado",
-                "Fondos",
-                "Aprobado",
-                "Saldo",
-              ]}
-              rowHrefs={filteredItems.map((item) => `/cases/${item.case_id}`)}
-              rows={filteredItems.map((item) => {
-                const actionConfig = getCaseActionConfig(item);
-                return [
-                  <div key="status" className="min-w-[128px] pt-0.5">
-                    <Badge tone={rendicionStatusTone[item.rendicion_status || item.status]}>
-                      {rendicionStatusLabels[item.rendicion_status || item.status] ||
+            <>
+              {/* Mobile card list */}
+              <div className="block md:hidden">
+                {filteredItems.length === 0 ? (
+                  <div className="flex flex-col items-center gap-2 py-14">
+                    <Inbox className="h-8 w-8 text-gray-300" />
+                    <p className="text-sm text-gray-500">Sin resultados</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {filteredItems.map((item) => {
+                      const actionConfig = getCaseActionConfig(item);
+                      const statusTone = rendicionStatusTone[item.rendicion_status || item.status];
+                      const statusLabel =
+                        rendicionStatusLabels[item.rendicion_status || item.status] ||
                         item.rendicion_status ||
-                        item.status}
-                    </Badge>
-                  </div>,
-                  <div
-                    key="id"
-                    className="min-w-[280px]"
-                  >
-                    <span className="block font-medium text-gray-900">
-                      {item.context_label || item.case_id}
-                    </span>
-                    <span className="mt-1 block font-mono text-[11px] text-gray-500">
-                      {item.case_id}
-                    </span>
-                    {actionConfig && (
-                      <div className="mt-3">
-                        {renderActionButton({
-                          icon: actionConfig.icon,
-                          label: actionConfig.label,
-                          loadingLabel: actionConfig.loadingLabel,
-                          loading:
-                            actionLoading === `${item.case_id}:${actionConfig.action}`,
-                          onClick: () => runAction(item.case_id, actionConfig.action),
-                          className: `${actionButtonClassName} ${actionConfig.className}`,
-                        })}
-                      </div>
-                    )}
-                  </div>,
-                  <div key="emp" className="min-w-[190px]">
-                    <span className="block max-w-[180px] truncate font-medium text-gray-900">
-                      {item.employee?.name || item.employee_phone || "-"}
-                    </span>
-                    <span className="mt-1 block text-xs text-gray-500">
-                      {item.employee_phone || item.phone || "Sin teléfono"}
-                    </span>
-                  </div>,
-                  <span key="fondos" className="text-sm font-semibold text-gray-900">
-                    {formatCLP(item.fondos_entregados)}
-                  </span>,
-                  <span key="aprobado" className="text-sm font-medium text-emerald-700">
-                    {formatCLP(item.monto_rendido_aprobado)}
-                  </span>,
-                  <span
-                    key="saldo"
-                    className={`text-sm font-medium ${
-                      (item.saldo_restante ?? 0) < 0
-                        ? "text-red-600"
-                        : "text-gray-900"
-                    }`}
-                  >
-                    {formatCLP(item.saldo_restante)}
-                  </span>,
-                ];
-              })}
-            />
+                        item.status;
+                      return (
+                        <div key={item.case_id} className="rounded-xl border border-gray-100 bg-gray-50/60 p-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              <Badge tone={statusTone}>{statusLabel}</Badge>
+                              <p className="mt-1.5 font-semibold leading-tight text-gray-900">
+                                {item.context_label || item.case_id}
+                              </p>
+                              <p className="font-mono text-[11px] text-gray-400">{item.case_id}</p>
+                              <p className="mt-1.5 text-xs text-gray-600">
+                                <span className="font-medium">
+                                  {item.employee?.name || item.employee_phone || "—"}
+                                </span>
+                                {item.employee_phone && (
+                                  <span className="text-gray-400"> · {item.employee_phone}</span>
+                                )}
+                              </p>
+                            </div>
+                            <details className="relative shrink-0">
+                              <summary className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-full transition hover:bg-gray-200 [&::-webkit-details-marker]:hidden">
+                                <MoreHorizontal className="h-4 w-4 text-gray-500" />
+                              </summary>
+                              <div className="absolute right-0 top-11 z-10 min-w-[11rem] overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-lg">
+                                <Link
+                                  href={`/cases/${item.case_id}`}
+                                  className="block px-4 py-2.5 text-sm text-gray-700 transition hover:bg-slate-50 hover:text-gray-900"
+                                >
+                                  Ver detalle
+                                </Link>
+                              </div>
+                            </details>
+                          </div>
+
+                          <div className="mt-3 grid grid-cols-3 gap-2 rounded-lg border border-gray-100 bg-white p-3 text-center text-xs">
+                            <div>
+                              <div className="text-gray-400">Fondos</div>
+                              <div className="mt-0.5 font-semibold text-gray-900">
+                                {formatCLP(item.fondos_entregados)}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-gray-400">Aprobado</div>
+                              <div className="mt-0.5 font-semibold text-emerald-700">
+                                {formatCLP(item.monto_rendido_aprobado)}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-gray-400">Saldo</div>
+                              <div
+                                className={`mt-0.5 font-semibold ${
+                                  (item.saldo_restante ?? 0) < 0 ? "text-red-600" : "text-gray-900"
+                                }`}
+                              >
+                                {formatCLP(item.saldo_restante)}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mt-3 flex flex-wrap items-center gap-2">
+                            <Link
+                              href={`/cases/${item.case_id}`}
+                              className="rounded-lg border border-gray-300 px-3 py-2 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
+                            >
+                              Ver caso
+                            </Link>
+                            {actionConfig &&
+                              renderActionButton({
+                                icon: actionConfig.icon,
+                                label: actionConfig.label,
+                                loadingLabel: actionConfig.loadingLabel,
+                                loading: actionLoading === `${item.case_id}:${actionConfig.action}`,
+                                onClick: () => runAction(item.case_id, actionConfig.action),
+                                className: `${actionButtonClassName} ${actionConfig.className}`,
+                              })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Desktop table */}
+              <div className="hidden md:block">
+                <DataTable
+                  columns={[
+                    "Estado",
+                    "Rendición",
+                    "Empleado",
+                    "Fondos",
+                    "Aprobado",
+                    "Saldo",
+                  ]}
+                  rowHrefs={filteredItems.map((item) => `/cases/${item.case_id}`)}
+                  rows={filteredItems.map((item) => {
+                    const actionConfig = getCaseActionConfig(item);
+                    return [
+                      <div key="status" className="min-w-[128px] pt-0.5">
+                        <Badge tone={rendicionStatusTone[item.rendicion_status || item.status]}>
+                          {rendicionStatusLabels[item.rendicion_status || item.status] ||
+                            item.rendicion_status ||
+                            item.status}
+                        </Badge>
+                      </div>,
+                      <div key="id" className="min-w-[280px]">
+                        <span className="block font-medium text-gray-900">
+                          {item.context_label || item.case_id}
+                        </span>
+                        <span className="mt-1 block font-mono text-[11px] text-gray-500">
+                          {item.case_id}
+                        </span>
+                        {actionConfig && (
+                          <div className="mt-3">
+                            {renderActionButton({
+                              icon: actionConfig.icon,
+                              label: actionConfig.label,
+                              loadingLabel: actionConfig.loadingLabel,
+                              loading:
+                                actionLoading === `${item.case_id}:${actionConfig.action}`,
+                              onClick: () => runAction(item.case_id, actionConfig.action),
+                              className: `${actionButtonClassName} ${actionConfig.className}`,
+                            })}
+                          </div>
+                        )}
+                      </div>,
+                      <div key="emp" className="min-w-[190px]">
+                        <span className="block max-w-[180px] truncate font-medium text-gray-900">
+                          {item.employee?.name || item.employee_phone || "-"}
+                        </span>
+                        <span className="mt-1 block text-xs text-gray-500">
+                          {item.employee_phone || item.phone || "Sin teléfono"}
+                        </span>
+                      </div>,
+                      <span key="fondos" className="text-sm font-semibold text-gray-900">
+                        {formatCLP(item.fondos_entregados)}
+                      </span>,
+                      <span key="aprobado" className="text-sm font-medium text-emerald-700">
+                        {formatCLP(item.monto_rendido_aprobado)}
+                      </span>,
+                      <span
+                        key="saldo"
+                        className={`text-sm font-medium ${
+                          (item.saldo_restante ?? 0) < 0 ? "text-red-600" : "text-gray-900"
+                        }`}
+                      >
+                        {formatCLP(item.saldo_restante)}
+                      </span>,
+                    ];
+                  })}
+                />
+              </div>
+            </>
           )}
         </SectionCard>
       </Shell>
