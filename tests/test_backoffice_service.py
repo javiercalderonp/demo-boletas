@@ -166,7 +166,8 @@ class BackofficeCaseTransitionTests(unittest.TestCase):
 
         self.assertIn("después de estar aprobada", str(ctx.exception))
 
-    def test_sync_case_settlement_marks_negative_balance_as_employee_owes_company(self):
+    def test_sync_case_settlement_marks_negative_balance_as_company_owes_employee(self):
+        # fondos_entregados < monto_aprobado → empresa debe reembolsar al empleado
         sheets = FakeSheetsService(
             case_row={"case_id": "CASE-1", "rendicion_status": "approved", "fondos_entregados": 10000},
             expenses=[
@@ -177,10 +178,27 @@ class BackofficeCaseTransitionTests(unittest.TestCase):
 
         updated = service.sync_case_settlement("CASE-1")
 
-        self.assertEqual(updated["settlement_direction"], "employee_owes_company")
+        self.assertEqual(updated["settlement_direction"], "company_owes_employee")
         self.assertEqual(updated["settlement_status"], "settlement_pending")
         self.assertEqual(updated["settlement_amount_clp"], 6000.0)
         self.assertEqual(updated["settlement_net_clp"], -6000.0)
+
+    def test_sync_case_settlement_marks_positive_balance_as_employee_owes_company(self):
+        # fondos_entregados > monto_aprobado → empleado debe devolver el exceso
+        sheets = FakeSheetsService(
+            case_row={"case_id": "CASE-1", "rendicion_status": "approved", "fondos_entregados": 16000},
+            expenses=[
+                {"expense_id": "EXP-1", "case_id": "CASE-1", "status": "approved", "total_clp": 10000},
+            ],
+        )
+        service = BackofficeService(sheets_service=sheets)
+
+        updated = service.sync_case_settlement("CASE-1")
+
+        self.assertEqual(updated["settlement_direction"], "employee_owes_company")
+        self.assertEqual(updated["settlement_status"], "settlement_pending")
+        self.assertEqual(updated["settlement_amount_clp"], 6000.0)
+        self.assertEqual(updated["settlement_net_clp"], 6000.0)
 
     def test_sync_case_settlement_marks_balanced_as_settled(self):
         sheets = FakeSheetsService(
@@ -319,6 +337,31 @@ class BackofficeCaseTransitionTests(unittest.TestCase):
         self.assertIn("Datos bancarios de ACME", message)
         self.assertIn("Banco Estado", message)
         self.assertIn("envíame el comprobante", message)
+
+    def test_build_case_settlement_resolved_message_for_employee_deposit_received(self):
+        service = BackofficeService(
+            sheets_service=FakeSheetsService(case_row={"case_id": "CASE-1"}, expenses=[])
+        )
+
+        message = service.build_case_settlement_resolved_whatsapp_message(
+            {"settlement_direction": "employee_owes_company", "settlement_amount_clp": 4500}
+        )
+
+        self.assertIn("llegó tu depósito", message)
+        self.assertIn("$4.500", message)
+
+    def test_build_case_settlement_resolved_message_for_company_deposit_sent(self):
+        service = BackofficeService(
+            sheets_service=FakeSheetsService(case_row={"case_id": "CASE-1"}, expenses=[])
+        )
+
+        message = service.build_case_settlement_resolved_whatsapp_message(
+            {"settlement_direction": "company_owes_employee", "settlement_amount_clp": 12500}
+        )
+
+        self.assertIn("Ya depositamos", message)
+        self.assertIn("en tu cuenta", message)
+        self.assertIn("$12.500", message)
 
 
 if __name__ == "__main__":

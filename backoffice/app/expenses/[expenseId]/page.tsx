@@ -32,6 +32,7 @@ const fieldLabels: Record<string, string> = {
   total: "Total",
   total_clp: "Total CLP",
   category: "Categoría",
+  cost_center: "Centro de costo",
   country: "País",
   status: "Estado",
 };
@@ -373,6 +374,7 @@ export default function ExpenseDetailPage() {
                           "total",
                           "total_clp",
                           "category",
+                          "cost_center",
                           "country",
                           "status",
                         ] as const
@@ -409,6 +411,7 @@ export default function ExpenseDetailPage() {
                         "total",
                         "total_clp",
                         "category",
+                        "cost_center",
                         "country",
                         "status",
                       ] as const

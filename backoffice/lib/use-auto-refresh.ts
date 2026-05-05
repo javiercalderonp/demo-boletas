@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 
 import { subscribeToApiMutations } from "@/lib/api-events";
 
-const DEFAULT_INTERVAL_MS = 3000;
+const DEFAULT_INTERVAL_MS = 30000;
 
 type AutoRefreshOptions = {
   enabled?: boolean;

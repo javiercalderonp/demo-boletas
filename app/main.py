@@ -171,6 +171,11 @@ def create_app() -> FastAPI:
             "scheduler_evening_hour_local": settings.scheduler_evening_hour_local,
             "gcs_storage_enabled": container.storage.enabled,
             "gcs_bucket_name": settings.gcs_bucket_name if container.storage.enabled else None,
+            "document_ai_enabled": container.ocr.document_ai_enabled,
+            "document_ai_location": settings.document_ai_location if container.ocr.document_ai_enabled else None,
+            "document_ai_processor_id": (
+                settings.document_ai_processor_id if container.ocr.document_ai_enabled else None
+            ),
             "docusign_enabled": settings.docusign_enabled,
             "docusign_ready": container.docusign.enabled,
             "docusign_account_id": (
@@ -693,7 +698,7 @@ def _handle_media_message(container: ServiceContainer, phone: str, payload: dict
     inbound_message_id = str(
         payload.get("InboundMessageId") or payload.get("MessageSid") or payload.get("SmsSid") or ""
     ).strip()
-    logger.info(
+    logger.warning(
         "Receipt processing started phone=%s provider=%s media_id=%s has_media_url=%s mime=%s inbound_message_id=%s",
         phone,
         container.whatsapp.provider,
@@ -706,7 +711,7 @@ def _handle_media_message(container: ServiceContainer, phone: str, payload: dict
         media_url, resolved_mime_type = container.whatsapp.get_meta_media_url(media_id)
         if resolved_mime_type and not media_content_type:
             media_content_type = resolved_mime_type
-        logger.info(
+        logger.warning(
             "Receipt media resolved from Meta phone=%s media_id=%s resolved_mime=%s has_media_url=%s",
             phone,
             media_id,
@@ -740,7 +745,7 @@ def _handle_media_message(container: ServiceContainer, phone: str, payload: dict
     try:
         ocr_started_at = time.perf_counter()
         ocr_data = container.ocr.extract_receipt_data(media_url, media_content_type)
-        logger.info(
+        logger.warning(
             "Receipt OCR completed phone=%s elapsed_ms=%d summary=%s",
             phone,
             int((time.perf_counter() - ocr_started_at) * 1000),
@@ -962,19 +967,20 @@ def _handle_text_message(container: ServiceContainer, phone: str, body: str) -> 
                 if has_pending_receipts:
                     closing_line = "Recibido. Ahora voy con el siguiente documento."
                 case_id = str(saved.get("case_id", saved.get("trip_id", "")) or "")
-                policy_status_message = container.expense.build_policy_status_message(
-                    phone=phone,
-                    case_id=case_id,
-                )
-                policy_alert_message = container.expense.build_policy_alert_message(
-                    phone=phone,
-                    case_id=case_id,
-                )
                 reply_messages = ["Gasto guardado con éxito."]
-                if policy_status_message:
-                    reply_messages.append(policy_status_message)
-                if policy_alert_message:
-                    reply_messages.append(policy_alert_message)
+                if not has_pending_receipts:
+                    policy_status_message = container.expense.build_policy_status_message(
+                        phone=phone,
+                        case_id=case_id,
+                    )
+                    policy_alert_message = container.expense.build_policy_alert_message(
+                        phone=phone,
+                        case_id=case_id,
+                    )
+                    if policy_status_message:
+                        reply_messages.append(policy_status_message)
+                    if policy_alert_message:
+                        reply_messages.append(policy_alert_message)
                 reply_messages.append(closing_line)
             container.sheets.update_conversation(
                 phone,
@@ -1167,12 +1173,14 @@ async def _handle_meta_webhook(
     for event in events:
         phone = normalize_whatsapp_phone(event.get("phone"))
         body = str(event.get("body") or "").strip()
-        media_entries = _stamp_media_entries(event.get("media_entries", []))
+        raw_media_entries = event.get("media_entries", [])
+        media_entries = _stamp_media_entries(raw_media_entries)
+        message_type = str(event.get("message_type") or "").strip().lower()
         inbound_message_id = str(event.get("message_id") or "").strip()
         logger.warning(
             "Meta webhook event phone=%s type=%s media_count=%d has_body=%s message_id=%s",
             phone,
-            event.get("message_type"),
+            message_type,
             len(media_entries),
             bool(body),
             inbound_message_id,
@@ -1274,6 +1282,24 @@ async def _handle_meta_webhook(
                 reply_to_message_id=inbound_message_id,
             )
             await _run_media_processing_during_request(container, phone, first_payload)
+            continue
+
+        if message_type in {"image", "document"} and not media_entries:
+            logger.warning(
+                "Meta webhook media event skipped: no valid media entry phone=%s type=%s message_id=%s",
+                phone,
+                message_type,
+                inbound_message_id,
+            )
+            continue
+
+        if not body and not media_entries:
+            logger.warning(
+                "Meta webhook empty event skipped phone=%s type=%s message_id=%s",
+                phone,
+                message_type,
+                inbound_message_id,
+            )
             continue
 
         _log_inbound_text_message(

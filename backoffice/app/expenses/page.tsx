@@ -32,6 +32,7 @@ const filterLabels: Record<string, string> = {
   review_status: "Estado revisión",
   employee_phone: "Teléfono empleado",
   category: "Categoría",
+  cost_center: "Centro de costo",
   date_from: "Fecha desde",
   date_to: "Fecha hasta",
 };
@@ -64,6 +65,7 @@ type FilterState = {
   review_status: string;
   employee_phone: string;
   category: string;
+  cost_center: string;
   date_from: string;
   date_to: string;
 };
@@ -73,6 +75,7 @@ const emptyFilters: FilterState = {
   review_status: "",
   employee_phone: "",
   category: "",
+  cost_center: "",
   date_from: "",
   date_to: "",
 };
@@ -157,6 +160,7 @@ export default function ExpensesPage() {
       review_status: params.get("review_status") || "",
       employee_phone: params.get("employee_phone") || "",
       category: params.get("category") || "",
+      cost_center: params.get("cost_center") || "",
       date_from: params.get("date_from") || "",
       date_to: params.get("date_to") || "",
     };
@@ -545,6 +549,9 @@ export default function ExpensesPage() {
                                 )}
                               </p>
                               <p className="mt-0.5 text-xs text-gray-400">{expense.date || "Sin fecha"}</p>
+                              <p className="mt-0.5 text-xs text-gray-500">
+                                Centro costo: {expense.cost_center || "-"}
+                              </p>
                             </div>
                             <div className="flex shrink-0 flex-col items-end gap-2">
                               <button
@@ -644,6 +651,7 @@ export default function ExpensesPage() {
                     </button>,
                     "Empleado",
                     "Boleta",
+                    "Centro costo",
                     "Monto",
                     "Score",
                   ]}
@@ -724,6 +732,9 @@ export default function ExpensesPage() {
                           )}
                         </div>
                       </div>,
+                      <span key="cost_center" className="min-w-[120px] text-sm text-gray-700">
+                        {expense.cost_center || "-"}
+                      </span>,
                       <div key="amount" className="min-w-[130px]">
                         <span className="block text-sm font-semibold text-gray-900">
                           {`${expense.currency || ""} ${expense.total || "-"}`}

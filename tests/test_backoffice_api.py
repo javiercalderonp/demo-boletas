@@ -76,7 +76,10 @@ class FakeBackofficeActions:
     def __init__(self):
         self.case_row = {
             "case_id": "CASE-1",
+            "employee_phone": "+56911111111",
             "rendicion_status": "approved",
+            "settlement_direction": "employee_owes_company",
+            "settlement_amount_clp": 4500,
             "settlement_status": "settled",
             "status": "active",
         }
@@ -99,6 +102,10 @@ class FakeBackofficeActions:
         self.calls.append(("update_case", case_id, dict(payload)))
         self.case_row = {**self.case_row, **payload}
         return dict(self.case_row)
+
+    def build_case_settlement_resolved_whatsapp_message(self, expense_case):
+        self.calls.append(("build_case_settlement_resolved_whatsapp_message", dict(expense_case)))
+        return "Tu liquidación quedó resuelta.\nConfirmamos que llegó tu depósito por $4.500."
 
 
 class FakeScheduler:
@@ -145,6 +152,16 @@ class BackofficeApiTests(unittest.TestCase):
         self.assertIn(
             ("update_case", "CASE-1", {"rendicion_status": "closed", "status": "closed"}),
             container.backoffice.calls,
+        )
+        self.assertEqual(
+            container.whatsapp.sent,
+            [
+                (
+                    "+56911111111",
+                    "Tu liquidación quedó resuelta.\nConfirmamos que llegó tu depósito por $4.500.",
+                    None,
+                )
+            ],
         )
 
     def test_create_case_returns_409_when_employee_already_has_active_case(self):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from urllib.parse import urlparse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -23,6 +24,7 @@ WAIT_SUBMISSION_CLOSURE_CONFIRMATION = "WAIT_SUBMISSION_CLOSURE_CONFIRMATION"
 SUBMISSION_CLOSURE_STEP = "submission_closure_confirmation"
 SUBMISSION_CLOSURE_TIMEOUT_HOURS = 24
 ACTIVE_RECEIPT_STATES = {"PROCESSING", "NEEDS_INFO", "CONFIRM_SUMMARY"}
+WHATSAPP_DOCUMENT_FOLLOWUP_DELAY_SECONDS = 1.5
 
 _COUNTRY_TIMEZONE_MAP = {
     "CHILE": "America/Santiago",
@@ -246,7 +248,7 @@ class SchedulerService:
         phone: str,
         message: str,
         now_utc: datetime | None = None,
-    ) -> str | None:
+    ) -> str | list[str] | None:
         now = self._ensure_utc(now_utc)
         conversation = self.sheets_service.get_conversation(phone) or {}
         state = str(conversation.get("state", "") or "")
@@ -296,7 +298,7 @@ class SchedulerService:
             primary_message = backoffice.build_case_settlement_whatsapp_message(finalized_case)
             follow_up_message = backoffice.build_case_settlement_bank_details_message(finalized_case)
             if follow_up_message:
-                self.whatsapp_service.send_outbound_text(phone, follow_up_message)
+                return [primary_message, follow_up_message]
             return primary_message
 
         if document_id:
@@ -1159,14 +1161,16 @@ class SchedulerService:
             )
 
         signed_url = str(document.get("signed_url", "") or "").strip()
+        document_message_id = ""
         if signed_url:
             try:
-                self.whatsapp_service.send_outbound_document(
+                document_message = self.whatsapp_service.send_outbound_document(
                     phone,
                     signed_url,
                     filename=document_label,
                     caption="",
                 )
+                document_message_id = str(document_message.get("id", "") or "").strip()
             except Exception as exc:
                 logger.exception("Submission closure PDF send failed case_id=%s phone=%s", case_id, phone)
 
@@ -1192,6 +1196,7 @@ class SchedulerService:
                 expense_case.get("context_label", expense_case.get("destination", "")) or ""
             ).strip()
             context_text = f" ({context_label})" if context_label else ""
+            self._wait_for_whatsapp_document_followup(document_message_id=document_message_id)
             self.whatsapp_service.send_outbound_list(
                 phone,
                 body=f"Rendición cerrada{context_text}. Revisa el PDF consolidado y elige una opción.",
@@ -1208,6 +1213,7 @@ class SchedulerService:
                         "description": "Necesito revisión antes de cerrar.",
                     },
                 ],
+                reply_to_message_id=document_message_id or None,
             )
             return ""
 
@@ -1327,6 +1333,13 @@ class SchedulerService:
 
     def _deliver_trip_closure_package(self, *, phone: str, trip_id: str) -> str:
         return self._deliver_submission_closure_package(phone=phone, case_id=trip_id)
+
+    def _wait_for_whatsapp_document_followup(self, *, document_message_id: str) -> None:
+        if not document_message_id:
+            return
+        if str(getattr(self.whatsapp_service, "provider", "") or "").strip().lower() != "meta":
+            return
+        time.sleep(WHATSAPP_DOCUMENT_FOLLOWUP_DELAY_SECONDS)
 
     def _get_latest_pending_simple_confirmation_case(self, phone: str) -> dict[str, Any] | None:
         normalized_phone = normalize_whatsapp_phone(phone)

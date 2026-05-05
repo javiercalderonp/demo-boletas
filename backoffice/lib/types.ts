@@ -41,6 +41,7 @@ export type Company = {
 export type CaseItem = {
   case_id: string;
   context_label?: string;
+  cost_centers?: string[];
   company_id?: string;
   employee_phone?: string;
   phone?: string;
@@ -76,6 +77,7 @@ export type Expense = {
   total?: number | string;
   total_clp?: number | string;
   category?: string;
+  cost_center?: string;
   country?: string;
   shared?: boolean | string;
   status?: string;

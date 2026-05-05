@@ -13,7 +13,6 @@ import {
   ChevronDown,
   LogOut,
   Menu,
-  X,
 } from "lucide-react";
 
 import { useAuth } from "@/components/auth-provider";
@@ -50,7 +49,7 @@ export function Shell({
   };
 
   return (
-    <div className="flex h-screen overflow-hidden bg-gray-50">
+    <div className="min-h-dvh bg-gray-50 lg:pl-72">
       {/* Mobile overlay */}
       {sidebarOpen && (
         <div
@@ -61,7 +60,7 @@ export function Shell({
 
       {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 flex w-72 flex-col border-r border-gray-200 bg-white transition-transform lg:static lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-50 flex w-72 flex-col border-r border-gray-200 bg-white transition-transform lg:translate-x-0 ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
@@ -113,9 +112,9 @@ export function Shell({
       </aside>
 
       {/* Main content */}
-      <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex min-h-dvh flex-1 flex-col">
         {/* Top navbar */}
-        <header className="flex h-16 items-center justify-between border-b border-gray-200 bg-white px-4 lg:px-8">
+        <header className="sticky top-0 z-30 flex h-16 shrink-0 items-center justify-between border-b border-gray-200 bg-white px-4 lg:px-8">
           <div className="flex items-center gap-4">
             <button
               className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 lg:hidden"
@@ -181,11 +180,38 @@ export function Shell({
         </header>
 
         {/* Page content */}
-        <main className="flex-1 overflow-y-auto p-4 lg:p-8">
+        <main className="flex-1 p-4 pb-[calc(5.5rem+env(safe-area-inset-bottom))] lg:p-8">
           <div className="mx-auto max-w-7xl">
             {children}
           </div>
         </main>
+
+        <nav
+          className="fixed inset-x-0 bottom-0 z-40 border-t border-gray-200 bg-white/95 px-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-2 shadow-[0_-8px_24px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden"
+          aria-label="Navegación principal"
+        >
+          <div className="mx-auto grid max-w-md grid-cols-5 gap-1">
+            {navigation.map((item) => {
+              const Icon = item.icon;
+              const active = isActive(item.href);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`flex h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-lg px-1 text-[11px] font-medium transition-colors ${
+                    active
+                      ? "bg-primary-50 text-primary-700"
+                      : "text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                  }`}
+                  aria-current={active ? "page" : undefined}
+                >
+                  <Icon className={`h-5 w-5 ${active ? "text-primary-600" : "text-gray-400"}`} />
+                  <span className="w-full truncate text-center">{item.label}</span>
+                </Link>
+              );
+            })}
+          </div>
+        </nav>
       </div>
     </div>
   );

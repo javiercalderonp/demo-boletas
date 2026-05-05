@@ -30,6 +30,7 @@ import type { CaseItem, Company, Employee } from "@/lib/types";
 const emptyForm = {
   employee_phone: "",
   context_label: "",
+  cost_centers: [] as string[],
   company_id: "",
   closure_method: "docusign",
   status: "active",
@@ -198,6 +199,7 @@ export default function CasesPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [createEmployeeOpen, setCreateEmployeeOpen] = useState(false);
   const [companyAccordionOpen, setCompanyAccordionOpen] = useState(false);
+  const [costCenterDraft, setCostCenterDraft] = useState("");
   const [createConflictPopup, setCreateConflictPopup] = useState<{
     message: string;
     activeCaseLabel: string;
@@ -206,6 +208,7 @@ export default function CasesPage() {
   const [employeeSearch, setEmployeeSearch] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [costCenterFilter, setCostCenterFilter] = useState("");
   const [balanceFilter, setBalanceFilter] = useState<"" | "positive" | "negative">("");
   const [actionPopup, setActionPopup] = useState<{ title: string; message: string } | null>(null);
   const [actionLoading, setActionLoading] = useState("");
@@ -261,11 +264,32 @@ export default function CasesPage() {
     const params = new URLSearchParams(window.location.search);
     setSearchQuery(params.get("q") || "");
     setStatusFilter(params.get("status") || "");
+    setCostCenterFilter(params.get("cost_center") || "");
     const balance = params.get("balance");
     setBalanceFilter(
       balance === "positive" || balance === "negative" ? balance : "",
     );
   }, []);
+
+  function addCostCenter(rawValue = costCenterDraft) {
+    const value = rawValue.trim();
+    if (!value) return;
+    setForm((current) => {
+      const exists = current.cost_centers.some(
+        (center) => center.trim().toLowerCase() === value.toLowerCase(),
+      );
+      if (exists) return current;
+      return { ...current, cost_centers: [...current.cost_centers, value] };
+    });
+    setCostCenterDraft("");
+  }
+
+  function removeCostCenter(value: string) {
+    setForm((current) => ({
+      ...current,
+      cost_centers: current.cost_centers.filter((center) => center !== value),
+    }));
+  }
 
   const selectedCompany = useMemo(
     () => companies?.find((company) => company.company_id === form.company_id) || null,
@@ -316,6 +340,7 @@ export default function CasesPage() {
     try {
       await apiRequest("/cases", { method: "POST", body: form, token });
       setForm(emptyForm);
+      setCostCenterDraft("");
       setEmployeeSearch("");
       setEmployeeForm(emptyEmployeeForm);
       setCreateEmployeeOpen(false);
@@ -389,13 +414,23 @@ export default function CasesPage() {
           (c.context_label || "").toLowerCase().includes(q) ||
           (c.employee?.name || "").toLowerCase().includes(q) ||
           (c.employee_phone || c.phone || "").includes(q) ||
-          (c.company_id || "").toLowerCase().includes(q),
+          (c.company_id || "").toLowerCase().includes(q) ||
+          (c.cost_centers || []).some((center) => center.toLowerCase().includes(q)),
       );
     }
 
     if (statusFilter) {
       result = result.filter(
         (c) => (c.rendicion_status || c.status) === statusFilter,
+      );
+    }
+
+    if (costCenterFilter) {
+      const normalizedCostCenter = costCenterFilter.trim().toLowerCase();
+      result = result.filter((c) =>
+        (c.cost_centers || []).some(
+          (center) => center.trim().toLowerCase() === normalizedCostCenter,
+        ),
       );
     }
 
@@ -406,7 +441,22 @@ export default function CasesPage() {
     }
 
     return result;
-  }, [items, searchQuery, statusFilter, balanceFilter]);
+  }, [items, searchQuery, statusFilter, costCenterFilter, balanceFilter]);
+
+  const costCenterOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const options: string[] = [];
+    for (const item of items || []) {
+      for (const center of item.cost_centers || []) {
+        const value = center.trim();
+        const key = value.toLowerCase();
+        if (!value || seen.has(key)) continue;
+        seen.add(key);
+        options.push(value);
+      }
+    }
+    return options.sort((a, b) => a.localeCompare(b, "es-CL"));
+  }, [items]);
 
   async function runAction(
     caseId: string,
@@ -571,6 +621,7 @@ export default function CasesPage() {
                   onClick={() => {
                     setCreateOpen(false);
                     setForm(emptyForm);
+                    setCostCenterDraft("");
                     setEmployeeSearch("");
                     setEmployeeForm(emptyEmployeeForm);
                     setCreateEmployeeOpen(false);
@@ -743,6 +794,42 @@ export default function CasesPage() {
                 </div>
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                    Centros de costo
+                  </label>
+                  <div className="rounded-xl border border-gray-300 bg-white px-3 py-2 focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-100">
+                    <div className="flex flex-wrap gap-2">
+                      {form.cost_centers.map((center) => (
+                        <span
+                          key={center}
+                          className="inline-flex items-center gap-1 rounded-full border border-primary-200 bg-primary-50 px-2.5 py-1 text-xs font-medium text-primary-700"
+                        >
+                          {center}
+                          <button
+                            aria-label={`Quitar ${center}`}
+                            className="rounded-full text-primary-500 transition hover:text-primary-800"
+                            onClick={() => removeCostCenter(center)}
+                            type="button"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </span>
+                      ))}
+                      <input
+                        value={costCenterDraft}
+                        onChange={(event) => setCostCenterDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter") return;
+                          event.preventDefault();
+                          addCostCenter();
+                        }}
+                        placeholder={form.cost_centers.length ? "Agregar otro" : "Escribe y presiona Enter"}
+                        className="min-w-[180px] flex-1 border-0 bg-transparent px-1 py-1 text-sm text-gray-900 outline-none placeholder:text-gray-400"
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-gray-700">
                     {fieldLabels.closure_method}
                   </label>
                   <select
@@ -877,6 +964,7 @@ export default function CasesPage() {
                     onClick={() => {
                       setCreateOpen(false);
                       setForm(emptyForm);
+                      setCostCenterDraft("");
                       setEmployeeSearch("");
                       setEmployeeForm(emptyEmployeeForm);
                       setCreateEmployeeOpen(false);
@@ -946,12 +1034,13 @@ export default function CasesPage() {
             </select>
           </div>
           <div className="flex items-center justify-between sm:contents">
-            {(searchQuery || statusFilter || balanceFilter) ? (
+            {(searchQuery || statusFilter || costCenterFilter || balanceFilter) ? (
               <button
                 type="button"
                 onClick={() => {
                   setSearchQuery("");
                   setStatusFilter("");
+                  setCostCenterFilter("");
                   setBalanceFilter("");
                 }}
                 className="text-xs text-gray-500 underline hover:text-gray-700"
@@ -971,6 +1060,35 @@ export default function CasesPage() {
             </button>
           </div>
         </div>
+        {costCenterOptions.length > 0 && (
+          <div className="mb-5 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setCostCenterFilter("")}
+              className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${
+                !costCenterFilter
+                  ? "border-gray-900 bg-gray-900 text-white"
+                  : "border-gray-200 text-gray-600 hover:bg-gray-50"
+              }`}
+            >
+              Todos los centros
+            </button>
+            {costCenterOptions.map((center) => (
+              <button
+                key={center}
+                type="button"
+                onClick={() => setCostCenterFilter(center)}
+                className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${
+                  costCenterFilter === center
+                    ? "border-primary-300 bg-primary-50 text-primary-700"
+                    : "border-gray-200 text-gray-600 hover:bg-gray-50"
+                }`}
+              >
+                {center}
+              </button>
+            ))}
+          </div>
+        )}
 
         <SectionCard
           title={`Listado${filteredItems ? ` (${filteredItems.length})` : ""}`}
@@ -1016,6 +1134,18 @@ export default function CasesPage() {
                                 {item.context_label || item.case_id}
                               </p>
                               <p className="font-mono text-[11px] text-gray-400">{item.case_id}</p>
+                              {(item.cost_centers || []).length > 0 && (
+                                <div className="mt-2 flex flex-wrap gap-1.5">
+                                  {(item.cost_centers || []).map((center) => (
+                                    <span
+                                      key={center}
+                                      className="rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px] font-medium text-gray-600"
+                                    >
+                                      {center}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
                               <p className="mt-1.5 text-xs text-gray-600">
                                 <span className="font-medium">
                                   {item.employee?.name || item.employee_phone || "—"}
@@ -1118,6 +1248,18 @@ export default function CasesPage() {
                         <span className="mt-1 block font-mono text-[11px] text-gray-500">
                           {item.case_id}
                         </span>
+                        {(item.cost_centers || []).length > 0 && (
+                          <div className="mt-2 flex max-w-[260px] flex-wrap gap-1.5">
+                            {(item.cost_centers || []).map((center) => (
+                              <span
+                                key={center}
+                                className="rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-[11px] font-medium text-gray-600"
+                              >
+                                {center}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                         {actionConfig && (
                           <div className="mt-3">
                             {renderActionButton({

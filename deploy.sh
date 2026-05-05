@@ -72,6 +72,13 @@ deploy_front() {
         | tail -1
     )"
   fi
+  if [[ -z "$deployment_url" ]]; then
+    deployment_url="$(
+      printf '%s\n' "$deploy_output" \
+        | sed -n 's/^\(https:\/\/[^ ]*\.vercel\.app\)$/\1/p' \
+        | tail -1
+    )"
+  fi
   if [[ -n "$deployment_url" ]]; then
     npx --yes vercel@latest alias set "$deployment_url" "$BACKOFFICE_EXTRA_ALIAS"
   else

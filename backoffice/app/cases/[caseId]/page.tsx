@@ -263,11 +263,16 @@ export default function CaseDetailPage() {
     try {
       const form = new FormData(event.currentTarget);
       const payload = Object.fromEntries(form.entries());
+      const costCenters = String(payload.cost_centers || "")
+        .split(/\n|,/)
+        .map((center) => center.trim())
+        .filter(Boolean);
       await apiRequest(`/cases/${caseId}`, {
         method: "PUT",
         body: {
           ...item,
           ...payload,
+          cost_centers: costCenters,
           employee_phone: item.employee_phone || item.phone,
         },
         token,
@@ -415,6 +420,14 @@ export default function CaseDetailPage() {
                       <span className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1">
                         Empresa asociada: {item.company_id || "-"}
                       </span>
+                      {(item.cost_centers || []).map((center) => (
+                        <span
+                          key={center}
+                          className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1"
+                        >
+                          {center}
+                        </span>
+                      ))}
                       {item.closure_method === "docusign" && (
                         <span className="inline-flex items-center rounded-full border border-primary-200 bg-primary-50 px-2.5 py-1 text-primary-700">
                           Cierre: DocuSign
@@ -463,6 +476,17 @@ export default function CaseDetailPage() {
                             </option>
                           ))}
                         </select>
+                      </div>
+                      <div className="lg:col-span-3">
+                        <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                          Centros de costo
+                        </label>
+                        <textarea
+                          defaultValue={(item.cost_centers || []).join("\n")}
+                          name="cost_centers"
+                          rows={3}
+                          className="block w-full resize-none rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm text-gray-900 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
+                        />
                       </div>
                       <div className="flex items-end">
                         <button
@@ -631,6 +655,7 @@ export default function CaseDetailPage() {
                 columns={[
                   "Score",
                   "Merchant",
+                  "Centro costo",
                   "Fecha",
                   "Monto",
                   "Review",
@@ -644,6 +669,9 @@ export default function CaseDetailPage() {
                   />,
                   <span key="merchant" className="text-sm">
                     {expense.merchant || "-"}
+                  </span>,
+                  <span key="cost_center" className="text-xs text-gray-600">
+                    {expense.cost_center || "-"}
                   </span>,
                   <span key="date" className="text-xs text-gray-500">
                     {expense.date || "-"}

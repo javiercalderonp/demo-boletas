@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from services.sheets_service import SheetsService
+from services.sheets_service import SheetsService, normalize_cost_centers
 from services.statuses import (
     CaseStatus,
     ExpenseStatus,
@@ -93,6 +93,32 @@ class BackofficeService:
 
     def build_case_settlement_bank_details_message(self, expense_case: dict[str, Any]) -> str | None:
         settlement_direction = normalize_state(expense_case.get("settlement_direction"))
+
+        if settlement_direction == SettlementDirection.COMPANY_OWES_EMPLOYEE:
+            employee_phone = str(
+                expense_case.get("employee_phone", expense_case.get("phone", "")) or ""
+            ).strip()
+            get_employee = getattr(self.sheets_service, "get_employee_any_by_phone", None)
+            employee = (callable(get_employee) and get_employee(employee_phone)) or {}
+            detail_lines = [
+                line
+                for line in (
+                    f"Banco: {str(employee.get('bank_name', '') or '').strip()}",
+                    f"Tipo de cuenta: {str(employee.get('account_type', '') or '').strip()}",
+                    f"Número de cuenta: {str(employee.get('account_number', '') or '').strip()}",
+                    f"Titular: {str(employee.get('account_holder', '') or '').strip()}",
+                    f"RUT: {str(employee.get('account_holder_rut', '') or '').strip()}",
+                )
+                if not line.endswith(": ")
+            ]
+            if not detail_lines:
+                return "Realizaremos el depósito con los datos bancarios que tenemos registrados para ti."
+            return (
+                "Realizaremos el depósito en tu cuenta con los siguientes datos registrados:\n"
+                + "\n".join(detail_lines)
+                + "\n\nSi algún dato es incorrecto, avísanos a la brevedad."
+            )
+
         if settlement_direction != SettlementDirection.EMPLOYEE_OWES_COMPANY:
             return None
 
@@ -120,6 +146,26 @@ class BackofficeService:
             f"Datos bancarios de {company_name}:\n"
             + "\n".join(detail_lines)
             + "\n\nCuando realices el depósito, envíame el comprobante por este chat."
+        )
+
+    def build_case_settlement_resolved_whatsapp_message(self, expense_case: dict[str, Any]) -> str:
+        settlement_direction = normalize_state(expense_case.get("settlement_direction"))
+        settlement_amount = parse_float(expense_case.get("settlement_amount_clp")) or 0.0
+        amount_text = self._format_clp(settlement_amount)
+
+        if settlement_direction == SettlementDirection.EMPLOYEE_OWES_COMPANY:
+            return (
+                "Tu liquidación quedó resuelta.\n"
+                f"Confirmamos que llegó tu depósito por {amount_text}."
+            )
+        if settlement_direction == SettlementDirection.COMPANY_OWES_EMPLOYEE:
+            return (
+                "Tu liquidación quedó resuelta.\n"
+                f"Ya depositamos {amount_text} en tu cuenta."
+            )
+        return (
+            "Tu liquidación quedó resuelta.\n"
+            "El saldo quedó cuadrado, así que no corresponde ningún depósito adicional."
         )
 
     def _resolve_company_for_case(self, expense_case: dict[str, Any]) -> dict[str, Any] | None:
@@ -368,8 +414,18 @@ class BackofficeService:
             "deleted_expenses": deleted_expenses,
         }
 
-    def list_cases(self) -> list[dict[str, Any]]:
-        return self._enrich_cases(self.sheets_service.list_expense_cases())
+    def list_cases(self, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        cases = self._enrich_cases(self.sheets_service.list_expense_cases())
+        filters = filters or {}
+        cost_center = str(filters.get("cost_center", "") or "").strip().lower()
+        if cost_center:
+            cases = [
+                item
+                for item in cases
+                if cost_center
+                in [str(center or "").strip().lower() for center in item.get("cost_centers", [])]
+            ]
+        return cases
 
     def get_case_detail(self, case_id: str) -> dict[str, Any] | None:
         expense_case = self.sheets_service.get_expense_case_by_id(case_id)
@@ -399,6 +455,7 @@ class BackofficeService:
 
     def create_case(self, payload: dict[str, Any]) -> dict[str, Any]:
         data = dict(payload)
+        data["cost_centers"] = normalize_cost_centers(data.get("cost_centers", []))
         employee_phone = normalize_whatsapp_phone(
             data.get("employee_phone", data.get("phone", ""))
         )
@@ -448,7 +505,10 @@ class BackofficeService:
         return self.sheets_service.create_expense_case(data)
 
     def update_case(self, case_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-        return self.sheets_service.update_expense_case(case_id, payload)
+        data = dict(payload)
+        if "cost_centers" in data:
+            data["cost_centers"] = normalize_cost_centers(data.get("cost_centers", []))
+        return self.sheets_service.update_expense_case(case_id, data)
 
     def get_case_transition_gate(self, case_id: str) -> dict[str, Any]:
         expense_case = self.sheets_service.get_expense_case_by_id(case_id)
@@ -595,6 +655,7 @@ class BackofficeService:
         review_status = normalize_state(filters.get("review_status"))
         employee_phone = str(filters.get("employee_phone", "") or "").strip()
         category = str(filters.get("category", "") or "").strip().lower()
+        cost_center = str(filters.get("cost_center", "") or "").strip().lower()
         date_from = str(filters.get("date_from", "") or "").strip()
         date_to = str(filters.get("date_to", "") or "").strip()
         sort_by = str(filters.get("sort_by", "") or "").strip().lower()
@@ -619,6 +680,12 @@ class BackofficeService:
                 item
                 for item in expenses
                 if str(item.get("category", "")).strip().lower() == category
+            ]
+        if cost_center:
+            expenses = [
+                item
+                for item in expenses
+                if str(item.get("cost_center", "")).strip().lower() == cost_center
             ]
         if date_from:
             expenses = [item for item in expenses if str(item.get("date", "")).strip() >= date_from]
@@ -766,8 +833,10 @@ class BackofficeService:
         amount = round(abs(net), 2)
         calculated_at = utc_now_iso()
 
-        if net != 0:
+        if net > 0:
             direction = SettlementDirection.EMPLOYEE_OWES_COMPANY
+        elif net < 0:
+            direction = SettlementDirection.COMPANY_OWES_EMPLOYEE
         else:
             direction = SettlementDirection.BALANCED
 
@@ -823,6 +892,7 @@ class BackofficeService:
         enriched: list[dict[str, Any]] = []
         for case in cases:
             item = dict(case)
+            item["cost_centers"] = normalize_cost_centers(item.get("cost_centers", []))
             phone = item.get("employee_phone", item.get("phone", ""))
             item["employee"] = employees_by_phone.get(phone)
             case_expenses = [e for e in expenses if e.get("case_id") == item.get("case_id")]
@@ -865,6 +935,10 @@ class BackofficeService:
             )
             item["employee"] = employees_by_phone.get(item.get("phone"))
             item["case"] = cases_by_id.get(item.get("case_id"))
+            if item.get("case"):
+                item["case"]["cost_centers"] = normalize_cost_centers(
+                    item["case"].get("cost_centers", [])
+                )
             if item.get("employee") is None and item.get("case"):
                 case_phone = item["case"].get("employee_phone", item["case"].get("phone", ""))
                 item["employee"] = employees_by_phone.get(case_phone)

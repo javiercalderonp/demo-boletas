@@ -36,6 +36,7 @@ class EmployeePayload(BaseModel):
 class CasePayload(BaseModel):
     case_id: Optional[str] = None
     context_label: str = ""
+    cost_centers: list[str] = Field(default_factory=list)
     company_id: str = ""
     employee_phone: str
     closure_method: str = "docusign"
@@ -54,6 +55,7 @@ class ExpensePayload(BaseModel):
     total: Optional[Union[float, str]] = None
     total_clp: Optional[Union[float, str]] = None
     category: Optional[str] = None
+    cost_center: Optional[str] = None
     country: Optional[str] = None
     shared: Optional[Union[bool, str]] = None
     status: Optional[str] = None

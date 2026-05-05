@@ -384,9 +384,10 @@ def delete_employee(
 @router.get("/cases")
 def list_cases(
     request: Request,
+    cost_center: str = Query(default=""),
     _: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
-    return {"items": _get_container(request).backoffice.list_cases()}
+    return {"items": _get_container(request).backoffice.list_cases({"cost_center": cost_center})}
 
 
 @router.post("/cases", status_code=status.HTTP_201_CREATED)
@@ -554,6 +555,15 @@ def case_action(
         )
         if not expense_case:
             raise HTTPException(status_code=404, detail="Case not found")
+        phone = str(expense_case.get("employee_phone", expense_case.get("phone", "")) or "").strip()
+        if phone:
+            _safe_send_whatsapp_notification(
+                request,
+                phone=phone,
+                message=container.backoffice.build_case_settlement_resolved_whatsapp_message(
+                    expense_case
+                ),
+            )
         return expense_case
 
     if payload.action == "close_rendicion":
@@ -589,6 +599,7 @@ def list_expenses(
     review_status: str = Query(default=""),
     employee_phone: str = Query(default=""),
     category: str = Query(default=""),
+    cost_center: str = Query(default=""),
     date_from: str = Query(default=""),
     date_to: str = Query(default=""),
     sort_by: str = Query(default=""),
@@ -601,6 +612,7 @@ def list_expenses(
                 "review_status": review_status,
                 "employee_phone": employee_phone,
                 "category": category,
+                "cost_center": cost_center,
                 "date_from": date_from,
                 "date_to": date_to,
                 "sort_by": sort_by,
@@ -707,6 +719,7 @@ def export_cases_csv(
         "empleado",
         "telefono",
         "empresa",
+        "centros_costo",
         "fondos_entregados",
         "rendido_aprobado",
         "pendiente_revision",
@@ -725,6 +738,7 @@ def export_cases_csv(
             emp.get("name", ""),
             c.get("employee_phone", c.get("phone", "")),
             c.get("company_id", ""),
+            ", ".join(str(center) for center in c.get("cost_centers", [])),
             c.get("fondos_entregados", ""),
             c.get("monto_rendido_aprobado", ""),
             c.get("monto_pendiente_revision", ""),
@@ -762,6 +776,7 @@ def export_expenses_csv(
         "total",
         "total_clp",
         "categoria",
+        "centro_costo",
         "pais",
         "estado",
         "review_status",
@@ -782,6 +797,7 @@ def export_expenses_csv(
             e.get("total", ""),
             e.get("total_clp", ""),
             e.get("category", ""),
+            e.get("cost_center", ""),
             e.get("country", ""),
             e.get("status", ""),
             e.get("review_status", ""),

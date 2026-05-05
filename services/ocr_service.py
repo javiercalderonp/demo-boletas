@@ -182,7 +182,8 @@ class OCRService:
     settings: Any | None = None
 
     def extract_receipt_data(self, media_url: str, media_content_type: str | None = None) -> dict[str, Any]:
-        if not self._document_ai_enabled:
+        if not self.document_ai_enabled:
+            logger.warning("Document AI disabled; using placeholder OCR extraction")
             return self._placeholder_extract(media_url)
 
         content, mime_type = self._download_media(media_url, media_content_type)
@@ -192,7 +193,7 @@ class OCRService:
         return extracted
 
     @property
-    def _document_ai_enabled(self) -> bool:
+    def document_ai_enabled(self) -> bool:
         if not self.settings:
             return False
         return bool(

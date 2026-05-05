@@ -150,9 +150,15 @@ _COUNTRY_TO_CURRENCY: dict[str, str] = {
     "eeuu": "USD",
     "estados unidos": "USD",
     "united states": "USD",
+    "mexico": "MXN",
+    "méxico": "MXN",
+    "argentina": "ARS",
+    "brazil": "BRL",
+    "brasil": "BRL",
+    "colombia": "COP",
 }
 
-_KNOWN_CURRENCY_CODES = {"CLP", "USD", "PEN", "CNY", "EUR"}
+_KNOWN_CURRENCY_CODES = {"CLP", "USD", "PEN", "CNY", "EUR", "MXN", "ARS", "BRL", "COP"}
 
 
 @dataclass
@@ -201,6 +207,20 @@ class ExpenseService:
                     "Expense merchant not inferred by llm keeping_ocr_merchant=%r",
                     merchant or None,
                 )
+
+        rule_geo = self.infer_country_currency_from_text(draft)
+        if rule_geo:
+            current_country = str(draft.get("country", "") or "").strip()
+            current_currency = str(draft.get("currency", "") or "").strip()
+            if not current_country and rule_geo.get("country"):
+                draft["country"] = rule_geo["country"]
+            if not current_currency and rule_geo.get("currency"):
+                draft["currency"] = rule_geo["currency"]
+            logger.info(
+                "Expense country/currency inferred source=rules country=%r currency=%r",
+                draft.get("country"),
+                draft.get("currency"),
+            )
 
         if self._should_infer_country_currency_with_llm(draft):
             inferred_geo = self.infer_country_currency_with_llm(draft)
@@ -414,6 +434,26 @@ class ExpenseService:
             return None
         return _COUNTRY_TO_CURRENCY.get(normalized)
 
+    def infer_country_currency_from_text(self, draft_expense: dict[str, Any]) -> dict[str, str]:
+        text = str(draft_expense.get("ocr_text", "") or "")
+        upper = text.upper()
+        if not upper:
+            return {}
+
+        country = self._infer_country_from_text(upper)
+        currency = self._infer_currency_from_text(text)
+        if not currency and country:
+            currency = self.infer_currency_from_country(country)
+        if not country and currency:
+            country = self._infer_country_from_currency(currency, upper)
+
+        result: dict[str, str] = {}
+        if country:
+            result["country"] = country
+        if currency:
+            result["currency"] = currency
+        return result
+
     def infer_merchant_with_llm(self, draft_expense: dict[str, Any]) -> str | None:
         if not self.llm_service:
             return None
@@ -538,6 +578,85 @@ class ExpenseService:
 
         return hard_hits >= 2 or (hard_hits >= 1 and soft_hits >= 1)
 
+    def _infer_country_from_text(self, upper_text: str) -> str | None:
+        if self._has_strong_chile_receipt_evidence(upper_text):
+            return "Chile"
+        if self._has_strong_peru_receipt_evidence(upper_text):
+            return "Peru"
+        if self._has_strong_country_evidence(upper_text, (r"\bRFC\b",), ("MEXICO", "MÉXICO", "CDMX")):
+            return "Mexico"
+        if self._has_strong_country_evidence(upper_text, (r"\bCUIT\b",), ("ARGENTINA", "BUENOS AIRES")):
+            return "Argentina"
+        if self._has_strong_country_evidence(upper_text, (r"\bNIT\b",), ("COLOMBIA", "BOGOTA", "BOGOTÁ")):
+            return "Colombia"
+        for country, tokens in (
+            ("China", ("CHINA", "BEIJING", "SHANGHAI")),
+            ("Spain", ("ESPAÑA", "SPAIN", "MADRID", "BARCELONA")),
+            ("United States", ("UNITED STATES", "USA", "U.S.A.")),
+            ("Brazil", ("BRASIL", "BRAZIL", "SAO PAULO", "SÃO PAULO")),
+        ):
+            if any(token in upper_text for token in tokens):
+                return country
+        return None
+
+    def _has_strong_peru_receipt_evidence(self, upper_text: str) -> bool:
+        hard_hits = 0
+        if re.search(r"\bRUC\b", upper_text):
+            hard_hits += 1
+        if "SUNAT" in upper_text:
+            hard_hits += 1
+        if re.search(r"\b[\w.-]+\.PE\b", upper_text):
+            hard_hits += 1
+
+        soft_hits = 0
+        for token in ("LIMA", "MIRAFLORES", "SAN ISIDRO", "AREQUIPA", "CUSCO", "PERU", "PERÚ"):
+            if token in upper_text:
+                soft_hits += 1
+        return (hard_hits >= 1 and soft_hits >= 1) or soft_hits >= 2
+
+    def _has_strong_country_evidence(
+        self,
+        upper_text: str,
+        hard_patterns: tuple[str, ...],
+        soft_tokens: tuple[str, ...],
+    ) -> bool:
+        hard_hits = sum(1 for pattern in hard_patterns if re.search(pattern, upper_text))
+        soft_hits = sum(1 for token in soft_tokens if token in upper_text)
+        return (hard_hits >= 1 and soft_hits >= 1) or soft_hits >= 2
+
+    def _infer_currency_from_text(self, text: str) -> str | None:
+        upper = (text or "").upper()
+        if re.search(r"\bMONEDA\s*:\s*PESO(?:S)?\b", upper):
+            return "CLP"
+        if self._has_strong_chile_receipt_evidence(upper):
+            return "CLP"
+        if self._has_explicit_pen_marker(text):
+            return "PEN"
+        if self._has_explicit_usd_marker(text):
+            return "USD"
+        if self._has_explicit_eur_marker(text):
+            return "EUR"
+        if self._has_explicit_cny_marker(text):
+            return "CNY"
+        if re.search(r"\bMXN\b", upper):
+            return "MXN"
+        if re.search(r"\bARS\b", upper):
+            return "ARS"
+        if re.search(r"\bBRL\b", upper):
+            return "BRL"
+        if re.search(r"\bCOP\b", upper):
+            return "COP"
+        if re.search(r"\bCLP\b", upper):
+            return "CLP"
+        return None
+
+    def _infer_country_from_currency(self, currency: str, upper_text: str) -> str | None:
+        if currency == "PEN" and self._has_strong_peru_receipt_evidence(upper_text):
+            return "Peru"
+        if currency == "CLP" and self._has_strong_chile_receipt_evidence(upper_text):
+            return "Chile"
+        return None
+
     def _has_explicit_usd_marker(self, text: str) -> bool:
         upper = (text or "").upper()
         return bool(re.search(r"\bUSD\b|US\$|DOLAR|DÓLAR", upper))
@@ -584,7 +703,9 @@ class ExpenseService:
         if not self.llm_service:
             return False
         ocr_text = str(draft_expense.get("ocr_text", "") or "").strip()
-        return bool(ocr_text)
+        country = str(draft_expense.get("country", "") or "").strip()
+        currency = str(draft_expense.get("currency", "") or "").strip()
+        return bool(ocr_text and (not country or not currency))
 
     def classify_document(self, draft_expense: dict[str, Any]) -> dict[str, Any]:
         """Classify document type using rule-based hints + LLM.
@@ -874,6 +995,7 @@ class ExpenseService:
             "total": total,
             "total_clp": round(total_clp, 2),
             "category": draft_expense.get("category", ""),
+            "cost_center": str(draft_expense.get("cost_center", "") or "").strip(),
             "country": draft_expense.get("country", ""),
             "shared": "FALSE",
             "status": ExpenseStatus.PENDING_APPROVAL,
@@ -924,6 +1046,7 @@ class ExpenseService:
             "total": total if total is not None else draft_expense.get("total", ""),
             "total_clp": round(total_clp, 2) if isinstance(total_clp, (int, float)) else "",
             "category": draft_expense.get("category", ""),
+            "cost_center": str(draft_expense.get("cost_center", "") or "").strip(),
             "country": draft_expense.get("country", ""),
             "shared": "FALSE",
             "status": ExpenseStatus.PENDING_REVIEW,

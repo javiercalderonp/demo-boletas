@@ -53,7 +53,7 @@ export function ChatPanel({
 
   useAutoRefresh(fetchConversation, {
     enabled: Boolean(token) && Boolean(phone) && !sending,
-    intervalMs: 5000,
+    intervalMs: 10000,
   });
 
   const messages = (conversation?.context_json?.message_log || []) as ConversationMessage[];

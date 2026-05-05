@@ -55,6 +55,7 @@ _EMPLOYEE_REQUIRED_HEADERS = [
     "updated_at",
 ]
 _EXPENSE_REQUIRED_HEADERS = {
+    "cost_center",
     "receipt_storage_provider",
     "receipt_object_key",
     "source_message_id",
@@ -80,6 +81,7 @@ _TRIP_REQUIRED_HEADERS = [
     "company_id",
     "employee_phone",
     "context_label",
+    "cost_centers",
     "closure_method",
     "closure_status",
     "closure_prompted_at",
@@ -176,6 +178,35 @@ def _column_label(column_number: int) -> str:
         current, remainder = divmod(current - 1, 26)
         label = chr(ord("A") + remainder) + label
     return label
+
+
+def normalize_cost_centers(value: Any) -> list[str]:
+    if value is None:
+        return []
+    raw_items: list[Any]
+    if isinstance(value, str):
+        parsed = json_loads(value, default=None)
+        if isinstance(parsed, list):
+            raw_items = parsed
+        else:
+            raw_items = value.replace("\n", ",").replace(";", ",").split(",")
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        raw_items = [value]
+
+    centers: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        centers.append(text)
+    return centers
 
 
 @dataclass
@@ -1201,6 +1232,7 @@ class SheetsService:
             {
                 "case_id": case_id,
                 "context_label": str(payload.get("context_label", "") or "").strip(),
+                "cost_centers": normalize_cost_centers(payload.get("cost_centers", [])),
                 "company_id": str(payload.get("company_id", "") or "").strip(),
                 "employee_phone": normalize_whatsapp_phone(
                     payload.get("employee_phone", payload.get("phone", ""))
@@ -1344,6 +1376,7 @@ class SheetsService:
         normalized["created_at"] = normalized.get("created_at", normalized.get("opened_at", ""))
         normalized["updated_at"] = normalized.get("updated_at", normalized.get("created_at", ""))
         normalized["notes"] = normalized.get("notes", "")
+        normalized["cost_centers"] = normalize_cost_centers(normalized.get("cost_centers", []))
         normalized["fondos_entregados"] = normalized.get("fondos_entregados", "")
         normalized["rendicion_status"] = str(normalized.get("rendicion_status", "") or "").strip() or "open"
         normalized["user_confirmed_at"] = normalized.get("user_confirmed_at", "")
@@ -1367,6 +1400,7 @@ class SheetsService:
         payload["created_at"] = row.get("created_at", "")
         payload["updated_at"] = row.get("updated_at", "")
         payload["notes"] = row.get("notes", "")
+        payload["cost_centers"] = normalize_cost_centers(row.get("cost_centers", []))
         payload["fondos_entregados"] = row.get("fondos_entregados", "")
         payload["rendicion_status"] = row.get("rendicion_status", "")
         payload["user_confirmed_at"] = row.get("user_confirmed_at", "")

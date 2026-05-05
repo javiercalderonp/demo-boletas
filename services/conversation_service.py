@@ -143,6 +143,7 @@ class ConversationService:
         draft = dict(ocr_data or {})
         if expense_case:
             draft.setdefault("case_id", expense_case.get("case_id"))
+            draft.setdefault("cost_centers", expense_case.get("cost_centers", []))
             if not draft.get("country_hint"):
                 draft["country_hint"] = expense_case.get("country")
 
@@ -422,7 +423,21 @@ class ConversationService:
                 "action": "noop",
             }
 
-        if normalized in {"1", "confirmar", "confirmo", "ok", "si", "sí"}:
+        if current_step == "cost_center":
+            cost_center = self._parse_cost_center_value(message, draft)
+            if not cost_center:
+                return {
+                    "state": CONFIRM_SUMMARY,
+                    "current_step": "cost_center",
+                    "context_json": {
+                        "draft_expense": draft,
+                        "missing_fields": [],
+                        "last_question": "cost_center",
+                    },
+                    "reply": self._build_cost_center_prompt(draft),
+                    "action": "noop",
+                }
+            draft["cost_center"] = cost_center
             return {
                 "state": DONE,
                 "current_step": "",
@@ -433,6 +448,19 @@ class ConversationService:
                 },
                 "reply": "Confirmado. Guardando gasto...",
                 "action": "save_expense",
+            }
+
+        if normalized in {"1", "confirmar", "confirmo", "ok", "si", "sí"}:
+            return {
+                "state": CONFIRM_SUMMARY,
+                "current_step": "cost_center",
+                "context_json": {
+                    "draft_expense": draft,
+                    "missing_fields": [],
+                    "last_question": "cost_center",
+                },
+                "reply": self._build_cost_center_prompt(draft),
+                "action": "noop",
             }
 
         if normalized in {"2", "corregir"}:
@@ -469,6 +497,55 @@ class ConversationService:
             + self.expense_service.build_summary_message(draft),
             "action": "noop",
         }
+
+    def _build_cost_center_prompt(self, draft: dict[str, Any]) -> str:
+        centers = self._get_draft_cost_centers(draft)
+        if not centers:
+            return "¿A qué centro de costo está dirigido este gasto? Escríbelo para registrarlo."
+        options = "\n".join(f"{index}. {center}" for index, center in enumerate(centers, start=1))
+        return (
+            "¿A qué centro de costo está dirigido este gasto?\n"
+            f"{options}\n"
+            "También puedes escribir otro centro de costo."
+        )
+
+    def _get_draft_cost_centers(self, draft: dict[str, Any]) -> list[str]:
+        raw = draft.get("cost_centers", [])
+        if isinstance(raw, str):
+            parsed = json_loads(raw, default=[])
+            if isinstance(parsed, list):
+                raw = parsed
+            else:
+                raw = raw.replace("\n", ",").replace(";", ",").split(",")
+        if not isinstance(raw, (list, tuple, set)):
+            raw = [raw]
+        centers: list[str] = []
+        seen: set[str] = set()
+        for item in raw:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            centers.append(text)
+        return centers
+
+    def _parse_cost_center_value(self, message: str, draft: dict[str, Any]) -> str:
+        value = str(message or "").strip()
+        if not value:
+            return ""
+        centers = self._get_draft_cost_centers(draft)
+        if value.isdigit():
+            index = int(value) - 1
+            if 0 <= index < len(centers):
+                return centers[index]
+        normalized = value.lower()
+        for center in centers:
+            if center.lower() == normalized:
+                return center
+        return value
 
     def _answer_general_question_if_needed(self, message: str) -> str | None:
         if not self._looks_like_question(message):

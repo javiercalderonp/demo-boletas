@@ -1,3 +1,4 @@
+import asyncio
 import os
 import unittest
 from unittest.mock import patch
@@ -165,6 +166,24 @@ class FakeExpense:
 
     def answer_general_question(self, question):
         return self.general_answer
+
+
+class FakeGeoLLM:
+    def __init__(self, geo_result=None, category_result=None, merchant_result=None):
+        self.geo_result = dict(geo_result or {})
+        self.category_result = category_result
+        self.merchant_result = merchant_result
+        self.geo_calls = 0
+
+    def infer_expense_merchant(self, draft_expense):
+        return self.merchant_result
+
+    def infer_expense_country_currency(self, draft_expense):
+        self.geo_calls += 1
+        return dict(self.geo_result)
+
+    def classify_expense_category(self, draft_expense):
+        return self.category_result
 
 
 class ConversationDocumentTypeTests(unittest.TestCase):
@@ -412,6 +431,53 @@ class ReceiptPipelineTests(unittest.TestCase):
         )
 
         self.assertEqual(draft["currency"], "EUR")
+
+    def test_expense_service_uses_receipt_text_geo_rules_before_llm(self):
+        llm = FakeGeoLLM(geo_result={"country": "Peru", "currency": "PEN"})
+        service = ExpenseService(sheets_service=None, llm_service=llm)
+
+        draft = service.enrich_draft_expense(
+            {
+                "merchant": "Mistura del Peru",
+                "date": "2026-04-27",
+                "total": 12500.0,
+                "currency": "",
+                "country": "",
+                "category": "Meals",
+                "trip_id": "TRIP-1",
+                "ocr_text": (
+                    "MISTURA DEL PERU SPA\n"
+                    "RUT 76.123.456-7\n"
+                    "Av. Kennedy 9001, Las Condes, Santiago\n"
+                    "TOTAL $12.500"
+                ),
+            }
+        )
+
+        self.assertEqual(draft["country"], "Chile")
+        self.assertEqual(draft["currency"], "CLP")
+        self.assertEqual(llm.geo_calls, 0)
+
+    def test_expense_service_calls_geo_llm_when_text_rules_are_incomplete(self):
+        llm = FakeGeoLLM(geo_result={"country": "Spain", "currency": "EUR"})
+        service = ExpenseService(sheets_service=None, llm_service=llm)
+
+        draft = service.enrich_draft_expense(
+            {
+                "merchant": "Hotel Central",
+                "date": "2026-04-27",
+                "total": 180.0,
+                "currency": "",
+                "country": "",
+                "category": "Lodging",
+                "trip_id": "TRIP-1",
+                "ocr_text": "HOTEL CENTRAL TOTAL 180",
+            }
+        )
+
+        self.assertEqual(draft["country"], "Spain")
+        self.assertEqual(draft["currency"], "EUR")
+        self.assertEqual(llm.geo_calls, 1)
 
     def test_processing_state_does_not_request_case_id(self):
         service = ConversationService(expense_service=FakeExpense())

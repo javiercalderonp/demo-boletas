@@ -139,6 +139,11 @@ class FakeSheetsService:
             "name": "Javier Calderon",
             "email": "javier@example.com",
             "company_id": "acme",
+            "bank_name": "Banco Chile",
+            "account_type": "Cuenta Vista",
+            "account_number": "99887766",
+            "account_holder": "Javier Calderon",
+            "account_holder_rut": "12.345.678-9",
         }
         self.companies = [
             {
@@ -229,6 +234,7 @@ class SchedulerSimpleConfirmationTests(unittest.TestCase):
             service.whatsapp_service.sent_lists[0]["items"][0]["id"],
             "simple_confirmation_yes_confirm_consolidated",
         )
+        self.assertEqual(service.whatsapp_service.sent_lists[0]["reply_to_message_id"], "doc-msg-1")
         self.assertEqual(
             service.sheets_service.case_row["rendicion_status"],
             "pending_user_confirmation",
@@ -242,7 +248,8 @@ class SchedulerSimpleConfirmationTests(unittest.TestCase):
             "pending",
         )
 
-    def test_simple_confirmation_yes_moves_case_to_approved_and_reports_settlement(self):
+    def test_simple_confirmation_yes_company_owes_employee_reports_deposit(self):
+        # fondos_entregados=100000, total_clp=110300 → net=-10300 → empresa le debe al empleado
         service = self.build_service()
 
         reply = service.handle_simple_document_confirmation_user_response(
@@ -250,10 +257,13 @@ class SchedulerSimpleConfirmationTests(unittest.TestCase):
             message="si",
         )
 
-        self.assertIn("Debes depositar", reply)
-        self.assertEqual(len(service.whatsapp_service.sent_messages), 1)
-        self.assertIn("Datos bancarios de ACME", service.whatsapp_service.sent_messages[0]["message"])
-        self.assertIn("comprobante", service.whatsapp_service.sent_messages[0]["message"])
+        self.assertIsInstance(reply, list)
+        self.assertEqual(len(reply), 2)
+        self.assertIn("Te vamos a depositar", reply[0])
+        self.assertIn("Banco Chile", reply[1])
+        self.assertIn("Javier Calderon", reply[1])
+        self.assertNotIn("comprobante", reply[1])
+        self.assertEqual(len(service.whatsapp_service.sent_messages), 0)
         self.assertEqual(
             service.sheets_service.case_row["rendicion_status"],
             "approved",
@@ -268,11 +278,36 @@ class SchedulerSimpleConfirmationTests(unittest.TestCase):
         )
         self.assertEqual(
             service.sheets_service.case_row["settlement_direction"],
-            "employee_owes_company",
+            "company_owes_employee",
         )
         self.assertEqual(
             service.sheets_service.case_row["settlement_amount_clp"],
             10300.0,
+        )
+
+    def test_simple_confirmation_yes_employee_owes_company_reports_company_bank_details(self):
+        # fondos_entregados > total_clp → empleado debe devolver el exceso
+        service = self.build_service()
+        service.sheets_service.case_row["fondos_entregados"] = 120000
+        service.sheets_service.expenses[0]["total_clp"] = 110300
+
+        reply = service.handle_simple_document_confirmation_user_response(
+            phone="+56911111111",
+            message="si",
+        )
+
+        self.assertIsInstance(reply, list)
+        self.assertEqual(len(reply), 2)
+        self.assertIn("Debes depositar", reply[0])
+        self.assertIn("Datos bancarios de ACME", reply[1])
+        self.assertIn("comprobante", reply[1])
+        self.assertEqual(
+            service.sheets_service.case_row["settlement_direction"],
+            "employee_owes_company",
+        )
+        self.assertEqual(
+            service.sheets_service.case_row["settlement_amount_clp"],
+            9700.0,
         )
 
     def test_docusign_closure_package_sends_pdf_link_and_closure_message(self):
