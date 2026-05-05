@@ -48,6 +48,7 @@ export type CaseItem = {
   closure_method?: string;
   status: string;
   fondos_entregados?: number | string;
+  fondos_por_centro?: Record<string, number>;
   rendicion_status?: string;
   user_confirmed_at?: string;
   user_confirmation_status?: string;

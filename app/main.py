@@ -969,16 +969,10 @@ def _handle_text_message(container: ServiceContainer, phone: str, body: str) -> 
                 case_id = str(saved.get("case_id", saved.get("trip_id", "")) or "")
                 reply_messages = ["Gasto guardado con éxito."]
                 if not has_pending_receipts:
-                    policy_status_message = container.expense.build_policy_status_message(
-                        phone=phone,
-                        case_id=case_id,
-                    )
                     policy_alert_message = container.expense.build_policy_alert_message(
                         phone=phone,
                         case_id=case_id,
                     )
-                    if policy_status_message:
-                        reply_messages.append(policy_status_message)
                     if policy_alert_message:
                         reply_messages.append(policy_alert_message)
                 reply_messages.append(closing_line)
@@ -1465,6 +1459,7 @@ def _send_single_outbound_response(
         state=state,
         current_step=current_step,
         response_text=response_text,
+        context=context,
     )
     if interactive_prompt:
         prompt_body = interactive_prompt["body"]
@@ -1500,6 +1495,7 @@ def _build_interactive_prompt(
     state: str,
     current_step: str,
     response_text: str,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if state == "NEEDS_INFO" and current_step == "document_type":
         return {
@@ -1516,6 +1512,21 @@ def _build_interactive_prompt(
             "choices": [
                 {"id": option_id, "title": _label_for_correction_field(field_name)}
                 for option_id, field_name in CORRECTION_FIELD_OPTIONS.items()
+            ],
+        }
+
+    if state == "CONFIRM_SUMMARY" and current_step == "cost_center":
+        draft = context.get("draft_expense", {}) if isinstance(context, dict) else {}
+        centers = _normalize_cost_center_choices(
+            draft.get("cost_centers", []) if isinstance(draft, dict) else []
+        )
+        if not centers:
+            return None
+        return {
+            "body": "¿A qué centro de costo está dirigido este gasto?",
+            "choices": [
+                {"id": str(index), "title": center}
+                for index, center in enumerate(centers, start=1)
             ],
         }
 
@@ -1548,6 +1559,34 @@ def _build_interactive_prompt(
         }
 
     return None
+
+
+def _normalize_cost_center_choices(raw_value: Any) -> list[str]:
+    if isinstance(raw_value, str):
+        try:
+            parsed = json.loads(raw_value)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, list):
+            raw_items = parsed
+        else:
+            raw_items = raw_value.replace("\n", ",").replace(";", ",").split(",")
+    elif isinstance(raw_value, (list, tuple, set)):
+        raw_items = list(raw_value)
+    else:
+        raw_items = [raw_value]
+    centers: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        center = str(item or "").strip()
+        if not center:
+            continue
+        key = center.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        centers.append(center)
+    return centers
 
 
 def _label_for_correction_field(field_name: str) -> str:

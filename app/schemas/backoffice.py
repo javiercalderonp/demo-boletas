@@ -42,6 +42,7 @@ class CasePayload(BaseModel):
     closure_method: str = "docusign"
     status: str = "active"
     fondos_entregados: Optional[Union[float, str]] = None
+    fondos_por_centro: Optional[dict[str, float]] = None
     rendicion_status: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None

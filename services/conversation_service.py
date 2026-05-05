@@ -231,13 +231,44 @@ class ConversationService:
             }
 
         if state in {WAIT_RECEIPT, DONE}:
-            answer = self._answer_general_question_if_needed(message)
+            answer = self._answer_general_question_if_needed(message, phone=phone)
             if answer:
                 return {
                     "state": WAIT_RECEIPT,
                     "current_step": "",
                     "context_json": context,
                     "reply": f"{answer}\n\nCuando quieras, envíame los comprobantes y los reviso.",
+                    "action": "noop",
+                }
+            # Heuristics didn't detect a question — use LLM to classify intent
+            intent = self.expense_service.classify_message_intent(message)
+            if intent == "case_question":
+                case_answer = self.expense_service.answer_general_question(message, phone=phone, case_context_hint=True)
+                reply = case_answer or "No pude obtener esa información en este momento."
+                return {
+                    "state": WAIT_RECEIPT,
+                    "current_step": "",
+                    "context_json": context,
+                    "reply": f"{reply}\n\nCuando quieras, envíame los comprobantes y los reviso.",
+                    "action": "noop",
+                }
+            if intent == "general_question":
+                llm = self.expense_service.llm_service
+                general_answer = llm.answer_general_question(message) if llm else None
+                reply = general_answer or "Puedo ayudarte a registrar gastos. Envíame una foto de tu boleta o comprobante."
+                return {
+                    "state": WAIT_RECEIPT,
+                    "current_step": "",
+                    "context_json": context,
+                    "reply": f"{reply}\n\nCuando quieras, envíame los comprobantes y los reviso.",
+                    "action": "noop",
+                }
+            if intent == "irrelevant":
+                return {
+                    "state": WAIT_RECEIPT,
+                    "current_step": "",
+                    "context_json": context,
+                    "reply": "Solo puedo ayudarte con tus gastos y rendición activa. Envíame una foto de tu boleta o comprobante cuando quieras.",
                     "action": "noop",
                 }
             return {
@@ -258,7 +289,7 @@ class ConversationService:
             }
 
         if state == NEEDS_INFO:
-            return self._handle_needs_info(context, message)
+            return self._handle_needs_info(context, message, phone=phone)
 
         if state == CONFIRM_SUMMARY:
             return self._handle_confirm_summary(
@@ -275,7 +306,7 @@ class ConversationService:
             "action": "reset",
         }
 
-    def _handle_needs_info(self, context: dict[str, Any], message: str) -> dict[str, Any]:
+    def _handle_needs_info(self, context: dict[str, Any], message: str, *, phone: str = "") -> dict[str, Any]:
         draft = dict(context.get("draft_expense", {}))
         missing = list(context.get("missing_fields", []))
         current_field = missing[0] if missing else context.get("last_question")
@@ -337,7 +368,7 @@ class ConversationService:
                 "action": "noop",
             }
         if parsed_value is None:
-            answer = self._answer_general_question_if_needed(message)
+            answer = self._answer_general_question_if_needed(message, phone=phone)
             if answer:
                 reply = (
                     f"{answer}\n\n"
@@ -545,12 +576,35 @@ class ConversationService:
         for center in centers:
             if center.lower() == normalized:
                 return center
+        if centers:
+            return ""
         return value
 
-    def _answer_general_question_if_needed(self, message: str) -> str | None:
-        if not self._looks_like_question(message):
+    def _answer_general_question_if_needed(self, message: str, *, phone: str = "") -> str | None:
+        is_rendicion = self._looks_like_rendicion_request(message)
+        if not is_rendicion and not self._looks_like_question(message):
             return None
-        return self.expense_service.answer_general_question(message)
+        return self.expense_service.answer_general_question(message, phone=phone, case_context_hint=is_rendicion)
+
+    def _looks_like_rendicion_request(self, message: str) -> bool:
+        normalized = " ".join((message or "").strip().lower().split())
+        if not normalized:
+            return False
+        signals = (
+            "resumen",
+            "saldo",
+            "presupuesto",
+            "cuanto me queda",
+            "cuánto me queda",
+            "ultimo gasto",
+            "último gasto",
+            "ultima compra",
+            "última compra",
+            "mis gastos",
+            "estado rendicion",
+            "estado rendición",
+        )
+        return any(signal in normalized for signal in signals)
 
     def _looks_like_question(self, message: str) -> bool:
         normalized = (message or "").strip().lower()

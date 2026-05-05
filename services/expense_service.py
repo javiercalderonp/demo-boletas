@@ -459,10 +459,162 @@ class ExpenseService:
             return None
         return self.llm_service.infer_expense_merchant(draft_expense)
 
-    def answer_general_question(self, question: str) -> str | None:
+    def answer_general_question(self, question: str, *, phone: str = "", case_context_hint: bool = False) -> str | None:
+        rendicion_answer = self.answer_rendicion_question(phone=phone, question=question)
+        if rendicion_answer:
+            return rendicion_answer
         if not self.llm_service:
             return None
+        # When we know the question is case-related, try LLM with full case context
+        if case_context_hint and self.llm_service.chat_assistant_enabled:
+            case_context = self.build_case_context_text(phone)
+            case_answer = self.llm_service.answer_question_with_case_context(question, case_context)
+            if case_answer:
+                return case_answer
         return self.llm_service.answer_general_question(question)
+
+    def classify_message_intent(self, message: str) -> str:
+        if not self.llm_service:
+            return "unknown"
+        return self.llm_service.classify_message_intent(message)
+
+    def build_case_context_text(self, phone: str) -> str:
+        expense_case = self.sheets_service.get_active_expense_case_by_phone(phone) if phone else None
+        if not expense_case:
+            return "El empleado no tiene una rendición activa en este momento."
+
+        case_id = str(expense_case.get("case_id", expense_case.get("trip_id", "")) or "").strip()
+
+        cost_centers_raw = expense_case.get("cost_centers", [])
+        if isinstance(cost_centers_raw, str):
+            import json as _json
+            try:
+                cost_centers_raw = _json.loads(cost_centers_raw)
+            except Exception:
+                cost_centers_raw = [c.strip() for c in cost_centers_raw.replace(";", ",").split(",") if c.strip()]
+        if not isinstance(cost_centers_raw, list):
+            cost_centers_raw = []
+        cost_centers = [str(c).strip() for c in cost_centers_raw if str(c).strip()]
+
+        fondos = parse_float(expense_case.get("fondos_entregados"))
+        policy_limit = parse_float(expense_case.get("policy_limit", expense_case.get("budget")))
+        budget = fondos or policy_limit
+
+        expenses = self.sheets_service.list_expenses_by_phone_case(phone=phone, case_id=case_id) if case_id else []
+
+        lines = []
+        if case_id:
+            lines.append(f"Rendición activa ID: {case_id}")
+        if cost_centers:
+            lines.append(f"Centros de costo disponibles: {', '.join(cost_centers)}")
+        if budget:
+            label = "Fondos entregados" if fondos else "Límite de referencia"
+            lines.append(f"{label}: {self._format_clp(budget)} CLP")
+
+        if expenses:
+            total_spent = sum(parse_float(e.get("total_clp") or e.get("total") or 0) or 0.0 for e in expenses)
+            lines.append(f"Total rendido: {self._format_clp(total_spent)} CLP ({len(expenses)} gasto(s))")
+            if budget:
+                remaining = budget - total_spent
+                lines.append(f"Saldo restante: {self._format_clp(remaining)} CLP")
+            by_cc: dict[str, float] = {}
+            for exp in expenses:
+                cc = str(exp.get("cost_center", "") or "Sin clasificar").strip() or "Sin clasificar"
+                amount = parse_float(exp.get("total_clp") or exp.get("total") or 0) or 0.0
+                by_cc[cc] = by_cc.get(cc, 0.0) + amount
+            if by_cc:
+                lines.append("Gastos por centro de costo:")
+                for cc, total in sorted(by_cc.items()):
+                    lines.append(f"  {cc}: {self._format_clp(total)} CLP")
+        elif case_id:
+            lines.append("Gastos registrados: ninguno aún.")
+
+        return "\n".join(lines) if lines else "Rendición activa sin datos adicionales."
+
+    def answer_rendicion_question(self, *, phone: str, question: str) -> str | None:
+        intent = self._classify_rendicion_question(question)
+        if not intent:
+            return None
+
+        expense_case = self.sheets_service.get_active_expense_case_by_phone(phone)
+        if not expense_case:
+            return "No encontré una rendición activa asociada a tu usuario."
+
+        case_id = str(expense_case.get("case_id", expense_case.get("trip_id", "")) or "").strip()
+        if not case_id:
+            return "No encontré el identificador de tu rendición activa."
+
+        if intent == "last_expense":
+            return self.build_last_expense_message(phone=phone, case_id=case_id)
+
+        status_message = self.build_policy_status_message(phone=phone, case_id=case_id)
+        alert_message = self.build_policy_alert_message(phone=phone, case_id=case_id)
+        if intent == "balance":
+            if status_message:
+                lines = status_message.splitlines()
+                return "\n".join(line for line in lines if "Saldo restante:" in line) or status_message
+            return "Tu rendición activa no tiene fondos entregados o límite configurado."
+        if status_message and alert_message:
+            return f"{status_message}\n\n{alert_message}"
+        return status_message or "Tu rendición activa no tiene fondos entregados o límite configurado."
+
+    def build_last_expense_message(self, phone: str, case_id: str) -> str:
+        expenses = self.sheets_service.list_expenses_by_phone_case(phone=phone, case_id=case_id)
+        if not expenses:
+            return "Todavía no tengo gastos registrados en tu rendición activa."
+
+        latest = max(
+            expenses,
+            key=lambda item: str(item.get("created_at") or item.get("updated_at") or item.get("date") or ""),
+        )
+        merchant = str(latest.get("merchant", "") or "").strip() or "sin comercio"
+        date = str(latest.get("date", "") or "").strip()
+        currency = str(latest.get("currency", "") or "").strip().upper() or "CLP"
+        total = parse_float(latest.get("total"))
+        total_clp = parse_float(latest.get("total_clp"))
+        amount = self._format_clp(total_clp if total_clp is not None else total or 0)
+        suffix = " CLP" if currency == "CLP" or total_clp is not None else f" {currency}"
+        parts = [f"Último gasto registrado: {merchant}", f"monto {amount}{suffix}"]
+        if date:
+            parts.append(f"fecha {date}")
+        return ", ".join(parts) + "."
+
+    def _classify_rendicion_question(self, question: str) -> str | None:
+        normalized = " ".join(str(question or "").strip().lower().split())
+        if not normalized:
+            return None
+
+        last_signals = ("ultimo gasto", "último gasto", "ultima compra", "última compra", "ultima boleta", "última boleta")
+        if any(signal in normalized for signal in last_signals):
+            return "last_expense"
+
+        balance_signals = (
+            "cuanto presupuesto me queda",
+            "cuánto presupuesto me queda",
+            "cuanto me queda",
+            "cuánto me queda",
+            "saldo restante",
+            "saldo me queda",
+            "presupuesto restante",
+            "presupuesto disponible",
+        )
+        if any(signal in normalized for signal in balance_signals):
+            return "balance"
+
+        summary_signals = (
+            "dame el resumen",
+            "dame resumen",
+            "resumen",
+            "estado de mi rendicion",
+            "estado de mi rendición",
+            "estado rendicion",
+            "estado rendición",
+            "mis gastos",
+        )
+        if any(signal in normalized for signal in summary_signals):
+            return "summary"
+
+        return None
 
     def infer_category_with_fallback(self, draft_expense: dict[str, Any]) -> str | None:
         llm_category = self.infer_category_with_llm(draft_expense)
@@ -882,7 +1034,7 @@ class ExpenseService:
         lines = ["Detecté este gasto a partir de una *boleta de honorarios*:"]
         lines.append(f"Emisor: {draft_expense.get('merchant', '-')}")
         if draft_expense.get("issuer_tax_id"):
-            lines.append(f"RUT emisor: {draft_expense.get('issuer_tax_id')}")
+            lines.append(f"RUT emisor: {self._format_tax_id(draft_expense.get('issuer_tax_id'))}")
         lines.append(f"Fecha: {draft_expense.get('date', '-')}")
         lines.append(f"Folio: {draft_expense.get('invoice_number', '-')}")
         if draft_expense.get("gross_amount") is not None:
@@ -894,11 +1046,13 @@ class ExpenseService:
                 f"Retención{rate_text}: {draft_expense.get('withholding_amount')} {draft_expense.get('currency', '-')}"
             )
         lines.append(f"Monto líquido: {draft_expense.get('total', '-')} {draft_expense.get('currency', '-')}")
-        lines.append(f"Categoría: {draft_expense.get('category', '-')}")
-        lines.append(f"País: {draft_expense.get('country', '-')}")
         if draft_expense.get("receiver_tax_id"):
-            lines.append(f"RUT receptor: {draft_expense.get('receiver_tax_id')}")
+            lines.append(f"RUT receptor: {self._format_tax_id(draft_expense.get('receiver_tax_id'))}")
         return "\n".join(lines)
+
+    def _format_tax_id(self, value: Any) -> str:
+        tax_id = str(value or "").strip()
+        return re.sub(r"^\s*(?:RUT|RUC|ID)\s*:?\s*", "", tax_id, flags=re.IGNORECASE).strip() or "-"
 
     def _build_generic_summary(self, draft_expense: dict[str, Any]) -> str:
         doc_label = draft_expense.get("document_type", "-")

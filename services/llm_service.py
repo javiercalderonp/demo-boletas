@@ -95,6 +95,24 @@ Instrucciones:
 - Si no sabes algo, dilo y sugiere enviar un comprobante o escribir con mas detalle.
 """.strip()
 
+CASE_QUESTION_SYSTEM_PROMPT = """
+Eres el asistente de rendicion de gastos por WhatsApp de una empresa.
+Tu tarea es responder preguntas del empleado sobre su rendicion activa usando el contexto provisto.
+Instrucciones:
+- Responde en espanol claro y conciso (maximo 3-4 lineas).
+- Usa solo los datos del contexto. No inventes numeros ni datos.
+- Si la pregunta no tiene relacion con gastos o la rendicion, responde exactamente: "Solo puedo ayudarte con temas de gastos y tu rendicion activa."
+- Si la informacion solicitada no esta en el contexto, dilo con honestidad.
+""".strip()
+
+MESSAGE_INTENT_SYSTEM_PROMPT = """
+Clasifica el mensaje del empleado en una de estas categorias exactas:
+- case_question: pregunta sobre su rendicion, presupuesto, centros de costo, gastos registrados, saldos o datos del caso activo
+- general_question: pregunta sobre como funciona la app o el proceso de rendicion de gastos
+- irrelevant: mensaje que no tiene relacion con gastos, rendicion ni la app de viáticos
+Responde SOLO con la categoria exacta, sin explicacion ni puntuacion.
+""".strip()
+
 
 @dataclass
 class LLMService:
@@ -151,6 +169,50 @@ class LLMService:
 
         cleaned = " ".join(str(answer or "").split()).strip()
         return cleaned or None
+
+    def answer_question_with_case_context(self, question: str, case_context_text: str) -> str | None:
+        if not self.chat_assistant_enabled:
+            return None
+        if not question or not case_context_text:
+            return None
+        user_content = f"Informacion de la rendicion:\n{case_context_text}\n\nPregunta: {question}"
+        payload = {
+            "model": getattr(self.settings, "openai_model", "gpt-4o-mini"),
+            "temperature": 0.2,
+            "messages": [
+                {"role": "system", "content": CASE_QUESTION_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+        }
+        try:
+            answer = self._chat_text(payload)
+        except Exception as exc:  # pragma: no cover - depends on network/API
+            logger.warning("LLM case context answer failed: %s", exc)
+            return None
+        cleaned = " ".join(str(answer or "").split()).strip()
+        return cleaned or None
+
+    def classify_message_intent(self, message: str) -> str:
+        """Classify message intent. Returns: case_question | general_question | irrelevant | unknown"""
+        if not self.chat_assistant_enabled:
+            return "unknown"
+        if not (message or "").strip():
+            return "unknown"
+        payload = {
+            "model": getattr(self.settings, "openai_model", "gpt-4o-mini"),
+            "temperature": 0,
+            "messages": [
+                {"role": "system", "content": MESSAGE_INTENT_SYSTEM_PROMPT},
+                {"role": "user", "content": (message or "").strip()},
+            ],
+        }
+        try:
+            result = str(self._chat_text(payload) or "").strip().lower()
+            if result in {"case_question", "general_question", "irrelevant"}:
+                return result
+        except Exception as exc:  # pragma: no cover - depends on network/API
+            logger.warning("LLM intent classification failed: %s", exc)
+        return "unknown"
 
     def _answer_known_question(self, question: str) -> str | None:
         normalized = " ".join(str(question or "").strip().lower().split())

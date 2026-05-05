@@ -108,6 +108,17 @@ export function Shell({
               </p>
             </div>
           </div>
+          <button
+            className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-100"
+            onClick={() => {
+              setSidebarOpen(false);
+              logout();
+            }}
+            type="button"
+          >
+            <LogOut className="h-4 w-4" />
+            Cerrar sesión
+          </button>
         </div>
       </aside>
 
@@ -190,7 +201,7 @@ export function Shell({
           className="fixed inset-x-0 bottom-0 z-40 border-t border-gray-200 bg-white/95 px-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-2 shadow-[0_-8px_24px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden"
           aria-label="Navegación principal"
         >
-          <div className="mx-auto grid max-w-md grid-cols-5 gap-1">
+          <div className="mx-auto grid max-w-md grid-cols-6 gap-1">
             {navigation.map((item) => {
               const Icon = item.icon;
               const active = isActive(item.href);
@@ -210,6 +221,14 @@ export function Shell({
                 </Link>
               );
             })}
+            <button
+              className="flex h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-lg px-1 text-[11px] font-medium text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900"
+              onClick={logout}
+              type="button"
+            >
+              <LogOut className="h-5 w-5 text-gray-400" />
+              <span className="w-full truncate text-center">Salir</span>
+            </button>
           </div>
         </nav>
       </div>

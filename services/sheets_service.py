@@ -96,6 +96,7 @@ _TRIP_REQUIRED_HEADERS = [
     "updated_at",
     "notes",
     "fondos_entregados",
+    "fondos_por_centro",
     "rendicion_status",
     "user_confirmed_at",
     "user_confirmation_status",
@@ -1246,6 +1247,7 @@ class SheetsService:
                 "updated_at": str(payload.get("updated_at", "") or "").strip() or now,
                 "notes": str(payload.get("notes", "") or "").strip(),
                 "fondos_entregados": payload.get("fondos_entregados", ""),
+                "fondos_por_centro": payload.get("fondos_por_centro", None),
                 "rendicion_status": str(payload.get("rendicion_status", "open") or "open").strip(),
                 "user_confirmed_at": "",
                 "user_confirmation_status": "",
@@ -1378,6 +1380,10 @@ class SheetsService:
         normalized["notes"] = normalized.get("notes", "")
         normalized["cost_centers"] = normalize_cost_centers(normalized.get("cost_centers", []))
         normalized["fondos_entregados"] = normalized.get("fondos_entregados", "")
+        raw_fpc = normalized.get("fondos_por_centro")
+        if isinstance(raw_fpc, str):
+            raw_fpc = json_loads(raw_fpc, default=None)
+        normalized["fondos_por_centro"] = raw_fpc if isinstance(raw_fpc, dict) else None
         normalized["rendicion_status"] = str(normalized.get("rendicion_status", "") or "").strip() or "open"
         normalized["user_confirmed_at"] = normalized.get("user_confirmed_at", "")
         normalized["user_confirmation_status"] = normalized.get("user_confirmation_status", "")
@@ -1402,6 +1408,7 @@ class SheetsService:
         payload["notes"] = row.get("notes", "")
         payload["cost_centers"] = normalize_cost_centers(row.get("cost_centers", []))
         payload["fondos_entregados"] = row.get("fondos_entregados", "")
+        payload["fondos_por_centro"] = row.get("fondos_por_centro")
         payload["rendicion_status"] = row.get("rendicion_status", "")
         payload["user_confirmed_at"] = row.get("user_confirmed_at", "")
         payload["user_confirmation_status"] = row.get("user_confirmation_status", "")

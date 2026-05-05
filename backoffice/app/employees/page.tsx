@@ -227,8 +227,8 @@ export default function EmployeesPage() {
     <ProtectedPage>
       <Shell title="Personas" description="Gestión operativa de personas registradas en WhatsApp.">
         {createOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/40 px-4">
-            <div className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl">
+          <div className="fixed inset-0 z-50 flex items-end justify-center bg-gray-950/40 px-0 pt-[calc(0.75rem_+_env(safe-area-inset-top))] sm:items-center sm:px-4 sm:py-6">
+            <div className="flex max-h-[calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_1.5rem)] w-full max-w-xl flex-col overflow-hidden rounded-t-2xl border border-gray-200 bg-white shadow-2xl sm:rounded-2xl">
               <div className="flex shrink-0 items-center justify-between border-b border-gray-100 px-5 py-4">
                 <div>
                   <h2 className="text-base font-semibold text-gray-900">Crear persona</h2>
@@ -454,7 +454,7 @@ export default function EmployeesPage() {
                   </div>
                   </details>
                 </div>
-                <div className="flex shrink-0 items-center justify-end gap-3 border-t border-gray-100 px-5 py-4">
+                <div className="grid shrink-0 grid-cols-2 gap-3 border-t border-gray-100 bg-white px-5 py-4 pb-[calc(1rem_+_env(safe-area-inset-bottom))] sm:flex sm:justify-end sm:pb-4">
                   <button
                     className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
                     onClick={() => {

@@ -69,6 +69,51 @@ class ConsolidatedDocumentServiceTests(unittest.TestCase):
 
         self.assertFalse(any(row[0] == "Firma gerente de área" for row in table_rows))
 
+    def test_report_data_includes_cost_center_summary(self):
+        service = self._build_service(Mock())
+
+        report_data = service._build_report_data(
+            expense_case={
+                "cost_centers": ["Operaciones", "Ventas"],
+                "fondos_por_centro": {"Operaciones": 100000, "Ventas": "50000"},
+            },
+            expenses=[
+                {
+                    "expense_id": "EXP-1",
+                    "date": "2026-04-20",
+                    "merchant": "Hotel Centro",
+                    "category": "Alojamiento",
+                    "cost_center": "Operaciones",
+                    "currency": "CLP",
+                    "total": 30000,
+                    "total_clp": 30000,
+                },
+                {
+                    "expense_id": "EXP-2",
+                    "date": "2026-04-21",
+                    "merchant": "Taxi",
+                    "category": "Transporte",
+                    "currency": "CLP",
+                    "total": 12000,
+                    "total_clp": 12000,
+                },
+            ],
+        )
+
+        by_center = {
+            item["cost_center"]: item for item in report_data["by_cost_center"]
+        }
+
+        self.assertEqual(by_center["Operaciones"]["fondos_clp"], 100000)
+        self.assertEqual(by_center["Operaciones"]["spent_clp"], 30000)
+        self.assertEqual(by_center["Operaciones"]["balance_clp"], 70000)
+        self.assertEqual(by_center["Operaciones"]["expense_count"], 1)
+        self.assertEqual(by_center["Ventas"]["fondos_clp"], 50000)
+        self.assertEqual(by_center["Ventas"]["spent_clp"], 0)
+        self.assertEqual(by_center["Sin centro de costo"]["spent_clp"], 12000)
+        self.assertEqual(report_data["detail_rows"][0]["cost_center"], "Operaciones")
+        self.assertEqual(report_data["detail_rows"][1]["cost_center"], "Sin centro de costo")
+
 
 if __name__ == "__main__":
     unittest.main()

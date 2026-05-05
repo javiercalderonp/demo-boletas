@@ -80,6 +80,58 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
             "Excediste los fondos entregados en $2.000 CLP.",
         )
 
+    def test_rendicion_summary_is_answered_on_request(self):
+        sheets = FakeSheetsService()
+        sheets.case_expenses = [{"total_clp": 110300}]
+        sheets.case["fondos_entregados"] = 1000000
+        service = ExpenseService(sheets_service=sheets)
+
+        answer = service.answer_rendicion_question(
+            phone="+56911111111",
+            question="dame el resumen",
+        )
+
+        self.assertIn("Estado de tu rendición:", answer)
+        self.assertIn("- Fondos entregados: $1.000.000 CLP", answer)
+        self.assertIn("- Rendido: $110.300 CLP (11.0%)", answer)
+        self.assertIn("- Saldo restante: $889.700 CLP", answer)
+
+    def test_rendicion_balance_and_last_expense_are_answered_on_request(self):
+        sheets = FakeSheetsService()
+        sheets.case["fondos_entregados"] = 50000
+        sheets.case_expenses = [
+            {
+                "merchant": "Cafe",
+                "date": "2026-04-15",
+                "total": 4500,
+                "total_clp": 4500,
+                "created_at": "2026-04-15T12:00:00Z",
+            },
+            {
+                "merchant": "Taxi",
+                "date": "2026-04-16",
+                "total": 8000,
+                "total_clp": 8000,
+                "created_at": "2026-04-16T12:00:00Z",
+            },
+        ]
+        service = ExpenseService(sheets_service=sheets)
+
+        balance = service.answer_rendicion_question(
+            phone="+56911111111",
+            question="cuanto presupuesto me queda",
+        )
+        last_expense = service.answer_rendicion_question(
+            phone="+56911111111",
+            question="cual fue el ultimo gasto",
+        )
+
+        self.assertEqual(balance, "- Saldo restante: $37.500 CLP")
+        self.assertEqual(
+            last_expense,
+            "Último gasto registrado: Taxi, monto $8.000 CLP, fecha 2026-04-16.",
+        )
+
     def test_build_summary_message_hides_tax_amount_from_chat(self):
         service = ExpenseService(sheets_service=FakeSheetsService())
 
@@ -136,6 +188,7 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
                 "country": "",
                 "invoice_number": "123",
                 "issuer_tax_id": "RUT 12.345.678-9",
+                "receiver_tax_id": "RUT: 77.123.456-1",
                 "gross_amount": 100000,
                 "withholding_amount": 15250,
             }
@@ -149,6 +202,12 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
         self.assertIn("Monto bruto: 100000", summary)
         self.assertIn("Retención (15.25%): 15250", summary)
         self.assertIn("Monto líquido: 84750", summary)
+        self.assertIn("RUT emisor: 12.345.678-9", summary)
+        self.assertIn("RUT receptor: 77.123.456-1", summary)
+        self.assertNotIn("RUT emisor: RUT", summary)
+        self.assertNotIn("RUT receptor: RUT", summary)
+        self.assertNotIn("Categoría:", summary)
+        self.assertNotIn("País:", summary)
 
 
 if __name__ == "__main__":

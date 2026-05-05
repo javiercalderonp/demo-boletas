@@ -120,6 +120,7 @@ class FakeNoActiveTravel:
 class FakeExpense:
     def __init__(self, general_answer=None):
         self.general_answer = general_answer
+        self.llm_service = None
 
     def build_summary_message(self, draft_expense, include_text_actions=True):
         summary = (
@@ -164,8 +165,11 @@ class FakeExpense:
             **dict(draft_expense),
         }
 
-    def answer_general_question(self, question):
+    def answer_general_question(self, question, *, phone="", case_context_hint=False):
         return self.general_answer
+
+    def classify_message_intent(self, message):
+        return "unknown"
 
 
 class FakeGeoLLM:

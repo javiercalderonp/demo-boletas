@@ -211,10 +211,7 @@ def _build_expense_status_notification(expense: dict[str, Any], action: str) -> 
     amount_str = f"{currency} {total}".strip() if total else ""
 
     if action == "approve":
-        msg = f"Tu documento fue aprobado: {merchant}"
-        if amount_str:
-            msg += f" por {amount_str}"
-        return msg + "."
+        return "Tu documento fue aprobado"
     if action == "reject":
         msg = f"Tu documento fue rechazado: {merchant}"
         if amount_str:

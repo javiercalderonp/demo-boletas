@@ -13,12 +13,6 @@ import { apiRequest } from "@/lib/api";
 import { useAutoRefresh } from "@/lib/use-auto-refresh";
 import type { CaseItem, Conversation, ConversationMessage, Employee } from "@/lib/types";
 
-const fieldLabels: Record<string, string> = {
-  case_id: "Case ID",
-  state: "Estado",
-  current_step: "Paso actual",
-};
-
 export default function ConversationDetailPage() {
   const params = useParams<{ phone: string }>();
   const { token } = useAuth();
@@ -26,7 +20,6 @@ export default function ConversationDetailPage() {
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [employee, setEmployee] = useState<Employee | null>(null);
   const [caseItem, setCaseItem] = useState<CaseItem | null>(null);
-  const [saving, setSaving] = useState(false);
   const [isTechnicalContextOpen, setIsTechnicalContextOpen] = useState(false);
 
   // Chat state
@@ -54,7 +47,7 @@ export default function ConversationDetailPage() {
   }, [fetchConversation]);
 
   useAutoRefresh(fetchConversation, {
-    enabled: Boolean(token) && Boolean(phone) && !saving && !sending,
+    enabled: Boolean(token) && Boolean(phone) && !sending,
   });
 
   // Auto-scroll to bottom when messages change
@@ -62,28 +55,6 @@ export default function ConversationDetailPage() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length]);
-
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!token || !conversation) return;
-    setSaving(true);
-    try {
-      const form = new FormData(event.currentTarget);
-      await apiRequest(`/conversations/${encodeURIComponent(phone)}`, {
-        method: "PUT",
-        body: {
-          case_id: form.get("case_id"),
-          state: form.get("state"),
-          current_step: form.get("current_step"),
-          context_json: conversation.context_json,
-        },
-        token,
-      });
-      fetchConversation();
-    } finally {
-      setSaving(false);
-    }
-  }
 
   async function handleSendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -266,51 +237,6 @@ export default function ConversationDetailPage() {
                 </div>
               )}
             </SectionCard>
-
-            <div className="mt-6">
-              <SectionCard title="Estado actual">
-                {conversation ? (
-                  <form
-                    key={JSON.stringify([
-                      conversation.case_id || "",
-                      conversation.state || "",
-                      conversation.current_step || "",
-                    ])}
-                    className="space-y-4"
-                    onSubmit={onSubmit}
-                  >
-                    {(["case_id", "state", "current_step"] as const).map((field) => (
-                      <div key={field}>
-                        <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                          {fieldLabels[field]}
-                        </label>
-                        <input
-                          defaultValue={String(conversation[field as keyof Conversation] || "")}
-                          name={field}
-                          className="block w-full rounded-lg border border-gray-300 px-3.5 py-2 text-sm text-gray-900 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
-                        />
-                      </div>
-                    ))}
-                    <button
-                      className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-primary-700 disabled:opacity-50"
-                      type="submit"
-                      disabled={saving}
-                    >
-                      {saving ? "Guardando..." : "Actualizar"}
-                    </button>
-                  </form>
-                ) : (
-                  <div className="space-y-4">
-                    {Array.from({ length: 3 }).map((_, i) => (
-                      <div key={i}>
-                        <div className="skeleton mb-1.5 h-4 w-20" />
-                        <div className="skeleton h-9 w-full rounded-lg" />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </SectionCard>
-            </div>
           </div>
 
           <div>

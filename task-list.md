@@ -339,6 +339,15 @@
 
 ### Completado
 
+- [x] **Chatbot con clasificación inteligente de intención**
+  - Mensajes de texto en estado `WAIT_RECEIPT` ahora se clasifican por intención usando LLM
+  - `case_question`: preguntas sobre presupuesto, centros de costo, gastos registrados → se responden con contexto completo del caso activo (centros de costo, presupuesto, gastos por CC)
+  - `general_question`: preguntas sobre cómo usar la app → LLM con contexto genérico
+  - `irrelevant`: mensajes fuera de scope → respuesta educada de declive
+  - Heurísticas (`_looks_like_rendicion_request`, `_looks_like_question`) pasan `case_context_hint` para usar LLM con contexto cuando los keywords no coinciden
+  - Nuevo método `build_case_context_text(phone)` en `ExpenseService` construye contexto rico (presupuesto, centros de costo, gastos por CC, saldo)
+  - Nuevos métodos `answer_question_with_case_context` y `classify_message_intent` en `LLMService`
+
 - [x] **Modelo "fondos por rendir"**
   - Columnas: `fondos_entregados`, `rendicion_status`, `user_confirmed_at`, `user_confirmation_status`
   - Balance computado: `monto_rendido_aprobado`, `monto_pendiente_revision`, `saldo_restante`
@@ -661,6 +670,13 @@
   - Crear rendición con `fondos_entregados`
   - Tabla con fondos, aprobado, saldo (rojo si negativo), estado, docs
   - Botón "Exportar CSV" para descargar rendiciones
+
+- [x] **Fondos entregados por centro de costo**
+  - Al crear una rendición, selector de modo: "Total" o "Por centro de costo"
+  - En modo "Por centro de costo", se muestra una fila de input por cada centro de costo definido, con total calculado automáticamente
+  - El default es "Total" (campo único, comportamiento anterior)
+  - Nuevo campo `fondos_por_centro` (dict) almacenado en backend y Google Sheets
+  - El `fondos_entregados` total se calcula como suma de los montos por centro
 
 - [x] **Filtros y búsqueda en rendiciones**
   - Barra de búsqueda por empleado, ID de rendición, o empresa

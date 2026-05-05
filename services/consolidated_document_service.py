@@ -9,7 +9,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from services.sheets_service import SheetsService
+from services.sheets_service import SheetsService, normalize_cost_centers
 from services.storage_service import GCSStorageService
 from utils.exchange_rate import convert_to_clp
 from utils.helpers import make_id, normalize_whatsapp_phone, parse_float, utc_now_iso
@@ -123,11 +123,38 @@ class ConsolidatedDocumentService:
     ) -> dict[str, Any]:
         total_clp = 0.0
         by_category: dict[str, float] = {}
+        by_cost_center: dict[str, dict[str, Any]] = {}
         by_day: dict[str, float] = {}
         detail_rows: list[dict[str, Any]] = []
+        cost_centers = normalize_cost_centers(expense_case.get("cost_centers", []))
+        fondos_por_centro = self._normalize_fondos_por_centro(
+            expense_case.get("fondos_por_centro")
+        )
+
+        for cost_center in cost_centers:
+            by_cost_center.setdefault(
+                cost_center,
+                {
+                    "cost_center": cost_center,
+                    "fondos_clp": fondos_por_centro.get(cost_center, 0.0),
+                    "spent_clp": 0.0,
+                    "expense_count": 0,
+                },
+            )
+        for cost_center, amount in fondos_por_centro.items():
+            by_cost_center.setdefault(
+                cost_center,
+                {
+                    "cost_center": cost_center,
+                    "fondos_clp": amount,
+                    "spent_clp": 0.0,
+                    "expense_count": 0,
+                },
+            )
 
         for expense in expenses:
             category = str(expense.get("category", "") or "").strip() or "Uncategorized"
+            cost_center = str(expense.get("cost_center", "") or "").strip() or "Sin centro de costo"
             day = str(expense.get("date", "") or "").strip() or "sin_fecha"
             currency = str(expense.get("currency", "") or "").strip().upper() or "CLP"
             total = parse_float(expense.get("total")) or 0.0
@@ -136,6 +163,17 @@ class ConsolidatedDocumentService:
                 total_clp_row = float(convert_to_clp(total, currency))
 
             by_category[category] = by_category.get(category, 0.0) + total_clp_row
+            cost_center_summary = by_cost_center.setdefault(
+                cost_center,
+                {
+                    "cost_center": cost_center,
+                    "fondos_clp": fondos_por_centro.get(cost_center, 0.0),
+                    "spent_clp": 0.0,
+                    "expense_count": 0,
+                },
+            )
+            cost_center_summary["spent_clp"] += total_clp_row
+            cost_center_summary["expense_count"] += 1
             by_day[day] = by_day.get(day, 0.0) + total_clp_row
             total_clp += total_clp_row
 
@@ -145,6 +183,7 @@ class ConsolidatedDocumentService:
                     "date": day,
                     "merchant": str(expense.get("merchant", "") or "").strip() or "-",
                     "category": category,
+                    "cost_center": cost_center,
                     "currency": currency,
                     "total": total,
                     "total_clp": total_clp_row,
@@ -157,14 +196,42 @@ class ConsolidatedDocumentService:
             )
 
         sorted_categories = sorted(by_category.items(), key=lambda x: x[0].lower())
+        sorted_cost_centers = sorted(
+            (
+                {
+                    **item,
+                    "balance_clp": float(item.get("fondos_clp", 0.0) or 0.0)
+                    - float(item.get("spent_clp", 0.0) or 0.0),
+                }
+                for item in by_cost_center.values()
+            ),
+            key=lambda item: str(item.get("cost_center", "")).lower(),
+        )
         sorted_days = sorted(by_day.items(), key=lambda x: x[0])
         return {
             "expense_case": expense_case,
             "total_clp": total_clp,
             "by_category": sorted_categories,
+            "by_cost_center": sorted_cost_centers,
             "by_day": sorted_days,
             "detail_rows": detail_rows,
         }
+
+    def _normalize_fondos_por_centro(self, value: Any) -> dict[str, float]:
+        if isinstance(value, str):
+            from utils.helpers import json_loads
+
+            value = json_loads(value, default=None)
+        if not isinstance(value, dict):
+            return {}
+
+        normalized: dict[str, float] = {}
+        for raw_center, raw_amount in value.items():
+            center = str(raw_center or "").strip()
+            if not center:
+                continue
+            normalized[center] = parse_float(raw_amount) or 0.0
+        return normalized
 
     def _build_receipt_reference(self, expense: dict[str, Any]) -> str:
         provider = str(expense.get("receipt_storage_provider", "") or "").strip().lower()
@@ -291,6 +358,39 @@ class ConsolidatedDocumentService:
         story.append(category_table)
         story.append(Spacer(1, 10))
 
+        story.append(Paragraph("Resumen por centro de costo (CLP)", styles["Heading3"]))
+        cost_center_rows: list[list[Any]] = [
+            ["Centro de costo", "Fondos", "Gastado", "Saldo", "Docs"]
+        ]
+        for item in report_data["by_cost_center"]:
+            cost_center_rows.append(
+                [
+                    str(item["cost_center"]),
+                    self._format_clp(item["fondos_clp"]),
+                    self._format_clp(item["spent_clp"]),
+                    self._format_clp(item["balance_clp"]),
+                    str(item["expense_count"]),
+                ]
+            )
+        if len(cost_center_rows) == 1:
+            cost_center_rows.append(["Sin centros de costo", "0", "0", "0", "0"])
+        cost_center_table = Table(
+            cost_center_rows,
+            colWidths=[65 * mm, 35 * mm, 35 * mm, 30 * mm, 10 * mm],
+        )
+        cost_center_table.setStyle(
+            TableStyle(
+                [
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EFEFEF")),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+                ]
+            )
+        )
+        story.append(cost_center_table)
+        story.append(Spacer(1, 10))
+
         story.append(Paragraph("Resumen por dia (CLP)", styles["Heading3"]))
         day_rows = [["Fecha", "Total CLP"]]
         for day, amount in report_data["by_day"]:
@@ -324,6 +424,7 @@ class ConsolidatedDocumentService:
                 (
                     f"<b>Fecha:</b> {self._escape_text(row['date'])}<br/>"
                     f"<b>Categoria:</b> {self._escape_text(row['category'])}<br/>"
+                    f"<b>Centro de costo:</b> {self._escape_text(row['cost_center'])}<br/>"
                     f"<b>Moneda:</b> {self._escape_text(row['currency'])}<br/>"
                     f"<b>Total:</b> {self._escape_text(self._format_generic_amount(row['total']))}<br/>"
                     f"<b>Total CLP:</b> {self._escape_text(self._format_clp(row['total_clp']))}"

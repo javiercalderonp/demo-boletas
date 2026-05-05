@@ -212,6 +212,8 @@ export default function CasesPage() {
   const [balanceFilter, setBalanceFilter] = useState<"" | "positive" | "negative">("");
   const [actionPopup, setActionPopup] = useState<{ title: string; message: string } | null>(null);
   const [actionLoading, setActionLoading] = useState("");
+  const [fondosMode, setFondosMode] = useState<"total" | "por_centro">("total");
+  const [fondosPorCentro, setFondosPorCentro] = useState<Record<string, string>>({});
 
   async function exportCsv() {
     if (!token) return;
@@ -270,6 +272,25 @@ export default function CasesPage() {
       balance === "positive" || balance === "negative" ? balance : "",
     );
   }, []);
+
+  useEffect(() => {
+    if (fondosMode !== "por_centro") return;
+    setFondosPorCentro((prev) => {
+      const next: Record<string, string> = {};
+      for (const center of form.cost_centers) {
+        next[center] = prev[center] ?? "";
+      }
+      return next;
+    });
+  }, [form.cost_centers, fondosMode]);
+
+  const fondosTotalFromCenters = useMemo(() => {
+    const sum = Object.values(fondosPorCentro).reduce(
+      (acc, v) => acc + (parseFloat(v) || 0),
+      0,
+    );
+    return sum > 0 ? String(Math.round(sum)) : "";
+  }, [fondosPorCentro]);
 
   function addCostCenter(rawValue = costCenterDraft) {
     const value = rawValue.trim();
@@ -338,7 +359,18 @@ export default function CasesPage() {
     setSubmitting(true);
     setError("");
     try {
-      await apiRequest("/cases", { method: "POST", body: form, token });
+      const payload = {
+        ...form,
+        fondos_entregados:
+          fondosMode === "por_centro" ? fondosTotalFromCenters : form.fondos_entregados,
+        fondos_por_centro:
+          fondosMode === "por_centro"
+            ? Object.fromEntries(
+                form.cost_centers.map((c) => [c, parseFloat(fondosPorCentro[c] || "0") || 0]),
+              )
+            : null,
+      };
+      await apiRequest("/cases", { method: "POST", body: payload, token });
       setForm(emptyForm);
       setCostCenterDraft("");
       setEmployeeSearch("");
@@ -346,6 +378,8 @@ export default function CasesPage() {
       setCreateEmployeeOpen(false);
       setCreateOpen(false);
       setCompanyAccordionOpen(false);
+      setFondosMode("total");
+      setFondosPorCentro({});
       load();
     } catch (nextError) {
       const message =
@@ -605,9 +639,9 @@ export default function CasesPage() {
         )}
 
         {createOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/40 px-4">
-            <div className="w-full max-w-xl rounded-2xl border border-gray-200 bg-white shadow-2xl">
-              <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
+          <div className="fixed inset-0 z-50 flex items-end justify-center bg-gray-950/40 px-0 pt-[calc(0.75rem_+_env(safe-area-inset-top))] sm:items-center sm:px-4 sm:py-6">
+            <div className="flex max-h-[calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_1.5rem)] w-full max-w-xl flex-col overflow-hidden rounded-t-2xl border border-gray-200 bg-white shadow-2xl sm:rounded-2xl">
+              <div className="flex shrink-0 items-center justify-between border-b border-gray-100 px-5 py-4">
                 <div>
                   <h2 className="text-base font-semibold text-gray-900">
                     Nueva rendición
@@ -632,8 +666,9 @@ export default function CasesPage() {
                   <X className="h-5 w-5" />
                 </button>
               </div>
-              <form className="space-y-4 p-5" onSubmit={onSubmit}>
-                <div>
+              <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
+                <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+                  <div>
                   <label className="mb-1.5 block text-sm font-medium text-gray-700">
                     Empresa
                   </label>
@@ -923,25 +958,83 @@ export default function CasesPage() {
                     </div>
                   </div>
                 )}
-                {(["fondos_entregados"] as const).map((field) => (
-                  <div key={field}>
-                    <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                      {fieldLabels[field]}
+                <div>
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <label className="text-sm font-medium text-gray-700">
+                      Fondos entregados (CLP)
                     </label>
+                    <div className="flex rounded-lg border border-gray-200 bg-gray-100 p-0.5 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setFondosMode("total")}
+                        className={
+                          fondosMode === "total"
+                            ? "rounded-md bg-white px-2.5 py-1 font-medium text-gray-900 shadow-sm"
+                            : "rounded-md px-2.5 py-1 text-gray-500 hover:text-gray-700"
+                        }
+                      >
+                        Total
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFondosMode("por_centro")}
+                        className={
+                          fondosMode === "por_centro"
+                            ? "rounded-md bg-white px-2.5 py-1 font-medium text-gray-900 shadow-sm"
+                            : "rounded-md px-2.5 py-1 text-gray-500 hover:text-gray-700"
+                        }
+                      >
+                        Por centro de costo
+                      </button>
+                    </div>
+                  </div>
+                  {fondosMode === "total" ? (
                     <input
-                      value={formatMoneyInput(form[field])}
+                      value={formatMoneyInput(form.fondos_entregados)}
                       onChange={(event) =>
                         setForm((current) => ({
                           ...current,
-                          [field]: normalizeMoneyInput(event.target.value),
+                          fondos_entregados: normalizeMoneyInput(event.target.value),
                         }))
                       }
                       inputMode="numeric"
                       placeholder="$ 0"
                       className="block w-full rounded-lg border border-gray-300 px-3.5 py-2 text-sm text-gray-900 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
                     />
-                  </div>
-                ))}
+                  ) : form.cost_centers.length === 0 ? (
+                    <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-3.5 py-3 text-sm text-gray-500">
+                      Agrega al menos un centro de costo para asignar fondos por centro.
+                    </p>
+                  ) : (
+                    <div className="overflow-hidden rounded-lg border border-gray-300 divide-y divide-gray-100">
+                      {form.cost_centers.map((center) => (
+                        <div key={center} className="flex items-center gap-3 bg-white px-3 py-2">
+                          <span className="flex-1 truncate text-sm text-gray-700">{center}</span>
+                          <input
+                            value={formatMoneyInput(fondosPorCentro[center] ?? "")}
+                            onChange={(e) =>
+                              setFondosPorCentro((prev) => ({
+                                ...prev,
+                                [center]: normalizeMoneyInput(e.target.value),
+                              }))
+                            }
+                            inputMode="numeric"
+                            placeholder="$ 0"
+                            className="w-36 rounded-md border border-gray-200 px-2.5 py-1.5 text-right text-sm text-gray-900 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
+                          />
+                        </div>
+                      ))}
+                      <div className="flex items-center gap-3 bg-gray-50 px-3 py-2">
+                        <span className="flex-1 text-sm font-medium text-gray-700">Total</span>
+                        <span className="w-36 text-right text-sm font-semibold text-gray-900">
+                          {fondosTotalFromCenters
+                            ? formatMoneyInput(fondosTotalFromCenters)
+                            : "$ 0"}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-gray-700">
                     Notas
@@ -958,7 +1051,8 @@ export default function CasesPage() {
                     className="block w-full resize-none rounded-lg border border-gray-300 px-3.5 py-2 text-sm text-gray-900 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
                   />
                 </div>
-                <div className="flex items-center justify-end gap-3 pt-2">
+                </div>
+                <div className="grid shrink-0 grid-cols-2 gap-3 border-t border-gray-100 bg-white px-5 py-4 pb-[calc(1rem_+_env(safe-area-inset-bottom))] sm:flex sm:justify-end sm:pb-4">
                   <button
                     className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
                     onClick={() => {
@@ -968,6 +1062,8 @@ export default function CasesPage() {
                       setEmployeeSearch("");
                       setEmployeeForm(emptyEmployeeForm);
                       setCreateEmployeeOpen(false);
+                      setFondosMode("total");
+                      setFondosPorCentro({});
                     }}
                     type="button"
                   >
