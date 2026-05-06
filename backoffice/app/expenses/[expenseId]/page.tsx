@@ -35,7 +35,41 @@ const fieldLabels: Record<string, string> = {
   cost_center: "Centro de costo",
   country: "País",
   status: "Estado",
+  document_type: "Tipo de documento",
+  invoice_number: "Folio",
+  tax_amount: "Impuesto",
+  issuer_tax_id: "RUT emisor",
+  receiver_tax_id: "RUT receptor",
+  gross_amount: "Monto bruto",
+  withholding_rate: "Tasa retención",
+  withholding_amount: "Retención",
+  net_amount: "Monto líquido",
+  receiver_name: "Receptor",
+  service_description: "Descripción servicio",
 };
+
+const extractedFieldNames = [
+  "merchant",
+  "date",
+  "currency",
+  "total",
+  "total_clp",
+  "category",
+  "cost_center",
+  "country",
+  "status",
+  "document_type",
+  "invoice_number",
+  "tax_amount",
+  "issuer_tax_id",
+  "receiver_tax_id",
+  "gross_amount",
+  "withholding_rate",
+  "withholding_amount",
+  "net_amount",
+  "receiver_name",
+  "service_description",
+] as const satisfies readonly (keyof Expense)[];
 
 const breakdownLabels: Record<string, string> = {
   document_quality: "Calidad documento",
@@ -366,19 +400,7 @@ export default function ExpenseDetailPage() {
                 isEditing ? (
                   <form className="space-y-4" onSubmit={onSubmit}>
                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                      {(
-                        [
-                          "merchant",
-                          "date",
-                          "currency",
-                          "total",
-                          "total_clp",
-                          "category",
-                          "cost_center",
-                          "country",
-                          "status",
-                        ] as const
-                      ).map((field) => (
+                      {extractedFieldNames.map((field) => (
                         <div key={field}>
                           <label className="mb-1.5 block text-sm font-medium text-gray-700">
                             {fieldLabels[field]}
@@ -403,19 +425,7 @@ export default function ExpenseDetailPage() {
                   </form>
                 ) : (
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    {(
-                      [
-                        "merchant",
-                        "date",
-                        "currency",
-                        "total",
-                        "total_clp",
-                        "category",
-                        "cost_center",
-                        "country",
-                        "status",
-                      ] as const
-                    ).map((field) => (
+                    {extractedFieldNames.map((field) => (
                       <div
                         key={field}
                         className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3"

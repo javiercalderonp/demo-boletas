@@ -455,7 +455,24 @@ class ConversationService:
             }
 
         if current_step == "cost_center":
-            cost_center = self._parse_cost_center_value(message, draft)
+            if normalized in {"otra", "otro", "other", "manual"}:
+                return {
+                    "state": CONFIRM_SUMMARY,
+                    "current_step": "cost_center",
+                    "context_json": {
+                        "draft_expense": draft,
+                        "missing_fields": [],
+                        "last_question": "cost_center",
+                        "awaiting_manual_cost_center": True,
+                    },
+                    "reply": "Escribe el centro de costo manualmente.",
+                    "action": "noop",
+                }
+            cost_center = self._parse_cost_center_value(
+                message,
+                draft,
+                allow_manual=bool(context.get("awaiting_manual_cost_center")),
+            )
             if not cost_center:
                 return {
                     "state": CONFIRM_SUMMARY,
@@ -563,11 +580,19 @@ class ConversationService:
             centers.append(text)
         return centers
 
-    def _parse_cost_center_value(self, message: str, draft: dict[str, Any]) -> str:
+    def _parse_cost_center_value(
+        self,
+        message: str,
+        draft: dict[str, Any],
+        *,
+        allow_manual: bool = False,
+    ) -> str:
         value = str(message or "").strip()
         if not value:
             return ""
         centers = self._get_draft_cost_centers(draft)
+        if allow_manual:
+            return value
         if value.isdigit():
             index = int(value) - 1
             if 0 <= index < len(centers):

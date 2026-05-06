@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, FileText, ImageIcon, LoaderCircle, Send } from "lucide-react";
 
 import { Badge } from "@/components/badge";
 import { SectionCard } from "@/components/section-card";
@@ -18,6 +18,35 @@ function formatDateTime(value?: string) {
     dateStyle: "short",
     timeStyle: "short",
   }).format(date);
+}
+
+function getMediaAttachments(message: ConversationMessage) {
+  const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+  const allAttachments = [
+    {
+      media_url: message.media_url,
+      media_content_type: message.media_content_type,
+      image_url: message.image_url,
+      document_url: message.document_url,
+    },
+    ...attachments,
+  ];
+
+  return allAttachments
+    .map((attachment) => {
+      const imageUrl = attachment.image_url || "";
+      const documentUrl = attachment.document_url || "";
+      const mediaUrl = attachment.media_url || "";
+      const mediaType = attachment.media_content_type || "";
+      const url = imageUrl || documentUrl || mediaUrl;
+      const isImage = Boolean(imageUrl) || mediaType.startsWith("image/");
+      const isDocument = Boolean(documentUrl) || mediaType.includes("pdf");
+      return { url, isImage, isDocument };
+    })
+    .filter((attachment, index, list) => {
+      if (!attachment.url) return false;
+      return list.findIndex((item) => item.url === attachment.url) === index;
+    });
 }
 
 export function ChatPanel({
@@ -139,50 +168,95 @@ export function ChatPanel({
     >
       {isExpanded && (
         <>
-          <div className="overflow-y-auto space-y-4 scroll-smooth" style={{ maxHeight }}>
+          <div
+            className="space-y-3 overflow-y-auto rounded-xl border border-emerald-100 bg-[#e7f3ec] bg-[radial-gradient(circle_at_12px_12px,rgba(255,255,255,0.42)_1px,transparent_1px)] bg-[length:24px_24px] p-3 scroll-smooth"
+            style={{ maxHeight }}
+          >
             {messages.length > 0 ? (
               messages.map((message) => {
                 const isPerson = message.speaker === "person";
                 const isOperator = message.speaker === "operator";
+                const attachments = getMediaAttachments(message);
 
                 let alignment = "justify-start";
-                let bgClasses = "border border-gray-200 bg-white text-gray-900";
-                let labelColor = "text-gray-500";
+                let bgClasses = "bg-white text-gray-900 shadow-sm ring-1 ring-black/5";
+                let labelColor = "text-emerald-700";
                 let timeColor = "text-gray-400";
                 let speakerLabel = "Bot";
+                let tailClasses =
+                  "left-[-6px] border-r-[8px] border-r-white border-t-[8px] border-t-transparent";
 
                 if (isPerson) {
                   alignment = "justify-end";
-                  bgClasses = "bg-primary-600 text-white";
-                  labelColor = "text-primary-50/90";
-                  timeColor = "text-primary-100/90";
+                  bgClasses = "bg-[#dcf8c6] text-gray-950 shadow-sm ring-1 ring-emerald-300/60";
+                  labelColor = "text-emerald-800";
+                  timeColor = "text-gray-500";
                   speakerLabel = employee?.name || "Persona";
+                  tailClasses =
+                    "right-[-6px] border-l-[8px] border-l-[#dcf8c6] border-t-[8px] border-t-transparent";
                 } else if (isOperator) {
                   alignment = "justify-end";
-                  bgClasses = "bg-amber-600 text-white";
-                  labelColor = "text-amber-50/90";
-                  timeColor = "text-amber-100/90";
+                  bgClasses = "bg-[#d9fdd3] text-gray-950 shadow-sm ring-1 ring-emerald-300/70";
+                  labelColor = "text-emerald-900";
+                  timeColor = "text-gray-500";
                   speakerLabel = message.operator_name || "Operador";
+                  tailClasses =
+                    "right-[-6px] border-l-[8px] border-l-[#d9fdd3] border-t-[8px] border-t-transparent";
                 }
 
                 return (
                   <div className={`flex ${alignment}`} key={message.id}>
-                    <div className={`max-w-[85%] rounded-2xl px-4 py-3 shadow-sm ${bgClasses}`}>
-                      <div className="mb-1 flex items-center gap-2 text-xs">
+                    <div className={`relative max-w-[88%] rounded-lg px-3 py-2 ${bgClasses}`}>
+                      <span className={`absolute top-0 h-0 w-0 ${tailClasses}`} />
+                      <div className="mb-1 flex items-center gap-2 text-[11px] font-medium">
                         <span className={labelColor}>{speakerLabel}</span>
                         {isOperator && (
-                          <span className="rounded-full bg-amber-500/30 px-1.5 py-0.5 text-[10px] font-medium text-amber-50">
+                          <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800">
                             Operador
                           </span>
                         )}
                         {message.type === "media" && (
-                          <span className={isPerson ? "text-primary-100/90" : "text-gray-400"}>
+                          <span className="inline-flex items-center gap-1 text-gray-500">
+                            <ImageIcon className="h-3 w-3" />
                             Adjunto
                           </span>
                         )}
                       </div>
-                      <p className="whitespace-pre-wrap text-sm leading-6">{message.text}</p>
-                      <p className={`mt-2 text-[11px] ${timeColor}`}>
+                      {attachments.length > 0 && (
+                        <div className="mb-2 grid gap-2">
+                          {attachments.map((attachment) =>
+                            attachment.isImage ? (
+                              <a
+                                href={attachment.url}
+                                key={attachment.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="block overflow-hidden rounded-md bg-black/5"
+                              >
+                                <img
+                                  src={attachment.url}
+                                  alt="Adjunto enviado por WhatsApp"
+                                  className="max-h-72 w-full object-cover"
+                                  loading="lazy"
+                                />
+                              </a>
+                            ) : (
+                              <a
+                                href={attachment.url}
+                                key={attachment.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="flex items-center gap-2 rounded-md bg-white/70 px-3 py-2 text-sm font-medium text-emerald-900 ring-1 ring-black/5 transition hover:bg-white"
+                              >
+                                <FileText className="h-4 w-4" />
+                                Ver comprobante
+                              </a>
+                            ),
+                          )}
+                        </div>
+                      )}
+                      {message.text && <p className="whitespace-pre-wrap text-sm leading-5">{message.text}</p>}
+                      <p className={`mt-1 text-right text-[10px] ${timeColor}`}>
                         {formatDateTime(message.created_at)}
                       </p>
                     </div>
@@ -208,26 +282,20 @@ export function ChatPanel({
                 }}
                 placeholder="Escribe un mensaje para enviar por WhatsApp..."
                 rows={2}
-                className="block w-full resize-none rounded-xl border border-gray-300 px-4 py-2.5 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
+                className="block w-full resize-none rounded-full border border-gray-300 px-4 py-2.5 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
                 disabled={sending}
               />
             </div>
             <button
               type="submit"
               disabled={sending || !chatInput.trim()}
-              className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-primary-600 text-white shadow-sm transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-[#00a884] text-white shadow-sm transition hover:bg-[#008f72] disabled:cursor-not-allowed disabled:opacity-50"
               title="Enviar mensaje"
             >
               {sending ? (
-                <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
+                <LoaderCircle className="h-4 w-4 animate-spin" />
               ) : (
-                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="22" y1="2" x2="11" y2="13" />
-                  <polygon points="22 2 15 22 11 13 2 9 22 2" />
-                </svg>
+                <Send className="h-4 w-4" />
               )}
             </button>
           </form>

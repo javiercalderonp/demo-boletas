@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 
 from app.schemas.backoffice import (
     CasePayload,
+    CaseChatPayload,
     ConversationPayload,
     EmployeePayload,
     ExpensePayload,
@@ -31,6 +32,7 @@ from utils.helpers import make_id, utc_now_iso
 
 router = APIRouter(prefix="/api", tags=["backoffice"])
 logger = logging.getLogger(__name__)
+MAX_MESSAGE_LOG_ITEMS = 500
 
 
 def _get_container(request: Request):
@@ -150,6 +152,55 @@ def _get_expense_reply_target(request: Request, expense: dict[str, Any]) -> str 
     return None
 
 
+def _enrich_conversation_media_messages(request: Request, detail: dict[str, Any]) -> dict[str, Any]:
+    conversation = detail.get("conversation")
+    if not isinstance(conversation, dict):
+        return detail
+    context = conversation.get("context_json")
+    if not isinstance(context, dict):
+        return detail
+    message_log = context.get("message_log")
+    if not isinstance(message_log, list):
+        return detail
+
+    phone = str(conversation.get("phone") or "").strip()
+    expenses = [
+        _attach_expense_receipt_urls(request, expense)
+        for expense in _get_container(request).sheets.list_expenses()
+        if str(expense.get("phone") or "").strip() == phone
+    ]
+    expenses_by_message_id = {
+        str(expense.get("source_message_id") or "").strip(): expense
+        for expense in expenses
+        if str(expense.get("source_message_id") or "").strip()
+    }
+
+    enriched_messages: list[Any] = []
+    for item in message_log:
+        if not isinstance(item, dict):
+            enriched_messages.append(item)
+            continue
+        message = dict(item)
+        if str(message.get("type") or "").strip() != "media":
+            enriched_messages.append(message)
+            continue
+        expense = expenses_by_message_id.get(str(message.get("message_id") or "").strip())
+        if expense:
+            image_url = str(expense.get("image_url") or "").strip()
+            document_url = str(expense.get("document_url") or "").strip()
+            if image_url and not str(message.get("image_url") or "").strip():
+                message["image_url"] = image_url
+            if document_url and not str(message.get("document_url") or "").strip():
+                message["document_url"] = document_url
+        enriched_messages.append(message)
+
+    enriched_context = dict(context)
+    enriched_context["message_log"] = enriched_messages
+    enriched_conversation = dict(conversation)
+    enriched_conversation["context_json"] = enriched_context
+    return {**detail, "conversation": enriched_conversation}
+
+
 def _safe_send_whatsapp_notification(
     request: Request,
     *,
@@ -182,7 +233,9 @@ def _build_new_case_conversation_state(
 
     message_log = current_context.get("message_log")
     if isinstance(message_log, list):
-        next_context["message_log"] = [item for item in message_log if isinstance(item, dict)][-100:]
+        next_context["message_log"] = [
+            item for item in message_log if isinstance(item, dict)
+        ][-MAX_MESSAGE_LOG_ITEMS:]
 
     scheduler_context = current_context.get("scheduler")
     if isinstance(scheduler_context, dict):
@@ -433,7 +486,7 @@ def create_case(
                         "created_at": sent_at_utc,
                     }
                 )
-            context["message_log"] = message_log[-100:]
+            context["message_log"] = message_log[-MAX_MESSAGE_LOG_ITEMS:]
             container.sheets.update_conversation(
                 phone,
                 {
@@ -473,6 +526,122 @@ def get_case(
     if not detail:
         raise HTTPException(status_code=404, detail="Case not found")
     return detail
+
+
+def _build_case_context_for_ai(detail: dict[str, Any]) -> str:
+    case = detail.get("case") or {}
+    employee = detail.get("employee") or {}
+    expenses = detail.get("expenses") or []
+
+    lines: list[str] = []
+
+    case_id = str(case.get("case_id", "") or "").strip()
+    label = str(case.get("context_label", "") or "").strip()
+    if case_id:
+        lines.append(f"Rendición ID: {case_id}" + (f" — {label}" if label else ""))
+
+    emp_name = str(employee.get("name", "") or "").strip()
+    emp_phone = str(employee.get("phone", "") or "").strip()
+    if emp_name or emp_phone:
+        lines.append(f"Empleado: {emp_name or 'Sin nombre'} ({emp_phone})")
+
+    rendicion_status_labels = {
+        "open": "Abierta",
+        "pending_user_confirmation": "Pendiente confirmación usuario",
+        "approved": "Aprobada",
+        "closed": "Cerrada",
+    }
+    rendicion_status = str(case.get("rendicion_status", "") or "open").strip()
+    lines.append(f"Estado rendición: {rendicion_status_labels.get(rendicion_status, rendicion_status)}")
+
+    cost_centers = case.get("cost_centers") or []
+    if cost_centers:
+        lines.append(f"Centros de costo: {', '.join(str(c) for c in cost_centers)}")
+
+    def _parse_num(v: Any) -> float:
+        try:
+            return float(str(v).replace(",", ".")) if v not in (None, "", "None") else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+
+    fondos = _parse_num(case.get("fondos_entregados"))
+    if fondos:
+        lines.append(f"Fondos entregados: ${fondos:,.0f} CLP")
+
+    approved = _parse_num(case.get("monto_rendido_aprobado"))
+    pending = _parse_num(case.get("monto_pendiente_revision"))
+    saldo = _parse_num(case.get("saldo_restante"))
+    if approved or pending:
+        lines.append(f"Monto aprobado: ${approved:,.0f} CLP | Pendiente revisión: ${pending:,.0f} CLP")
+    if fondos:
+        lines.append(f"Saldo restante: ${saldo:,.0f} CLP")
+
+    if expenses:
+        lines.append(f"\nGastos registrados ({len(expenses)}):")
+        status_labels = {
+            "approved": "aprobado",
+            "rejected": "rechazado",
+            "pending_approval": "pendiente",
+            "needs_manual_review": "revisión manual",
+            "observed": "observado",
+        }
+        for exp in expenses:
+            merchant = str(exp.get("merchant", "") or "Sin nombre").strip()
+            date = str(exp.get("date", "") or "").strip()
+            total = _parse_num(exp.get("total_clp") or exp.get("total"))
+            currency = str(exp.get("currency", "CLP") or "CLP").strip()
+            category = str(exp.get("category", "") or "").strip()
+            cost_center = str(exp.get("cost_center", "") or "").strip()
+            exp_status = str(exp.get("review_status", exp.get("status", "")) or "").strip()
+            doc_type = str(exp.get("document_type", "") or "").strip()
+            doc_labels = {"receipt": "boleta", "invoice": "factura", "professional_fee_receipt": "honorarios"}
+            parts = [f"- {merchant}"]
+            if date:
+                parts.append(f"({date})")
+            if total:
+                parts.append(f"${total:,.0f} {currency}")
+            if category:
+                parts.append(f"[{category}]")
+            if cost_center:
+                parts.append(f"CC: {cost_center}")
+            if doc_type:
+                parts.append(f"Tipo: {doc_labels.get(doc_type, doc_type)}")
+            if exp_status:
+                parts.append(f"Estado: {status_labels.get(exp_status, exp_status)}")
+            lines.append(" ".join(parts))
+    else:
+        lines.append("Sin gastos registrados.")
+
+    return "\n".join(lines)
+
+
+@router.post("/cases/{case_id}/chat")
+def case_chat(
+    case_id: str,
+    payload: CaseChatPayload,
+    request: Request,
+    _: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    container = _get_container(request)
+    detail = container.backoffice.get_case_detail(case_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    llm = getattr(getattr(container, "expense", None), "llm_service", None)
+    if not llm or not getattr(llm, "chat_assistant_enabled", False):
+        raise HTTPException(status_code=503, detail="Asistente IA no disponible")
+
+    context_text = _build_case_context_for_ai(detail)
+    history = [{"role": m.role, "content": m.content} for m in payload.history]
+    answer = llm.chat_case_backoffice(
+        message=payload.message,
+        case_context_text=context_text,
+        history=history,
+    )
+    if not answer:
+        raise HTTPException(status_code=503, detail="No se pudo obtener respuesta del asistente")
+
+    return {"answer": answer}
 
 
 @router.put("/cases/{case_id}")
@@ -827,7 +996,7 @@ def get_conversation(
     detail = _get_container(request).backoffice.get_conversation_detail(phone)
     if not detail:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    return detail
+    return _enrich_conversation_media_messages(request, detail)
 
 
 @router.put("/conversations/{phone}")
@@ -887,7 +1056,7 @@ def send_conversation_message(
         "operator_name": operator_name,
     }
     message_log.append(new_entry)
-    message_log = message_log[-100:]
+    message_log = message_log[-MAX_MESSAGE_LOG_ITEMS:]
     context["message_log"] = message_log
 
     container.sheets.update_conversation(

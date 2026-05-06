@@ -87,3 +87,13 @@ class StatusActionPayload(BaseModel):
 
 class SendMessagePayload(BaseModel):
     message: str = Field(min_length=1, max_length=4096)
+
+
+class CaseChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class CaseChatPayload(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    history: list[CaseChatMessage] = Field(default_factory=list)

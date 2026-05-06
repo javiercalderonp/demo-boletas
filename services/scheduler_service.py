@@ -1197,20 +1197,17 @@ class SchedulerService:
             ).strip()
             context_text = f" ({context_label})" if context_label else ""
             self._wait_for_whatsapp_document_followup(document_message_id=document_message_id)
-            self.whatsapp_service.send_outbound_list(
+            self.whatsapp_service.send_outbound_buttons(
                 phone,
                 body=f"Rendición cerrada{context_text}. Revisa el PDF consolidado y elige una opción.",
-                button_text="Ver opciones",
-                items=[
+                buttons=[
                     {
                         "id": "simple_confirmation_yes_confirm_consolidated",
-                        "title": "Confirmar consolidado",
-                        "description": "Estoy de acuerdo con el PDF.",
+                        "title": "Confirmar",
                     },
                     {
                         "id": "simple_confirmation_no_review_company",
-                        "title": "Revisar con empresa",
-                        "description": "Necesito revisión antes de cerrar.",
+                        "title": "Revisar empresa",
                     },
                 ],
                 reply_to_message_id=document_message_id or None,

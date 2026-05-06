@@ -59,7 +59,7 @@ STICKY_CONTEXT_KEYS = (
 ACTIVE_RECEIPT_STATES = {"PROCESSING", "NEEDS_INFO", "CONFIRM_SUMMARY"}
 MAX_PROCESSED_MESSAGE_IDS = 50
 RECEIPT_BATCH_NOTICE_DELAY_SECONDS = 2
-MAX_MESSAGE_LOG_ITEMS = 100
+MAX_MESSAGE_LOG_ITEMS = 500
 NO_DOCUMENT_IDENTIFIED_REPLY = (
     "No se identificaron boletas/documentos en esa imagen. "
     "Envíame una boleta, factura, ticket o comprobante para procesarlo."
@@ -1464,19 +1464,12 @@ def _send_single_outbound_response(
     if interactive_prompt:
         prompt_body = interactive_prompt["body"]
         choices = interactive_prompt["choices"]
-        if len(choices) <= 3:
+        for batch_index, choice_batch in enumerate(_split_button_choices(choices), start=1):
+            batch_body = prompt_body if batch_index == 1 else "Más opciones:"
             container.whatsapp.send_outbound_buttons(
                 phone,
-                body=prompt_body,
-                buttons=choices,
-                reply_to_message_id=reply_to_message_id,
-            )
-        else:
-            container.whatsapp.send_outbound_list(
-                phone,
-                body=prompt_body,
-                button_text="Ver opciones",
-                items=choices,
+                body=batch_body,
+                buttons=choice_batch,
                 reply_to_message_id=reply_to_message_id,
             )
         _log_outbound_message(container, phone, prompt_body)
@@ -1524,10 +1517,7 @@ def _build_interactive_prompt(
             return None
         return {
             "body": "¿A qué centro de costo está dirigido este gasto?",
-            "choices": [
-                {"id": str(index), "title": center}
-                for index, center in enumerate(centers, start=1)
-            ],
+            "choices": _build_cost_center_button_choices(centers),
         }
 
     if state == "NEEDS_INFO" and current_step == "currency":
@@ -1559,6 +1549,24 @@ def _build_interactive_prompt(
         }
 
     return None
+
+
+def _split_button_choices(choices: list[dict[str, str]]) -> list[list[dict[str, str]]]:
+    clean_choices = [
+        choice
+        for choice in choices
+        if str(choice.get("id") or "").strip() and str(choice.get("title") or "").strip()
+    ]
+    return [clean_choices[index : index + 3] for index in range(0, len(clean_choices), 3)]
+
+
+def _build_cost_center_button_choices(centers: list[str]) -> list[dict[str, str]]:
+    choices = [
+        {"id": str(index), "title": center}
+        for index, center in enumerate(centers[:2], start=1)
+    ]
+    choices.append({"id": "otra", "title": "Otra"})
+    return choices
 
 
 def _normalize_cost_center_choices(raw_value: Any) -> list[str]:
@@ -1701,6 +1709,25 @@ def _append_message_log(
     }
     if entry.get("message_id"):
         normalized_entry["message_id"] = str(entry.get("message_id")).strip()
+    for key in ("media_url", "media_content_type", "image_url", "document_url"):
+        value = str(entry.get(key) or "").strip()
+        if value:
+            normalized_entry[key] = value
+    attachments = entry.get("attachments")
+    if isinstance(attachments, list):
+        normalized_attachments = []
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            normalized_attachment = {
+                key: str(attachment.get(key) or "").strip()
+                for key in ("media_url", "media_content_type", "image_url", "document_url")
+                if str(attachment.get(key) or "").strip()
+            }
+            if normalized_attachment:
+                normalized_attachments.append(normalized_attachment)
+        if normalized_attachments:
+            normalized_entry["attachments"] = normalized_attachments
     message_log.append(normalized_entry)
     message_log = message_log[-MAX_MESSAGE_LOG_ITEMS:]
     updated_context = _merge_context_preserving_sticky(
@@ -1761,6 +1788,9 @@ def _log_inbound_media_message(
             "type": "media",
             "text": text,
             "message_id": message_id,
+            "media_url": str(media_entries[0].get("media_url") or "").strip() if media_entries else "",
+            "media_content_type": str(media_entries[0].get("media_content_type") or "").strip() if media_entries else "",
+            "attachments": media_entries,
         },
     )
 

@@ -105,6 +105,17 @@ Instrucciones:
 - Si la informacion solicitada no esta en el contexto, dilo con honestidad.
 """.strip()
 
+BACKOFFICE_CASE_ASSISTANT_PROMPT = """
+Eres un asistente de analisis de rendiciones de gastos para el equipo de backoffice.
+Tienes acceso al contexto completo de la rendicion y respondes preguntas del operador con precision.
+Instrucciones:
+- Responde en espanol claro y conciso.
+- Usa solo los datos del contexto provisto. No inventes cifras ni datos.
+- Puedes analizar gastos, identificar patrones, calcular totales, y explicar el estado de la rendicion.
+- Si la pregunta no tiene relacion con la rendicion o los gastos, indica que solo puedes ayudar con temas de esta rendicion.
+- Si no tienes informacion suficiente para responder con certeza, dilo con honestidad.
+""".strip()
+
 MESSAGE_INTENT_SYSTEM_PROMPT = """
 Clasifica el mensaje del empleado en una de estas categorias exactas:
 - case_question: pregunta sobre su rendicion, presupuesto, centros de costo, gastos registrados, saldos o datos del caso activo
@@ -167,6 +178,42 @@ class LLMService:
             logger.warning("LLM chat assistant failed: %s", exc)
             return None
 
+        cleaned = " ".join(str(answer or "").split()).strip()
+        return cleaned or None
+
+    def chat_case_backoffice(
+        self,
+        message: str,
+        case_context_text: str,
+        history: list[dict[str, str]] | None = None,
+    ) -> str | None:
+        if not self.chat_assistant_enabled:
+            return None
+        if not message or not case_context_text:
+            return None
+
+        system_content = (
+            f"{BACKOFFICE_CASE_ASSISTANT_PROMPT}\n\n"
+            f"Contexto de la rendicion:\n{case_context_text}"
+        )
+        messages: list[dict[str, str]] = [{"role": "system", "content": system_content}]
+        for turn in (history or []):
+            role = str(turn.get("role", "")).strip()
+            content = str(turn.get("content", "")).strip()
+            if role in {"user", "assistant"} and content:
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": message.strip()})
+
+        payload = {
+            "model": getattr(self.settings, "openai_model", "gpt-4o-mini"),
+            "temperature": 0.3,
+            "messages": messages,
+        }
+        try:
+            answer = self._chat_text(payload)
+        except Exception as exc:
+            logger.warning("LLM backoffice case chat failed: %s", exc)
+            return None
         cleaned = " ".join(str(answer or "").split()).strip()
         return cleaned or None
 

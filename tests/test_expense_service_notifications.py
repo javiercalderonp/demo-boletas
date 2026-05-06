@@ -174,7 +174,7 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
         self.assertEqual(result["document_type"], "professional_fee_receipt")
         self.assertFalse(result["requires_user_confirmation"])
 
-    def test_professional_fee_receipt_summary_uses_net_total_and_retention(self):
+    def test_professional_fee_receipt_summary_uses_gross_total_and_retention(self):
         service = ExpenseService(sheets_service=FakeSheetsService())
 
         draft = service.enrich_draft_expense(
@@ -196,7 +196,8 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
         summary = service.build_summary_message(draft, include_text_actions=False)
 
         self.assertEqual(draft["document_type"], "professional_fee_receipt")
-        self.assertEqual(draft["total"], 84750)
+        self.assertEqual(draft["total"], 100000)
+        self.assertEqual(draft["net_amount"], 84750)
         self.assertEqual(draft["withholding_rate"], 15.25)
         self.assertIn("boleta de honorarios", summary)
         self.assertIn("Monto bruto: 100000", summary)
@@ -208,6 +209,85 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
         self.assertNotIn("RUT receptor: RUT", summary)
         self.assertNotIn("Categoría:", summary)
         self.assertNotIn("País:", summary)
+
+    def test_professional_fee_receipt_summary_order_and_integer_amounts(self):
+        service = ExpenseService(sheets_service=FakeSheetsService())
+
+        summary = service.build_summary_message(
+            {
+                "document_type": "professional_fee_receipt",
+                "merchant": "SONIDO AL SUR SPA",
+                "date": "2024-05-12",
+                "invoice_number": "1255",
+                "issuer_tax_id": "RUT: 77.987.654-3",
+                "receiver_tax_id": "RUT: 77.123.456-1",
+                "gross_amount": 280000.0,
+                "net_amount": 241500.0,
+                "total": 280000.0,
+                "currency": "CLP",
+            },
+            include_text_actions=False,
+        )
+
+        self.assertEqual(
+            summary.splitlines(),
+            [
+                "Detecté este gasto a partir de una *boleta de honorarios*:",
+                "Emisor: SONIDO AL SUR SPA",
+                "Fecha: 2024-05-12",
+                "Folio: 1255",
+                "RUT emisor: 77.987.654-3",
+                "RUT receptor: 77.123.456-1",
+                "Monto bruto: 280000 CLP",
+                "Monto líquido: 241500 CLP",
+            ],
+        )
+
+    def test_professional_fee_receipt_reconciles_equal_gross_and_net_with_retention(self):
+        service = ExpenseService(sheets_service=FakeSheetsService())
+
+        draft = service.enrich_draft_expense(
+            {
+                "document_type": "professional_fee_receipt",
+                "merchant": "SONIDO AL SUR SPA",
+                "date": "2024-05-12",
+                "currency": "CLP",
+                "total": 280000,
+                "gross_amount": 280000,
+                "net_amount": 280000,
+                "withholding_amount": 38500,
+            }
+        )
+
+        self.assertEqual(draft["gross_amount"], 318500)
+        self.assertEqual(draft["net_amount"], 280000)
+        self.assertEqual(draft["total"], 318500)
+
+    def test_professional_fee_receipt_prefers_explicit_labeled_amounts(self):
+        service = ExpenseService(sheets_service=FakeSheetsService())
+
+        draft = service.enrich_draft_expense(
+            {
+                "document_type": "professional_fee_receipt",
+                "merchant": "SONIDO AL SUR SPA",
+                "date": "2024-05-12",
+                "currency": "CLP",
+                "total": 280000,
+                "gross_amount": 280000,
+                "net_amount": 280000,
+                "ocr_text": (
+                    "BOLETA DE HONORARIOS ELECTRONICA\n"
+                    "Monto bruto: $280.000\n"
+                    "Retención: $38.500\n"
+                    "Monto líquido: $241.500"
+                ),
+            }
+        )
+
+        self.assertEqual(draft["gross_amount"], 280000)
+        self.assertEqual(draft["withholding_amount"], 38500)
+        self.assertEqual(draft["net_amount"], 241500)
+        self.assertEqual(draft["total"], 280000)
 
     def test_professional_fee_receipt_does_not_require_category_or_country(self):
         service = ExpenseService(sheets_service=FakeSheetsService())

@@ -16,6 +16,7 @@ from app.main import (
     _process_media_message_async,
     _reset_receipt_processing_state,
     _safe_send_outbound_response,
+    _send_single_outbound_response,
 )
 from app.config import Settings
 from services.conversation_service import ConversationService
@@ -90,6 +91,32 @@ class FakeContainer:
         self.sheets = FakeSheets(conversation)
         self.conversation = FakeConversationService()
         self.whatsapp = type("WhatsApp", (), {"send_outbound_text": lambda *args, **kwargs: None})()
+
+
+class FakeWhatsAppRecorder:
+    def __init__(self):
+        self.sent_texts = []
+        self.sent_buttons = []
+        self.sent_lists = []
+
+    def send_outbound_text(self, phone, message, reply_to_message_id=None):
+        self.sent_texts.append((phone, message, reply_to_message_id))
+        return {"id": "msg-1"}
+
+    def send_outbound_buttons(self, phone, *, body, buttons, reply_to_message_id=None):
+        self.sent_buttons.append(
+            {
+                "phone": phone,
+                "body": body,
+                "buttons": buttons,
+                "reply_to_message_id": reply_to_message_id,
+            }
+        )
+        return {"id": "btn-1"}
+
+    def send_outbound_list(self, phone, *, body, button_text, items, reply_to_message_id=None):
+        self.sent_lists.append((phone, body, button_text, items, reply_to_message_id))
+        return {"id": "list-1"}
 
 
 class FakeOCR:
@@ -231,6 +258,62 @@ class ConversationDocumentTypeTests(unittest.TestCase):
         self.assertNotIn("¿Cuál es la categoría?", result["reply"])
         self.assertNotIn("Categoría:", result["reply"])
         self.assertNotIn("País:", result["reply"])
+
+    def test_cost_center_other_requests_manual_text(self):
+        service = ConversationService(ExpenseService(sheets_service=FakeSheets({})))
+        conversation = {
+            "state": "CONFIRM_SUMMARY",
+            "current_step": "cost_center",
+            "context_json": {
+                "draft_expense": {"cost_centers": ["Operaciones", "Ventas"]},
+                "missing_fields": [],
+                "last_question": "cost_center",
+            },
+        }
+
+        other_result = service.handle_text_message(conversation, "Otra")
+
+        self.assertEqual(other_result["state"], "CONFIRM_SUMMARY")
+        self.assertEqual(other_result["current_step"], "cost_center")
+        self.assertTrue(other_result["context_json"]["awaiting_manual_cost_center"])
+        self.assertIn("manualmente", other_result["reply"])
+
+        manual_result = service.handle_text_message(
+            {
+                "state": "CONFIRM_SUMMARY",
+                "current_step": "cost_center",
+                "context_json": other_result["context_json"],
+            },
+            "Marketing",
+        )
+
+        self.assertEqual(manual_result["state"], "DONE")
+        self.assertEqual(manual_result["context_json"]["draft_expense"]["cost_center"], "Marketing")
+
+    def test_cost_center_prompt_uses_reply_buttons_not_list(self):
+        container = FakeContainer(
+            {
+                "state": "CONFIRM_SUMMARY",
+                "current_step": "cost_center",
+                "context_json": {
+                    "draft_expense": {
+                        "cost_centers": ["Operaciones", "Ventas", "Finanzas"],
+                    },
+                    "missing_fields": [],
+                    "last_question": "cost_center",
+                },
+            }
+        )
+        container.whatsapp = FakeWhatsAppRecorder()
+
+        _send_single_outbound_response(container, "+56911111111", "placeholder")
+
+        self.assertEqual(len(container.whatsapp.sent_lists), 0)
+        self.assertEqual(len(container.whatsapp.sent_buttons), 1)
+        self.assertEqual(
+            [button["title"] for button in container.whatsapp.sent_buttons[0]["buttons"]],
+            ["Operaciones", "Ventas", "Otra"],
+        )
 
 
 class FakeConversationProcessor(FakeConversationService):

@@ -125,6 +125,16 @@ export type ConversationMessage = {
   created_at?: string;
   message_id?: string;
   operator_name?: string;
+  media_url?: string;
+  media_content_type?: string;
+  image_url?: string;
+  document_url?: string;
+  attachments?: {
+    media_url?: string;
+    media_content_type?: string;
+    image_url?: string;
+    document_url?: string;
+  }[];
 };
 
 export type ConversationContext = Record<string, unknown> & {

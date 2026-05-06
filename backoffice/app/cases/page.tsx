@@ -83,6 +83,46 @@ function formatCLP(value?: number | string): string {
   return `$${num.toLocaleString("es-CL", { maximumFractionDigits: 0 })}`;
 }
 
+function parseMoneyValue(value?: number | string): number {
+  const num = typeof value === "string" ? parseFloat(value) : value;
+  return num != null && !isNaN(num) ? num : 0;
+}
+
+function getProgressTone(progress: number): string {
+  if (progress <= 0) return "bg-gray-200";
+  if (progress > 100) return "bg-red-500";
+  if (progress >= 60) return "bg-emerald-500";
+  return "bg-amber-400";
+}
+
+function renderProgress(item: CaseItem) {
+  const fondos = parseMoneyValue(item.fondos_entregados);
+  const aprobado = parseMoneyValue(item.monto_rendido_aprobado);
+  const progress = fondos > 0 ? Math.round((aprobado / fondos) * 100) : 0;
+  const barWidth = Math.min(Math.max(progress, 0), 100);
+
+  return (
+    <div className="flex min-w-[118px] items-center gap-3">
+      <div
+        className="h-1.5 w-16 overflow-hidden rounded-full bg-gray-100"
+        aria-hidden="true"
+      >
+        <div
+          className={`h-full rounded-full transition-all ${getProgressTone(progress)}`}
+          style={{ width: `${barWidth}%` }}
+        />
+      </div>
+      <span
+        className={`w-9 text-right text-xs font-semibold ${
+          progress > 100 ? "text-red-600" : "text-gray-600"
+        }`}
+      >
+        {progress}%
+      </span>
+    </div>
+  );
+}
+
 function normalizeMoneyInput(value: string): string {
   return value.replace(/\D/g, "");
 }
@@ -1202,7 +1242,7 @@ export default function CasesPage() {
           }
         >
           {filteredItems === null ? (
-            <TableSkeleton columns={6} rows={5} />
+            <TableSkeleton columns={7} rows={5} />
           ) : (
             <>
               {/* Mobile card list */}
@@ -1324,6 +1364,7 @@ export default function CasesPage() {
                     "Empleado",
                     "Fondos",
                     "Aprobado",
+                    "Progreso",
                     "Saldo",
                   ]}
                   rowHrefs={filteredItems.map((item) => `/cases/${item.case_id}`)}
@@ -1384,6 +1425,9 @@ export default function CasesPage() {
                       <span key="aprobado" className="text-sm font-medium text-emerald-700">
                         {formatCLP(item.monto_rendido_aprobado)}
                       </span>,
+                      <div key="progress" className="pt-1">
+                        {renderProgress(item)}
+                      </div>,
                       <span
                         key="saldo"
                         className={`text-sm font-medium ${

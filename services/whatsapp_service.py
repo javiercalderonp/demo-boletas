@@ -218,42 +218,11 @@ class WhatsAppService:
             for item in (items or [])
             if str(item.get("id") or "").strip() and str(item.get("title") or "").strip()
         ][:10]
-        if not clean_items:
-            return self.send_outbound_text(
-                to_phone,
-                body,
-                reply_to_message_id=reply_to_message_id,
-            )
-
-        if self.provider == "meta":
-            try:
-                return self._send_outbound_list_meta(
-                    to_phone,
-                    body=body,
-                    button_text=button_text,
-                    items=clean_items,
-                    reply_to_message_id=reply_to_message_id,
-                )
-            except Exception:
-                logger.exception(
-                    "Meta interactive list failed, falling back to text to_phone=%s",
-                    to_phone,
-                )
-                fallback_lines = [body.rstrip(), ""]
-                for index, item in enumerate(clean_items, start=1):
-                    fallback_lines.append(f"{index}. {item['title']}")
-                return self.send_outbound_text(
-                    to_phone,
-                    "\n".join(fallback_lines).strip(),
-                    reply_to_message_id=reply_to_message_id,
-                )
-
-        fallback_lines = [body.rstrip(), ""]
-        for index, item in enumerate(clean_items, start=1):
-            fallback_lines.append(f"{index}. {item['title']}")
-        return self.send_outbound_text(
+        logger.warning("WhatsApp list messages are disabled; sending reply buttons instead.")
+        return self.send_outbound_buttons(
             to_phone,
-            "\n".join(fallback_lines).strip(),
+            body=body,
+            buttons=clean_items[:3],
             reply_to_message_id=reply_to_message_id,
         )
 
@@ -502,72 +471,6 @@ class WhatsAppService:
                         }
                         for button in buttons
                     ]
-                },
-            },
-        }
-        if str(reply_to_message_id or "").strip():
-            payload["context"] = {"message_id": str(reply_to_message_id).strip()}
-
-        response = self._meta_request_json(
-            method="POST",
-            path=f"/{phone_number_id}/messages",
-            payload=payload,
-        )
-        messages = response.get("messages", []) or []
-        message_id = None
-        if messages and isinstance(messages[0], dict):
-            message_id = messages[0].get("id")
-        return {
-            "id": message_id,
-            "to": self._normalize_meta_recipient(to_phone),
-            "provider": "meta",
-            "message_type": "interactive",
-        }
-
-    def _send_outbound_list_meta(
-        self,
-        to_phone: str,
-        *,
-        body: str,
-        button_text: str,
-        items: list[dict[str, str]],
-        reply_to_message_id: str | None = None,
-    ) -> dict[str, Any]:
-        phone_number_id = (self.settings.meta_phone_number_id or "").strip()
-        access_token = (self.settings.meta_access_token or "").strip()
-        if not phone_number_id or not access_token:
-            raise RuntimeError(
-                "Faltan credenciales/config de Meta para envío saliente "
-                "(META_ACCESS_TOKEN, META_PHONE_NUMBER_ID)."
-            )
-
-        payload: dict[str, Any] = {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": self._normalize_meta_recipient(to_phone),
-            "type": "interactive",
-            "interactive": {
-                "type": "list",
-                "body": {"text": body or ""},
-                "action": {
-                    "button": button_text or "Ver opciones",
-                    "sections": [
-                        {
-                            "title": "Opciones",
-                            "rows": [
-                                {
-                                    "id": item["id"],
-                                    "title": item["title"],
-                                    **(
-                                        {"description": item["description"]}
-                                        if item.get("description")
-                                        else {}
-                                    ),
-                                }
-                                for item in items
-                            ],
-                        }
-                    ],
                 },
             },
         }

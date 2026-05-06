@@ -59,7 +59,6 @@ _ENTITY_TYPE_ALIASES: dict[str, tuple[str, ...]] = {
     "gross_amount": (
         "gross_amount",
         "subtotal",
-        "net_amount",
         "total_honorarios",
         "monto_bruto",
     ),

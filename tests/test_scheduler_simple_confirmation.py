@@ -227,14 +227,14 @@ class SchedulerSimpleConfirmationTests(unittest.TestCase):
 
         self.assertEqual(message, "")
         self.assertEqual(len(service.whatsapp_service.sent_documents), 1)
-        self.assertEqual(len(service.whatsapp_service.sent_buttons), 0)
-        self.assertEqual(len(service.whatsapp_service.sent_lists), 1)
-        self.assertIn("elige una opción", service.whatsapp_service.sent_lists[0]["body"])
+        self.assertEqual(len(service.whatsapp_service.sent_buttons), 1)
+        self.assertEqual(len(service.whatsapp_service.sent_lists), 0)
+        self.assertIn("elige una opción", service.whatsapp_service.sent_buttons[0]["body"])
         self.assertEqual(
-            service.whatsapp_service.sent_lists[0]["items"][0]["id"],
+            service.whatsapp_service.sent_buttons[0]["buttons"][0]["id"],
             "simple_confirmation_yes_confirm_consolidated",
         )
-        self.assertEqual(service.whatsapp_service.sent_lists[0]["reply_to_message_id"], "doc-msg-1")
+        self.assertEqual(service.whatsapp_service.sent_buttons[0]["reply_to_message_id"], "doc-msg-1")
         self.assertEqual(
             service.sheets_service.case_row["rendicion_status"],
             "pending_user_confirmation",

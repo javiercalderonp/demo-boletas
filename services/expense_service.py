@@ -288,44 +288,51 @@ class ExpenseService:
         withholding = parse_float(draft.get("withholding_amount"))
         rate = parse_float(draft.get("withholding_rate"))
 
-        if gross is None:
-            gross = self._extract_amount_after_labels(
-                draft.get("ocr_text"),
-                (
-                    "total honorarios",
-                    "honorarios",
-                    "monto bruto",
-                    "total bruto",
-                    "bruto",
-                ),
-            )
-        if withholding is None:
-            withholding = self._extract_amount_after_labels(
-                draft.get("ocr_text"),
-                (
-                    "retencion",
-                    "retención",
-                    "monto retenido",
-                    "impuesto retenido",
-                ),
-            )
-        if net is None:
-            net = self._extract_amount_after_labels(
-                draft.get("ocr_text"),
-                (
-                    "total boleta",
-                    "total liquido",
-                    "total líquido",
-                    "liquido a pagar",
-                    "líquido a pagar",
-                    "liquido",
-                    "líquido",
-                ),
-            )
+        labeled_gross = self._extract_amount_after_labels(
+            draft.get("ocr_text"),
+            (
+                "total honorarios",
+                "monto bruto",
+                "total bruto",
+                "bruto",
+                "honorarios",
+            ),
+        )
+        if labeled_gross is not None:
+            gross = labeled_gross
+        labeled_withholding = self._extract_amount_after_labels(
+            draft.get("ocr_text"),
+            (
+                "retencion",
+                "retención",
+                "monto retenido",
+                "impuesto retenido",
+            ),
+        )
+        if labeled_withholding is not None:
+            withholding = labeled_withholding
+        labeled_net = self._extract_amount_after_labels(
+            draft.get("ocr_text"),
+            (
+                "total boleta",
+                "total liquido",
+                "total líquido",
+                "liquido a pagar",
+                "líquido a pagar",
+                "liquido",
+                "líquido",
+            ),
+        )
+        if labeled_net is not None:
+            net = labeled_net
         if rate is None:
             rate = self._extract_withholding_rate(draft.get("ocr_text"))
         if rate is None:
             rate = self._expected_professional_fee_withholding_rate(draft)
+
+        if gross is not None and net is not None and withholding is not None:
+            if abs(gross - net) < 0.01 and withholding > 0:
+                gross = round(net + withholding, 2)
 
         if gross is not None:
             draft["gross_amount"] = gross
@@ -333,12 +340,13 @@ class ExpenseService:
             draft["withholding_amount"] = withholding
         if net is not None:
             draft["net_amount"] = net
-            draft["total"] = net
         elif gross is not None and withholding is not None:
             draft["net_amount"] = round(gross - withholding, 2)
-            draft["total"] = draft["net_amount"]
-        elif gross is not None and draft.get("total") is None:
+
+        if gross is not None:
             draft["total"] = gross
+        elif net is not None:
+            draft["total"] = net
         if rate is not None:
             draft["withholding_rate"] = rate
         return draft
@@ -1031,26 +1039,44 @@ class ExpenseService:
     def _build_professional_fee_receipt_summary(self, draft_expense: dict[str, Any]) -> str:
         lines = ["Detecté este gasto a partir de una *boleta de honorarios*:"]
         lines.append(f"Emisor: {draft_expense.get('merchant', '-')}")
-        if draft_expense.get("issuer_tax_id"):
-            lines.append(f"RUT emisor: {self._format_tax_id(draft_expense.get('issuer_tax_id'))}")
         lines.append(f"Fecha: {draft_expense.get('date', '-')}")
         lines.append(f"Folio: {draft_expense.get('invoice_number', '-')}")
+        if draft_expense.get("issuer_tax_id"):
+            lines.append(f"RUT emisor: {self._format_tax_id(draft_expense.get('issuer_tax_id'))}")
+        if draft_expense.get("receiver_tax_id"):
+            lines.append(f"RUT receptor: {self._format_tax_id(draft_expense.get('receiver_tax_id'))}")
         if draft_expense.get("gross_amount") is not None:
-            lines.append(f"Monto bruto: {draft_expense.get('gross_amount')} {draft_expense.get('currency', '-')}")
+            lines.append(
+                f"Monto bruto: {self._format_summary_amount(draft_expense.get('gross_amount'))} "
+                f"{draft_expense.get('currency', '-')}"
+            )
         if draft_expense.get("withholding_amount") is not None:
             rate = draft_expense.get("withholding_rate")
             rate_text = f" ({rate}%)" if rate is not None else ""
             lines.append(
-                f"Retención{rate_text}: {draft_expense.get('withholding_amount')} {draft_expense.get('currency', '-')}"
+                f"Retención{rate_text}: {self._format_summary_amount(draft_expense.get('withholding_amount'))} "
+                f"{draft_expense.get('currency', '-')}"
             )
-        lines.append(f"Monto líquido: {draft_expense.get('total', '-')} {draft_expense.get('currency', '-')}")
-        if draft_expense.get("receiver_tax_id"):
-            lines.append(f"RUT receptor: {self._format_tax_id(draft_expense.get('receiver_tax_id'))}")
+        liquid_amount = draft_expense.get("net_amount")
+        if liquid_amount is None and draft_expense.get("gross_amount") is None:
+            liquid_amount = draft_expense.get("total")
+        lines.append(
+            f"Monto líquido: {self._format_summary_amount(liquid_amount)} "
+            f"{draft_expense.get('currency', '-')}"
+        )
         return "\n".join(lines)
 
     def _format_tax_id(self, value: Any) -> str:
         tax_id = str(value or "").strip()
         return re.sub(r"^\s*(?:RUT|RUC|ID)\s*:?\s*", "", tax_id, flags=re.IGNORECASE).strip() or "-"
+
+    def _format_summary_amount(self, value: Any) -> str:
+        amount = parse_float(value)
+        if amount is None:
+            return "-"
+        if amount.is_integer():
+            return str(int(amount))
+        return f"{amount:.2f}".rstrip("0").rstrip(".")
 
     def _build_generic_summary(self, draft_expense: dict[str, Any]) -> str:
         doc_label = draft_expense.get("document_type", "-")
