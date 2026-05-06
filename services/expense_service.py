@@ -59,8 +59,6 @@ REQUIRED_FIELDS_BY_DOCUMENT_TYPE: dict[str, list[str]] = {
         "date",
         "total",
         "currency",
-        "category",
-        "country",
         "invoice_number",
         "issuer_tax_id",
     ],

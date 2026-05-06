@@ -200,6 +200,38 @@ class ConversationDocumentTypeTests(unittest.TestCase):
         )
         self.assertEqual(service._parse_document_type_value("3"), "professional_fee_receipt")
 
+    def test_professional_fee_receipt_with_no_category_goes_to_confirmation(self):
+        service = ConversationService(ExpenseService(sheets_service=FakeSheets({})))
+
+        result = service.process_ocr_result(
+            phone="+56911111111",
+            ocr_data={
+                "document_type": "boleta_honorarios",
+                "is_document": True,
+                "merchant": "Rodrigo Salinas Producciones SPA",
+                "date": "2024-05-12",
+                "invoice_number": "1252",
+                "currency": "CLP",
+                "total": 362250,
+                "gross_amount": 420000,
+                "withholding_amount": 57750,
+                "issuer_tax_id": "RUT: 18.765.432-1",
+                "receiver_tax_id": "RUT: 77.123.456-1",
+                "category": "",
+                "country": "",
+                "ocr_text": "BOLETA DE HONORARIOS ELECTRONICA RUT: 18.765.432-1 TOTAL LIQUIDO 362250",
+            },
+            expense_case={"case_id": "CASE-1", "country": "Chile"},
+        )
+
+        self.assertEqual(result["state"], "CONFIRM_SUMMARY")
+        self.assertEqual(result["current_step"], "confirm_summary")
+        self.assertEqual(result["context_json"]["missing_fields"], [])
+        self.assertIsNone(result["context_json"]["last_question"])
+        self.assertNotIn("¿Cuál es la categoría?", result["reply"])
+        self.assertNotIn("Categoría:", result["reply"])
+        self.assertNotIn("País:", result["reply"])
+
 
 class FakeConversationProcessor(FakeConversationService):
     def __init__(self):

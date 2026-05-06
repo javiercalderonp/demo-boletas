@@ -209,6 +209,27 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
         self.assertNotIn("Categoría:", summary)
         self.assertNotIn("País:", summary)
 
+    def test_professional_fee_receipt_does_not_require_category_or_country(self):
+        service = ExpenseService(sheets_service=FakeSheetsService())
+
+        draft = service.enrich_draft_expense(
+            {
+                "document_type": "professional_fee_receipt",
+                "merchant": "Juan Perez",
+                "date": "2026-04-16",
+                "currency": "CLP",
+                "total": 84750,
+                "category": "",
+                "country": "",
+                "invoice_number": "123",
+                "issuer_tax_id": "RUT 12.345.678-9",
+            }
+        )
+
+        self.assertEqual(service.find_missing_required_fields(draft), [])
+        extraction = service.build_document_extraction_result(draft)
+        self.assertEqual(extraction["missing_required_fields"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
