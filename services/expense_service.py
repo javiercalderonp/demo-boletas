@@ -46,14 +46,13 @@ REQUIRED_EXPENSE_FIELDS = [
     "date",
     "total",
     "currency",
-    "category",
     "country",
 ]
 
 # Campos mínimos obligatorios por tipo de documento
 REQUIRED_FIELDS_BY_DOCUMENT_TYPE: dict[str, list[str]] = {
-    "receipt": ["merchant", "date", "total", "currency", "category", "country"],
-    "invoice": ["merchant", "date", "total", "currency", "category", "country"],
+    "receipt": ["merchant", "date", "total", "currency", "country"],
+    "invoice": ["merchant", "date", "total", "currency", "country"],
     "professional_fee_receipt": [
         "merchant",
         "date",
@@ -157,6 +156,29 @@ _COUNTRY_TO_CURRENCY: dict[str, str] = {
 }
 
 _KNOWN_CURRENCY_CODES = {"CLP", "USD", "PEN", "CNY", "EUR", "MXN", "ARS", "BRL", "COP"}
+
+_MAX_HISTORY_TURNS = 10
+
+
+def _message_log_to_llm_history(message_log: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+    if not message_log:
+        return []
+    text_entries = [
+        item for item in message_log
+        if isinstance(item, dict) and str(item.get("type", "text")) == "text"
+    ]
+    recent = text_entries[-(_MAX_HISTORY_TURNS * 2):]
+    history: list[dict[str, str]] = []
+    for item in recent:
+        speaker = str(item.get("speaker", "")).strip()
+        text = str(item.get("text", "")).strip()
+        if not text:
+            continue
+        if speaker == "person":
+            history.append({"role": "user", "content": text})
+        elif speaker == "bot":
+            history.append({"role": "assistant", "content": text})
+    return history
 
 
 @dataclass
@@ -490,12 +512,21 @@ class ExpenseService:
                 return case_answer
         return self.llm_service.answer_general_question(question)
 
-    def chat_whatsapp_conversational(self, message: str, phone: str) -> str | None:
-        """Single LLM call with full case context for conversational WhatsApp replies."""
+    def chat_whatsapp_conversational(
+        self,
+        message: str,
+        phone: str,
+        *,
+        message_log: list[dict[str, Any]] | None = None,
+    ) -> str | None:
+        """Single LLM call with full case context and conversation history for WhatsApp replies."""
         if not self.llm_service or not self.llm_service.chat_assistant_enabled:
             return None
         case_context = self.build_case_context_text(phone)
-        return self.llm_service.chat_whatsapp_with_context(message=message, case_context=case_context)
+        history = _message_log_to_llm_history(message_log)
+        return self.llm_service.chat_whatsapp_with_context(
+            message=message, case_context=case_context, history=history
+        )
 
     def classify_message_intent(self, message: str) -> str:
         if not self.llm_service:

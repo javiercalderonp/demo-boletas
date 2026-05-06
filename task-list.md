@@ -711,6 +711,13 @@
   - Sin cambios en `DataTable`, `Shell` ni componentes compartidos; lógica de negocio y handlers intactos
   - Build limpio, TypeScript sin errores
 
+- [x] **Historial de conversación como contexto del LLM en WhatsApp**
+  - El LLM ahora recibe el historial de la conversación (últimos 10 turnos) además del contexto live del caso
+  - `chat_whatsapp_with_context` acepta parámetro `history` y lo incluye en el array de mensajes al LLM
+  - `chat_whatsapp_conversational` convierte el `message_log` (formato `speaker`/`text`) al formato OpenAI (`role`/`content`)
+  - `handle_text_message` extrae el historial del contexto (excluyendo el mensaje actual, que ya fue logueado) y lo pasa al LLM
+  - Centros de costo, presupuesto, gastos rendidos y saldo restante siempre frescos desde Sheets (sin cambios)
+
 ### Pendiente
 
 - [ ] **PDF consolidado con balance final**

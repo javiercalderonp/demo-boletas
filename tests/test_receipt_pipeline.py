@@ -172,7 +172,6 @@ class FakeExpense:
             "date",
             "total",
             "currency",
-            "category",
             "country",
             "trip_id",
         ]
@@ -264,6 +263,29 @@ class ConversationDocumentTypeTests(unittest.TestCase):
         self.assertNotIn("¿Cuál es la categoría?", result["reply"])
         self.assertNotIn("Categoría:", result["reply"])
         self.assertNotIn("País:", result["reply"])
+
+    def test_receipt_with_no_category_goes_to_confirmation(self):
+        service = ConversationService(ExpenseService(sheets_service=FakeSheets({})))
+
+        result = service.process_ocr_result(
+            phone="+56911111111",
+            ocr_data={
+                "document_type": "boleta",
+                "is_document": True,
+                "merchant": "Comercio sin categoria",
+                "date": "2024-05-12",
+                "currency": "CLP",
+                "total": 12500,
+                "category": "",
+                "country": "Chile",
+            },
+            expense_case={"case_id": "CASE-1", "country": "Chile"},
+        )
+
+        self.assertEqual(result["state"], "CONFIRM_SUMMARY")
+        self.assertEqual(result["current_step"], "confirm_summary")
+        self.assertEqual(result["context_json"]["missing_fields"], [])
+        self.assertNotIn("¿Cuál es la categoría?", result["reply"])
 
     def test_cost_center_other_requests_manual_text(self):
         service = ConversationService(ExpenseService(sheets_service=FakeSheets({})))

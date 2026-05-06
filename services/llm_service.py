@@ -195,7 +195,13 @@ class LLMService:
         cleaned = " ".join(str(answer or "").split()).strip()
         return cleaned or None
 
-    def chat_whatsapp_with_context(self, message: str, case_context: str) -> str | None:
+    def chat_whatsapp_with_context(
+        self,
+        message: str,
+        case_context: str,
+        *,
+        history: list[dict[str, str]] | None = None,
+    ) -> str | None:
         """Single LLM call that both understands and responds to a WhatsApp message."""
         if not self.chat_assistant_enabled:
             return None
@@ -206,13 +212,17 @@ class LLMService:
             f"{WHATSAPP_CONVERSATIONAL_PROMPT}\n\n"
             f"Contexto de la rendicion activa:\n{case_context}"
         )
+        messages: list[dict[str, str]] = [{"role": "system", "content": system_content}]
+        for turn in (history or []):
+            role = str(turn.get("role", "")).strip()
+            content = str(turn.get("content", "")).strip()
+            if role in {"user", "assistant"} and content:
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": message.strip()})
         payload = {
             "model": getattr(self.settings, "openai_model", "gpt-4o-mini"),
             "temperature": 0.3,
-            "messages": [
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": message.strip()},
-            ],
+            "messages": messages,
         }
         try:
             answer = self._chat_text(payload)

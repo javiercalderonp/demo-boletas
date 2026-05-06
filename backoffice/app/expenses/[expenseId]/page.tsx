@@ -2,15 +2,31 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { FormEvent, useEffect, useState } from "react";
+import React, { FormEvent, useEffect, useState } from "react";
 import {
+  Activity,
   AlertTriangle,
+  BadgePercent,
+  Building2,
+  Calendar,
   CheckCircle,
+  Coins,
+  CreditCard,
   ExternalLink,
   Eye,
+  FileText,
+  FolderOpen,
+  Globe,
+  Hash,
   LoaderCircle,
+  Minus,
   Pencil,
+  Receipt,
   RotateCcw,
+  Store,
+  Tag,
+  TrendingDown,
+  User,
   X,
   XCircle,
 } from "lucide-react";
@@ -47,6 +63,91 @@ const fieldLabels: Record<string, string> = {
   receiver_name: "Receptor",
   service_description: "Descripción servicio",
 };
+
+const fieldIcons: Record<string, React.ReactNode> = {
+  merchant: <Store className="h-3.5 w-3.5" />,
+  date: <Calendar className="h-3.5 w-3.5" />,
+  currency: <Coins className="h-3.5 w-3.5" />,
+  total: <Receipt className="h-3.5 w-3.5" />,
+  total_clp: <Receipt className="h-3.5 w-3.5" />,
+  category: <Tag className="h-3.5 w-3.5" />,
+  cost_center: <FolderOpen className="h-3.5 w-3.5" />,
+  country: <Globe className="h-3.5 w-3.5" />,
+  status: <Activity className="h-3.5 w-3.5" />,
+  document_type: <FileText className="h-3.5 w-3.5" />,
+  invoice_number: <Hash className="h-3.5 w-3.5" />,
+  tax_amount: <BadgePercent className="h-3.5 w-3.5" />,
+  issuer_tax_id: <Building2 className="h-3.5 w-3.5" />,
+  receiver_tax_id: <CreditCard className="h-3.5 w-3.5" />,
+  gross_amount: <Receipt className="h-3.5 w-3.5" />,
+  withholding_rate: <BadgePercent className="h-3.5 w-3.5" />,
+  withholding_amount: <Minus className="h-3.5 w-3.5" />,
+  net_amount: <TrendingDown className="h-3.5 w-3.5" />,
+  receiver_name: <User className="h-3.5 w-3.5" />,
+  service_description: <FileText className="h-3.5 w-3.5" />,
+};
+
+const documentTypeLabels: Record<string, string> = {
+  professional_fee_receipt: "Boleta de Honorarios",
+  invoice: "Factura",
+  receipt: "Boleta",
+  ticket: "Ticket",
+  expense_report: "Informe de gastos",
+  credit_note: "Nota de crédito",
+  debit_note: "Nota de débito",
+  purchase_order: "Orden de compra",
+  other: "Otro",
+};
+
+const statusLabels: Record<string, string> = {
+  pending_approval: "Pendiente de aprobación",
+  approved: "Aprobado",
+  rejected: "Rechazado",
+  observed: "Observado",
+  needs_manual_review: "Revisión manual",
+  processing: "Procesando",
+  pending: "Pendiente",
+};
+
+const currencyFields = new Set([
+  "total",
+  "total_clp",
+  "tax_amount",
+  "gross_amount",
+  "withholding_amount",
+  "net_amount",
+]);
+
+const percentageFields = new Set(["withholding_rate"]);
+
+function formatCLP(value: number | string | undefined | null): string {
+  const num = Number(value);
+  if (!value || isNaN(num)) return "-";
+  return `$ ${num.toLocaleString("es-CL")}`;
+}
+
+function formatPercentage(value: number | string | undefined | null): string {
+  const num = Number(value);
+  if (!value || isNaN(num)) return "-";
+  const pct = num > 100 ? num / 100 : num;
+  return `${pct.toLocaleString("es-CL", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}%`;
+}
+
+function formatFieldValue(field: string, value: unknown): string {
+  const raw = value as number | string | undefined | null;
+  if (raw === null || raw === undefined || raw === "") return "-";
+  if (currencyFields.has(field)) return formatCLP(raw);
+  if (percentageFields.has(field)) return formatPercentage(raw);
+  if (field === "document_type") {
+    const str = String(raw);
+    return documentTypeLabels[str] ?? str.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+  if (field === "status") {
+    const str = String(raw);
+    return statusLabels[str] ?? str.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+  return String(raw);
+}
 
 const extractedFieldNames = [
   "merchant",
@@ -234,8 +335,9 @@ export default function ExpenseDetailPage() {
                       </h3>
                       <Badge>{expense.review_status || "-"}</Badge>
                       {expense.document_type && (
-                        <span className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600">
-                          {expense.document_type}
+                        <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-700">
+                          <FileText className="h-3 w-3 text-gray-400" />
+                          {documentTypeLabels[expense.document_type] ?? expense.document_type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
                         </span>
                       )}
                     </div>
@@ -424,20 +526,27 @@ export default function ExpenseDetailPage() {
                     </button>
                   </form>
                 ) : (
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    {extractedFieldNames.map((field) => (
-                      <div
-                        key={field}
-                        className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3"
-                      >
-                        <p className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">
-                          {fieldLabels[field]}
-                        </p>
-                        <p className="text-sm text-gray-900">
-                          {String(expense[field as keyof Expense] || "-")}
-                        </p>
-                      </div>
-                    ))}
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    {extractedFieldNames.map((field) => {
+                      const rawValue = expense[field as keyof Expense];
+                      const displayValue = formatFieldValue(field, rawValue);
+                      const isEmpty = displayValue === "-";
+                      const isCurrency = currencyFields.has(field);
+                      return (
+                        <div
+                          key={field}
+                          className="group rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm transition hover:border-primary-200 hover:shadow-md"
+                        >
+                          <div className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-gray-400">
+                            <span className="text-gray-400">{fieldIcons[field]}</span>
+                            {fieldLabels[field]}
+                          </div>
+                          <p className={`text-sm font-medium ${isEmpty ? "text-gray-300 italic" : isCurrency ? "font-semibold text-gray-900 tabular-nums" : "text-gray-900"}`}>
+                            {displayValue}
+                          </p>
+                        </div>
+                      );
+                    })}
                   </div>
                 )
               ) : (

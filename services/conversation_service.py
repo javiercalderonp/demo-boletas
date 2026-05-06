@@ -231,6 +231,10 @@ class ConversationService:
             }
 
         if state in {WAIT_RECEIPT, DONE}:
+            # Build conversation history: all logged entries except the last one (current user message)
+            raw_log = context.get("message_log", [])
+            history_log = raw_log[:-1] if isinstance(raw_log, list) and raw_log else []
+
             # 1. Try heuristic direct answers first (no LLM needed)
             heuristic_answer = self._heuristic_answer(message, phone=phone)
             if heuristic_answer:
@@ -242,8 +246,10 @@ class ConversationService:
                     "action": "noop",
                 }
 
-            # 2. Single LLM call with full case context for everything else
-            llm_reply = self.expense_service.chat_whatsapp_conversational(message, phone=phone)
+            # 2. Single LLM call with full case context and conversation history
+            llm_reply = self.expense_service.chat_whatsapp_conversational(
+                message, phone=phone, message_log=history_log
+            )
             if llm_reply:
                 return {
                     "state": WAIT_RECEIPT,
@@ -316,6 +322,10 @@ class ConversationService:
             current_field = missing[0] if missing else None
 
         if not current_field:
+            return self._to_confirm_summary(draft)
+
+        if current_field == "category":
+            draft.pop("category", None)
             return self._to_confirm_summary(draft)
 
         parsed_value = self._parse_field_value(current_field, message)
