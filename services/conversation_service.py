@@ -478,11 +478,14 @@ class ConversationService:
                     "reply": "Escribe el centro de costo manualmente.",
                     "action": "noop",
                 }
+            centers = self._get_draft_cost_centers(draft)
             cost_center = self._parse_cost_center_value(
                 message,
                 draft,
                 allow_manual=bool(context.get("awaiting_manual_cost_center")),
             )
+            if not cost_center and not message.strip().isdigit():
+                cost_center = message.strip()
             if not cost_center:
                 return {
                     "state": CONFIRM_SUMMARY,
@@ -496,6 +499,8 @@ class ConversationService:
                     "action": "noop",
                 }
             draft["cost_center"] = cost_center
+            if cost_center.lower() not in {center.lower() for center in centers}:
+                draft["cost_centers"] = centers + [cost_center]
             return {
                 "state": DONE,
                 "current_step": "",
@@ -564,7 +569,7 @@ class ConversationService:
         return (
             "¿A qué centro de costo está dirigido este gasto?\n"
             f"{options}\n"
-            "También puedes escribir otro centro de costo."
+            "Si el centro de costo no está en la lista, escríbelo para agregarlo al caso."
         )
 
     def _get_draft_cost_centers(self, draft: dict[str, Any]) -> list[str]:

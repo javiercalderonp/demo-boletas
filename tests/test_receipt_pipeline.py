@@ -17,6 +17,7 @@ from app.main import (
     _reset_receipt_processing_state,
     _safe_send_outbound_response,
     _send_single_outbound_response,
+    _sync_manual_cost_center_to_case,
 )
 from app.config import Settings
 from services.conversation_service import ConversationService
@@ -30,6 +31,10 @@ class FakeSheets:
         self.conversation = conversation
         self.updates = []
         self.expenses = []
+        self.expense_case = {
+            "case_id": "CASE-1",
+            "cost_centers": ["Operaciones", "Ventas"],
+        }
         self.employee = {"phone": "+56911111111", "first_name": "Javier", "name": "Javier Calderon"}
 
     def get_conversation(self, phone):
@@ -53,6 +58,17 @@ class FakeSheets:
     def create_expense(self, payload):
         self.expenses.append(dict(payload))
         return dict(payload)
+
+    def get_expense_case_by_id(self, case_id):
+        if case_id == self.expense_case.get("case_id"):
+            return dict(self.expense_case)
+        return None
+
+    def update_expense_case(self, case_id, payload):
+        if case_id != self.expense_case.get("case_id"):
+            return None
+        self.expense_case.update(dict(payload))
+        return dict(self.expense_case)
 
     def get_employee_by_phone(self, phone):
         if phone == self.employee.get("phone"):
@@ -317,8 +333,33 @@ class ConversationDocumentTypeTests(unittest.TestCase):
 
         self.assertEqual(manual_result["state"], "DONE")
         self.assertEqual(manual_result["context_json"]["draft_expense"]["cost_center"], "Marketing")
+        self.assertEqual(
+            manual_result["context_json"]["draft_expense"]["cost_centers"],
+            ["Operaciones", "Ventas", "Marketing"],
+        )
 
-    def test_cost_center_prompt_uses_all_centers_as_reply_buttons_up_to_five(self):
+    def test_cost_center_manual_text_adds_new_center_without_other_button(self):
+        service = ConversationService(ExpenseService(sheets_service=FakeSheets({})))
+        conversation = {
+            "state": "CONFIRM_SUMMARY",
+            "current_step": "cost_center",
+            "context_json": {
+                "draft_expense": {"cost_centers": ["Operaciones", "Ventas"]},
+                "missing_fields": [],
+                "last_question": "cost_center",
+            },
+        }
+
+        result = service.handle_text_message(conversation, "Marketing")
+
+        self.assertEqual(result["state"], "DONE")
+        self.assertEqual(result["context_json"]["draft_expense"]["cost_center"], "Marketing")
+        self.assertEqual(
+            result["context_json"]["draft_expense"]["cost_centers"],
+            ["Operaciones", "Ventas", "Marketing"],
+        )
+
+    def test_cost_center_prompt_uses_all_centers_as_reply_buttons_up_to_three(self):
         container = FakeContainer(
             {
                 "state": "CONFIRM_SUMMARY",
@@ -337,17 +378,14 @@ class ConversationDocumentTypeTests(unittest.TestCase):
         _send_single_outbound_response(container, "+56911111111", "placeholder")
 
         self.assertEqual(len(container.whatsapp.sent_lists), 0)
-        self.assertEqual(len(container.whatsapp.sent_buttons), 2)
+        self.assertEqual(len(container.whatsapp.sent_buttons), 1)
+        self.assertIn("escríbelo para agregarlo al caso", container.whatsapp.sent_buttons[0]["body"])
         self.assertEqual(
             [button["title"] for button in container.whatsapp.sent_buttons[0]["buttons"]],
             ["Operaciones", "Ventas", "Finanzas"],
         )
-        self.assertEqual(
-            [button["title"] for button in container.whatsapp.sent_buttons[1]["buttons"]],
-            ["Otra"],
-        )
 
-    def test_cost_center_prompt_uses_list_when_more_than_five_centers(self):
+    def test_cost_center_prompt_uses_list_when_more_than_three_centers(self):
         container = FakeContainer(
             {
                 "state": "CONFIRM_SUMMARY",
@@ -375,11 +413,12 @@ class ConversationDocumentTypeTests(unittest.TestCase):
         self.assertEqual(len(container.whatsapp.sent_buttons), 0)
         self.assertEqual(len(container.whatsapp.sent_lists), 1)
         _phone, body, button_text, items, _reply_to = container.whatsapp.sent_lists[0]
-        self.assertEqual(body, "¿A qué centro de costo está dirigido este gasto?")
+        self.assertIn("¿A qué centro de costo está dirigido este gasto?", body)
+        self.assertIn("escríbelo para agregarlo al caso", body)
         self.assertEqual(button_text, "Ver opciones")
         self.assertEqual(
             [item["title"] for item in items],
-            ["Operaciones", "Ventas", "Finanzas", "Marketing", "TI", "Legal", "Otra"],
+            ["Operaciones", "Ventas", "Finanzas", "Marketing", "TI", "Legal"],
         )
 
     def test_cost_center_prompt_splits_large_center_lists_without_dropping_options(self):
@@ -405,7 +444,22 @@ class ConversationDocumentTypeTests(unittest.TestCase):
             for item in items
         ]
         self.assertEqual(len(container.whatsapp.sent_lists), 2)
-        self.assertEqual(sent_titles, centers + ["Otra"])
+        self.assertEqual(sent_titles, centers)
+
+    def test_manual_cost_center_is_added_to_case_before_saving(self):
+        container = FakeContainer({})
+        _sync_manual_cost_center_to_case(
+            container,
+            {
+                "case_id": "CASE-1",
+                "cost_center": "Marketing",
+            },
+        )
+
+        self.assertEqual(
+            container.sheets.expense_case["cost_centers"],
+            ["Operaciones", "Ventas", "Marketing"],
+        )
 
 
 class FakeConversationProcessor(FakeConversationService):

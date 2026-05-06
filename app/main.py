@@ -32,7 +32,7 @@ from services.expense_service import ExpenseService
 from services.llm_service import LLMService
 from services.ocr_service import OCRService
 from services.scheduler_service import SchedulerService
-from services.sheets_service import SheetsService
+from services.sheets_service import SheetsService, normalize_cost_centers
 from services.storage_service import GCSStorageService
 from services.expense_case_service import ExpenseCaseService
 from services.statuses import ExpenseStatus, RendicionStatus
@@ -950,6 +950,8 @@ def _handle_text_message(container: ServiceContainer, phone: str, body: str) -> 
             source_message_id = _get_active_receipt_message_id(latest_context)
             if isinstance(draft, dict) and source_message_id:
                 draft = {**draft, "source_message_id": source_message_id}
+            if isinstance(draft, dict):
+                _sync_manual_cost_center_to_case(container, draft)
             saved = container.expense.save_confirmed_expense(phone, draft)
             has_pending_receipts = bool(_get_pending_receipts(latest_context))
             policy_message = None
@@ -1032,6 +1034,24 @@ def _build_initial_wait_receipt_reply(container: ServiceContainer, phone: str) -
         f"{greeting} Envíame una foto de la boleta, factura o comprobante "
         "para procesar el gasto."
     )
+
+
+def _sync_manual_cost_center_to_case(container: ServiceContainer, draft: dict[str, Any]) -> None:
+    case_id = str(draft.get("case_id", draft.get("trip_id", "")) or "").strip()
+    cost_center = str(draft.get("cost_center", "") or "").strip()
+    if not case_id or not cost_center:
+        return
+    if not hasattr(container.sheets, "get_expense_case_by_id") or not hasattr(
+        container.sheets, "update_expense_case"
+    ):
+        return
+    expense_case = container.sheets.get_expense_case_by_id(case_id)
+    if not expense_case:
+        return
+    centers = normalize_cost_centers(expense_case.get("cost_centers", []))
+    if cost_center.lower() in {center.lower() for center in centers}:
+        return
+    container.sheets.update_expense_case(case_id, {"cost_centers": centers + [cost_center]})
 
 
 def _get_employee_greeting_name(container: ServiceContainer, phone: str) -> str:
@@ -1528,8 +1548,11 @@ def _build_interactive_prompt(
         if not centers:
             return None
         return {
-            "body": "¿A qué centro de costo está dirigido este gasto?",
-            "kind": "list" if len(centers) > 5 else "buttons",
+            "body": (
+                "¿A qué centro de costo está dirigido este gasto?\n"
+                "Si no está en las opciones, escríbelo para agregarlo al caso."
+            ),
+            "kind": "list" if len(centers) > 3 else "buttons",
             "choices": _build_cost_center_choices(centers),
         }
 
@@ -1583,12 +1606,10 @@ def _split_list_choices(choices: list[dict[str, str]]) -> list[list[dict[str, st
 
 
 def _build_cost_center_choices(centers: list[str]) -> list[dict[str, str]]:
-    choices = [
+    return [
         {"id": str(index), "title": center}
         for index, center in enumerate(centers, start=1)
     ]
-    choices.append({"id": "otra", "title": "Otra"})
-    return choices
 
 
 def _normalize_cost_center_choices(raw_value: Any) -> list[str]:
