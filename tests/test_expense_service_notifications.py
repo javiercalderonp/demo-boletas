@@ -315,6 +315,31 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
         self.assertIn("💰 Monto bruto: 420000 CLP", summary)
         self.assertIn("💵 Monto líquido: 362250 CLP", summary)
 
+    def test_professional_fee_receipt_derives_gross_from_total_when_net_field_is_missing(self):
+        service = ExpenseService(sheets_service=FakeSheetsService())
+
+        draft = service.enrich_draft_expense(
+            {
+                "document_type": "boleta_honorarios",
+                "merchant": "ACTOR DE TEATRO, CINE Y TELEVISIÓN",
+                "date": "2024-05-12",
+                "currency": "CLP",
+                "total": 362250,
+                "invoice_number": "1252",
+                "issuer_tax_id": "RUT: 18.765.432-1",
+                "receiver_tax_id": "RUT: 77.123.456-1",
+                "ocr_text": "BOLETA DE HONORARIOS ELECTRONICA TOTAL LIQUIDO 362250",
+            }
+        )
+        summary = service.build_summary_message(draft, include_text_actions=False)
+
+        self.assertEqual(draft["document_type"], "professional_fee_receipt")
+        self.assertEqual(draft["gross_amount"], 420000)
+        self.assertEqual(draft["net_amount"], 362250)
+        self.assertEqual(draft["total"], 420000)
+        self.assertIn("💰 Monto bruto: 420000 CLP", summary)
+        self.assertIn("💵 Monto líquido: 362250 CLP", summary)
+
     def test_professional_fee_receipt_does_not_require_category_or_country(self):
         service = ExpenseService(sheets_service=FakeSheetsService())
 

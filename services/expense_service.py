@@ -274,7 +274,10 @@ class ExpenseService:
         return draft
 
     def _normalize_professional_fee_receipt(self, draft_expense: dict[str, Any]) -> dict[str, Any]:
-        if str(draft_expense.get("document_type", "") or "").strip() != "professional_fee_receipt":
+        doc_type = str(draft_expense.get("document_type", "") or "").strip()
+        if doc_type in ("boleta_honorarios", "boleta de honorarios"):
+            draft_expense = {**draft_expense, "document_type": "professional_fee_receipt"}
+        elif doc_type != "professional_fee_receipt":
             return draft_expense
 
         draft = dict(draft_expense)
@@ -328,6 +331,8 @@ class ExpenseService:
             rate = self._extract_withholding_rate(draft.get("ocr_text"))
         if rate is None:
             rate = self._expected_professional_fee_withholding_rate(draft)
+        if gross is None and net is None:
+            net = parse_float(draft.get("total"))
 
         if gross is not None and net is not None and withholding is not None:
             if abs(gross - net) < 0.01 and withholding > 0:
