@@ -1446,9 +1446,9 @@ def _send_single_outbound_response(
                 phone,
                 body=body,
                 buttons=[
-                    {"id": "confirm_expense", "title": "Confirmar"},
-                    {"id": "correct_expense", "title": "Corregir"},
-                    {"id": "cancel_expense", "title": "Cancelar"},
+                    {"id": "1", "title": "Confirmar"},
+                    {"id": "2", "title": "Corregir"},
+                    {"id": "3", "title": "Cancelar"},
                 ],
                 reply_to_message_id=reply_to_message_id,
             )
@@ -1464,14 +1464,26 @@ def _send_single_outbound_response(
     if interactive_prompt:
         prompt_body = interactive_prompt["body"]
         choices = interactive_prompt["choices"]
-        for batch_index, choice_batch in enumerate(_split_button_choices(choices), start=1):
-            batch_body = prompt_body if batch_index == 1 else "Más opciones:"
-            container.whatsapp.send_outbound_buttons(
-                phone,
-                body=batch_body,
-                buttons=choice_batch,
-                reply_to_message_id=reply_to_message_id,
-            )
+        prompt_kind = interactive_prompt.get("kind", "buttons")
+        if prompt_kind == "list":
+            for batch_index, choice_batch in enumerate(_split_list_choices(choices), start=1):
+                batch_body = prompt_body if batch_index == 1 else "Más centros de costo:"
+                container.whatsapp.send_outbound_list(
+                    phone,
+                    body=batch_body,
+                    button_text="Ver opciones",
+                    items=choice_batch,
+                    reply_to_message_id=reply_to_message_id,
+                )
+        else:
+            for batch_index, choice_batch in enumerate(_split_button_choices(choices), start=1):
+                batch_body = prompt_body if batch_index == 1 else "Más opciones:"
+                container.whatsapp.send_outbound_buttons(
+                    phone,
+                    body=batch_body,
+                    buttons=choice_batch,
+                    reply_to_message_id=reply_to_message_id,
+                )
         _log_outbound_message(container, phone, prompt_body)
         return
 
@@ -1517,7 +1529,8 @@ def _build_interactive_prompt(
             return None
         return {
             "body": "¿A qué centro de costo está dirigido este gasto?",
-            "choices": _build_cost_center_button_choices(centers),
+            "kind": "list" if len(centers) > 5 else "buttons",
+            "choices": _build_cost_center_choices(centers),
         }
 
     if state == "NEEDS_INFO" and current_step == "currency":
@@ -1560,10 +1573,19 @@ def _split_button_choices(choices: list[dict[str, str]]) -> list[list[dict[str, 
     return [clean_choices[index : index + 3] for index in range(0, len(clean_choices), 3)]
 
 
-def _build_cost_center_button_choices(centers: list[str]) -> list[dict[str, str]]:
+def _split_list_choices(choices: list[dict[str, str]]) -> list[list[dict[str, str]]]:
+    clean_choices = [
+        choice
+        for choice in choices
+        if str(choice.get("id") or "").strip() and str(choice.get("title") or "").strip()
+    ]
+    return [clean_choices[index : index + 10] for index in range(0, len(clean_choices), 10)]
+
+
+def _build_cost_center_choices(centers: list[str]) -> list[dict[str, str]]:
     choices = [
         {"id": str(index), "title": center}
-        for index, center in enumerate(centers[:2], start=1)
+        for index, center in enumerate(centers, start=1)
     ]
     choices.append({"id": "otra", "title": "Otra"})
     return choices

@@ -318,7 +318,7 @@ class ConversationDocumentTypeTests(unittest.TestCase):
         self.assertEqual(manual_result["state"], "DONE")
         self.assertEqual(manual_result["context_json"]["draft_expense"]["cost_center"], "Marketing")
 
-    def test_cost_center_prompt_uses_reply_buttons_not_list(self):
+    def test_cost_center_prompt_uses_all_centers_as_reply_buttons_up_to_five(self):
         container = FakeContainer(
             {
                 "state": "CONFIRM_SUMMARY",
@@ -337,11 +337,75 @@ class ConversationDocumentTypeTests(unittest.TestCase):
         _send_single_outbound_response(container, "+56911111111", "placeholder")
 
         self.assertEqual(len(container.whatsapp.sent_lists), 0)
-        self.assertEqual(len(container.whatsapp.sent_buttons), 1)
+        self.assertEqual(len(container.whatsapp.sent_buttons), 2)
         self.assertEqual(
             [button["title"] for button in container.whatsapp.sent_buttons[0]["buttons"]],
-            ["Operaciones", "Ventas", "Otra"],
+            ["Operaciones", "Ventas", "Finanzas"],
         )
+        self.assertEqual(
+            [button["title"] for button in container.whatsapp.sent_buttons[1]["buttons"]],
+            ["Otra"],
+        )
+
+    def test_cost_center_prompt_uses_list_when_more_than_five_centers(self):
+        container = FakeContainer(
+            {
+                "state": "CONFIRM_SUMMARY",
+                "current_step": "cost_center",
+                "context_json": {
+                    "draft_expense": {
+                        "cost_centers": [
+                            "Operaciones",
+                            "Ventas",
+                            "Finanzas",
+                            "Marketing",
+                            "TI",
+                            "Legal",
+                        ],
+                    },
+                    "missing_fields": [],
+                    "last_question": "cost_center",
+                },
+            }
+        )
+        container.whatsapp = FakeWhatsAppRecorder()
+
+        _send_single_outbound_response(container, "+56911111111", "placeholder")
+
+        self.assertEqual(len(container.whatsapp.sent_buttons), 0)
+        self.assertEqual(len(container.whatsapp.sent_lists), 1)
+        _phone, body, button_text, items, _reply_to = container.whatsapp.sent_lists[0]
+        self.assertEqual(body, "¿A qué centro de costo está dirigido este gasto?")
+        self.assertEqual(button_text, "Ver opciones")
+        self.assertEqual(
+            [item["title"] for item in items],
+            ["Operaciones", "Ventas", "Finanzas", "Marketing", "TI", "Legal", "Otra"],
+        )
+
+    def test_cost_center_prompt_splits_large_center_lists_without_dropping_options(self):
+        centers = [f"Centro {index}" for index in range(1, 12)]
+        container = FakeContainer(
+            {
+                "state": "CONFIRM_SUMMARY",
+                "current_step": "cost_center",
+                "context_json": {
+                    "draft_expense": {"cost_centers": centers},
+                    "missing_fields": [],
+                    "last_question": "cost_center",
+                },
+            }
+        )
+        container.whatsapp = FakeWhatsAppRecorder()
+
+        _send_single_outbound_response(container, "+56911111111", "placeholder")
+
+        sent_titles = [
+            item["title"]
+            for _phone, _body, _button_text, items, _reply_to in container.whatsapp.sent_lists
+            for item in items
+        ]
+        self.assertEqual(len(container.whatsapp.sent_lists), 2)
+        self.assertEqual(sent_titles, centers + ["Otra"])
 
 
 class FakeConversationProcessor(FakeConversationService):
@@ -668,7 +732,7 @@ class ReceiptPipelineTests(unittest.TestCase):
         self.assertEqual(container.sheets.conversation["state"], "WAIT_RECEIPT")
         self.assertEqual(container.sheets.conversation["current_step"], "")
 
-    def test_meta_interactive_list_reply_uses_list_title(self):
+    def test_meta_interactive_list_reply_uses_list_id(self):
         service = WhatsAppService(settings=Settings())
         payload = {
             "entry": [
@@ -700,7 +764,7 @@ class ReceiptPipelineTests(unittest.TestCase):
         events = service.parse_meta_webhook_messages(payload)
 
         self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["body"], "Moneda")
+        self.assertEqual(events[0]["body"], "4")
 
     def test_meta_text_send_does_not_retry_when_access_token_expired(self):
         service = WhatsAppService(settings=Settings())
