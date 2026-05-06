@@ -105,6 +105,20 @@ Instrucciones:
 - Si la informacion solicitada no esta en el contexto, dilo con honestidad.
 """.strip()
 
+WHATSAPP_CONVERSATIONAL_PROMPT = """
+Eres el asistente de rendicion de gastos por WhatsApp de una empresa.
+Tienes acceso al contexto de la rendicion activa del empleado.
+
+Instrucciones:
+- Responde en espanol natural y conciso (maximo 4-5 lineas).
+- Para saludos o mensajes cortos: responde amablemente, presenta brevemente tu funcion y pide que envien un comprobante.
+- Para preguntas sobre saldo, gastos, presupuesto o rendicion: usa el contexto provisto y responde con datos concretos.
+- Para preguntas sobre como funciona la app: explica brevemente el proceso (enviar foto -> procesar -> confirmar).
+- Para mensajes claramente irrelevantes (deportes, clima, etc.): di que solo puedes ayudar con gastos y rendicion.
+- Nunca inventes datos ni cifras que no esten en el contexto.
+- No uses formato markdown, listas con guiones ni asteriscos. Solo texto plano.
+""".strip()
+
 BACKOFFICE_CASE_ASSISTANT_PROMPT = """
 Eres un asistente de analisis de rendiciones de gastos para el equipo de backoffice.
 Tienes acceso al contexto completo de la rendicion y respondes preguntas del operador con precision.
@@ -178,6 +192,33 @@ class LLMService:
             logger.warning("LLM chat assistant failed: %s", exc)
             return None
 
+        cleaned = " ".join(str(answer or "").split()).strip()
+        return cleaned or None
+
+    def chat_whatsapp_with_context(self, message: str, case_context: str) -> str | None:
+        """Single LLM call that both understands and responds to a WhatsApp message."""
+        if not self.chat_assistant_enabled:
+            return None
+        if not (message or "").strip():
+            return None
+
+        system_content = (
+            f"{WHATSAPP_CONVERSATIONAL_PROMPT}\n\n"
+            f"Contexto de la rendicion activa:\n{case_context}"
+        )
+        payload = {
+            "model": getattr(self.settings, "openai_model", "gpt-4o-mini"),
+            "temperature": 0.3,
+            "messages": [
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": message.strip()},
+            ],
+        }
+        try:
+            answer = self._chat_text(payload)
+        except Exception as exc:
+            logger.warning("WhatsApp conversational reply failed: %s", exc)
+            return None
         cleaned = " ".join(str(answer or "").split()).strip()
         return cleaned or None
 

@@ -231,46 +231,46 @@ class ConversationService:
             }
 
         if state in {WAIT_RECEIPT, DONE}:
-            answer = self._answer_general_question_if_needed(message, phone=phone)
-            if answer:
+            # 1. Try heuristic direct answers first (no LLM needed)
+            heuristic_answer = self._heuristic_answer(message, phone=phone)
+            if heuristic_answer:
                 return {
                     "state": WAIT_RECEIPT,
                     "current_step": "",
                     "context_json": context,
-                    "reply": f"{answer}\n\nCuando quieras, envíame los comprobantes y los reviso.",
+                    "reply": heuristic_answer,
                     "action": "noop",
                 }
-            # Heuristics didn't detect a question — use LLM to classify intent
-            intent = self.expense_service.classify_message_intent(message)
-            if intent == "case_question":
-                case_answer = self.expense_service.answer_general_question(message, phone=phone, case_context_hint=True)
-                reply = case_answer or "No pude obtener esa información en este momento."
+
+            # 2. Single LLM call with full case context for everything else
+            llm_reply = self.expense_service.chat_whatsapp_conversational(message, phone=phone)
+            if llm_reply:
                 return {
                     "state": WAIT_RECEIPT,
                     "current_step": "",
                     "context_json": context,
-                    "reply": f"{reply}\n\nCuando quieras, envíame los comprobantes y los reviso.",
+                    "reply": llm_reply,
                     "action": "noop",
                 }
-            if intent == "general_question":
-                llm = self.expense_service.llm_service
-                general_answer = llm.answer_general_question(message) if llm else None
-                reply = general_answer or "Puedo ayudarte a registrar gastos. Envíame una foto de tu boleta o comprobante."
+
+            # 3. No LLM — heuristic fallbacks for greetings and detected questions
+            if self._is_greeting(normalized):
                 return {
                     "state": WAIT_RECEIPT,
                     "current_step": "",
                     "context_json": context,
-                    "reply": f"{reply}\n\nCuando quieras, envíame los comprobantes y los reviso.",
+                    "reply": "¡Hola! Soy el asistente de rendición de gastos. Envíame una foto de tu boleta, factura o comprobante para registrarlo.",
                     "action": "noop",
                 }
-            if intent == "irrelevant":
+            if self._looks_like_question(message) or self._looks_like_rendicion_request(message):
                 return {
                     "state": WAIT_RECEIPT,
                     "current_step": "",
                     "context_json": context,
-                    "reply": "Solo puedo ayudarte con tus gastos y rendición activa. Envíame una foto de tu boleta o comprobante cuando quieras.",
+                    "reply": "Puedo ayudarte con información de tu rendición activa o registrar gastos. Envíame una foto de tu boleta o comprobante cuando quieras.",
                     "action": "noop",
                 }
+
             return {
                 "state": WAIT_RECEIPT,
                 "current_step": "",
@@ -604,6 +604,32 @@ class ConversationService:
         if centers:
             return ""
         return value
+
+    def _heuristic_answer(self, message: str, *, phone: str = "") -> str | None:
+        """Return a direct answer when heuristics clearly detect a question type."""
+        # Direct rendicion question answerable from data (no LLM needed)
+        rendicion_answer = self.expense_service.answer_rendicion_question(phone=phone, question=message)
+        if rendicion_answer:
+            return rendicion_answer
+
+        # Heuristic-detected question: route through answer_general_question
+        is_rendicion = self._looks_like_rendicion_request(message)
+        if is_rendicion or self._looks_like_question(message):
+            general_answer = self.expense_service.answer_general_question(
+                message, phone=phone, case_context_hint=is_rendicion
+            )
+            if general_answer:
+                return f"{general_answer}\n\nCuando quieras, envíame los comprobantes y los reviso."
+
+        return None
+
+    def _is_greeting(self, normalized: str) -> bool:
+        greetings = ("hola", "buenas", "buenos dias", "buenos días", "buen dia", "buen día",
+                     "buenas tardes", "buenas noches", "hi", "hello", "hey", "saludos")
+        stripped = normalized.strip("!?., ")
+        return any(stripped == g or normalized.startswith(g + " ") or normalized.startswith(g + "!")
+                   or normalized.startswith(g + ",") or normalized.startswith(g + "?")
+                   for g in greetings)
 
     def _answer_general_question_if_needed(self, message: str, *, phone: str = "") -> str | None:
         is_rendicion = self._looks_like_rendicion_request(message)

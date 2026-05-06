@@ -295,7 +295,6 @@ class ExpenseService:
                 "monto bruto",
                 "total bruto",
                 "bruto",
-                "honorarios",
             ),
         )
         if labeled_gross is not None:
@@ -333,6 +332,13 @@ class ExpenseService:
         if gross is not None and net is not None and withholding is not None:
             if abs(gross - net) < 0.01 and withholding > 0:
                 gross = round(net + withholding, 2)
+        if gross is None and net is not None and withholding is not None and withholding > 0:
+            gross = round(net + withholding, 2)
+        if gross is None and net is not None and rate is not None:
+            retained_fraction = rate / 100
+            if 0 < retained_fraction < 1:
+                gross = round(net / (1 - retained_fraction), 2)
+                withholding = round(gross - net, 2)
 
         if gross is not None:
             draft["gross_amount"] = gross
@@ -479,6 +485,13 @@ class ExpenseService:
                 return case_answer
         return self.llm_service.answer_general_question(question)
 
+    def chat_whatsapp_conversational(self, message: str, phone: str) -> str | None:
+        """Single LLM call with full case context for conversational WhatsApp replies."""
+        if not self.llm_service or not self.llm_service.chat_assistant_enabled:
+            return None
+        case_context = self.build_case_context_text(phone)
+        return self.llm_service.chat_whatsapp_with_context(message=message, case_context=case_context)
+
     def classify_message_intent(self, message: str) -> str:
         if not self.llm_service:
             return "unknown"
@@ -601,8 +614,17 @@ class ExpenseService:
             "cuánto me queda",
             "saldo restante",
             "saldo me queda",
+            "cuanto saldo",
+            "cuánto saldo",
+            "saldo tengo",
+            "tengo de saldo",
+            "tengo disponible",
             "presupuesto restante",
             "presupuesto disponible",
+            "me queda de presupuesto",
+            "queda en mi",
+            "queda en la rendicion",
+            "queda en la rendición",
         )
         if any(signal in normalized for signal in balance_signals):
             return "balance"
@@ -1038,30 +1060,23 @@ class ExpenseService:
 
     def _build_professional_fee_receipt_summary(self, draft_expense: dict[str, Any]) -> str:
         lines = ["Detecté este gasto a partir de una *boleta de honorarios*:"]
-        lines.append(f"Emisor: {draft_expense.get('merchant', '-')}")
-        lines.append(f"Fecha: {draft_expense.get('date', '-')}")
-        lines.append(f"Folio: {draft_expense.get('invoice_number', '-')}")
+        lines.append(f"🏢 Emisor: {draft_expense.get('merchant', '-')}")
+        lines.append(f"📅 Fecha: {draft_expense.get('date', '-')}")
+        lines.append(f"🔢 Folio: {draft_expense.get('invoice_number', '-')}")
         if draft_expense.get("issuer_tax_id"):
-            lines.append(f"RUT emisor: {self._format_tax_id(draft_expense.get('issuer_tax_id'))}")
+            lines.append(f"🪪 RUT emisor: {self._format_tax_id(draft_expense.get('issuer_tax_id'))}")
         if draft_expense.get("receiver_tax_id"):
-            lines.append(f"RUT receptor: {self._format_tax_id(draft_expense.get('receiver_tax_id'))}")
+            lines.append(f"🪪 RUT receptor: {self._format_tax_id(draft_expense.get('receiver_tax_id'))}")
         if draft_expense.get("gross_amount") is not None:
             lines.append(
-                f"Monto bruto: {self._format_summary_amount(draft_expense.get('gross_amount'))} "
-                f"{draft_expense.get('currency', '-')}"
-            )
-        if draft_expense.get("withholding_amount") is not None:
-            rate = draft_expense.get("withholding_rate")
-            rate_text = f" ({rate}%)" if rate is not None else ""
-            lines.append(
-                f"Retención{rate_text}: {self._format_summary_amount(draft_expense.get('withholding_amount'))} "
+                f"💰 Monto bruto: {self._format_summary_amount(draft_expense.get('gross_amount'))} "
                 f"{draft_expense.get('currency', '-')}"
             )
         liquid_amount = draft_expense.get("net_amount")
         if liquid_amount is None and draft_expense.get("gross_amount") is None:
             liquid_amount = draft_expense.get("total")
         lines.append(
-            f"Monto líquido: {self._format_summary_amount(liquid_amount)} "
+            f"💵 Monto líquido: {self._format_summary_amount(liquid_amount)} "
             f"{draft_expense.get('currency', '-')}"
         )
         return "\n".join(lines)

@@ -775,7 +775,6 @@ class OCRService:
                 "monto bruto",
                 "total bruto",
                 "bruto",
-                "honorarios",
             ),
             "withholding_amount": (
                 "retencion",

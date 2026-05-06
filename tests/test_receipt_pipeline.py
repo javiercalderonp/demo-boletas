@@ -195,6 +195,12 @@ class FakeExpense:
     def answer_general_question(self, question, *, phone="", case_context_hint=False):
         return self.general_answer
 
+    def answer_rendicion_question(self, *, phone="", question=""):
+        return None
+
+    def chat_whatsapp_conversational(self, message, *, phone=""):
+        return None
+
     def classify_message_intent(self, message):
         return "unknown"
 

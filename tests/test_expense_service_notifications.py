@@ -200,11 +200,11 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
         self.assertEqual(draft["net_amount"], 84750)
         self.assertEqual(draft["withholding_rate"], 15.25)
         self.assertIn("boleta de honorarios", summary)
-        self.assertIn("Monto bruto: 100000", summary)
-        self.assertIn("Retención (15.25%): 15250", summary)
-        self.assertIn("Monto líquido: 84750", summary)
-        self.assertIn("RUT emisor: 12.345.678-9", summary)
-        self.assertIn("RUT receptor: 77.123.456-1", summary)
+        self.assertIn("💰 Monto bruto: 100000", summary)
+        self.assertNotIn("Retención", summary)
+        self.assertIn("💵 Monto líquido: 84750", summary)
+        self.assertIn("🪪 RUT emisor: 12.345.678-9", summary)
+        self.assertIn("🪪 RUT receptor: 77.123.456-1", summary)
         self.assertNotIn("RUT emisor: RUT", summary)
         self.assertNotIn("RUT receptor: RUT", summary)
         self.assertNotIn("Categoría:", summary)
@@ -233,13 +233,13 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
             summary.splitlines(),
             [
                 "Detecté este gasto a partir de una *boleta de honorarios*:",
-                "Emisor: SONIDO AL SUR SPA",
-                "Fecha: 2024-05-12",
-                "Folio: 1255",
-                "RUT emisor: 77.987.654-3",
-                "RUT receptor: 77.123.456-1",
-                "Monto bruto: 280000 CLP",
-                "Monto líquido: 241500 CLP",
+                "🏢 Emisor: SONIDO AL SUR SPA",
+                "📅 Fecha: 2024-05-12",
+                "🔢 Folio: 1255",
+                "🪪 RUT emisor: 77.987.654-3",
+                "🪪 RUT receptor: 77.123.456-1",
+                "💰 Monto bruto: 280000 CLP",
+                "💵 Monto líquido: 241500 CLP",
             ],
         )
 
@@ -288,6 +288,32 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
         self.assertEqual(draft["withholding_amount"], 38500)
         self.assertEqual(draft["net_amount"], 241500)
         self.assertEqual(draft["total"], 280000)
+
+    def test_professional_fee_receipt_derives_gross_from_net_and_expected_rate(self):
+        service = ExpenseService(sheets_service=FakeSheetsService())
+
+        draft = service.enrich_draft_expense(
+            {
+                "document_type": "professional_fee_receipt",
+                "merchant": "ACTOR DE TEATRO, CINE Y TELEVISIÓN",
+                "date": "2024-05-12",
+                "currency": "CLP",
+                "total": 362250,
+                "net_amount": 362250,
+                "invoice_number": "1252",
+                "issuer_tax_id": "RUT: 18.765.432-1",
+                "receiver_tax_id": "RUT: 77.123.456-1",
+                "ocr_text": "BOLETA DE HONORARIOS ELECTRONICA TOTAL LIQUIDO 362250",
+            }
+        )
+        summary = service.build_summary_message(draft, include_text_actions=False)
+
+        self.assertEqual(draft["gross_amount"], 420000)
+        self.assertEqual(draft["withholding_amount"], 57750)
+        self.assertEqual(draft["net_amount"], 362250)
+        self.assertEqual(draft["total"], 420000)
+        self.assertIn("💰 Monto bruto: 420000 CLP", summary)
+        self.assertIn("💵 Monto líquido: 362250 CLP", summary)
 
     def test_professional_fee_receipt_does_not_require_category_or_country(self):
         service = ExpenseService(sheets_service=FakeSheetsService())
