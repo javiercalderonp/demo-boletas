@@ -238,8 +238,8 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
                 "🔢 Folio: 1255",
                 "🪪 RUT emisor: 77.987.654-3",
                 "🪪 RUT receptor: 77.123.456-1",
-                "💰 Monto bruto: 280000 CLP",
                 "💵 Monto líquido: 241500 CLP",
+                "💰 Monto bruto: 280000 CLP",
             ],
         )
 

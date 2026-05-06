@@ -1103,11 +1103,6 @@ class ExpenseService:
             lines.append(f"🪪 RUT emisor: {self._format_tax_id(draft_expense.get('issuer_tax_id'))}")
         if draft_expense.get("receiver_tax_id"):
             lines.append(f"🪪 RUT receptor: {self._format_tax_id(draft_expense.get('receiver_tax_id'))}")
-        if draft_expense.get("gross_amount") is not None:
-            lines.append(
-                f"💰 Monto bruto: {self._format_summary_amount(draft_expense.get('gross_amount'))} "
-                f"{draft_expense.get('currency', '-')}"
-            )
         liquid_amount = draft_expense.get("net_amount")
         if liquid_amount is None and draft_expense.get("gross_amount") is None:
             liquid_amount = draft_expense.get("total")
@@ -1115,6 +1110,11 @@ class ExpenseService:
             f"💵 Monto líquido: {self._format_summary_amount(liquid_amount)} "
             f"{draft_expense.get('currency', '-')}"
         )
+        if draft_expense.get("gross_amount") is not None:
+            lines.append(
+                f"💰 Monto bruto: {self._format_summary_amount(draft_expense.get('gross_amount'))} "
+                f"{draft_expense.get('currency', '-')}"
+            )
         return "\n".join(lines)
 
     def _format_tax_id(self, value: Any) -> str:
