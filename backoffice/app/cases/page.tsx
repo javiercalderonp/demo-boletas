@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  Bell,
   ChevronDown,
   CircleDashed,
   Download,
@@ -1415,7 +1416,7 @@ export default function CasesPage() {
           }
         >
           {filteredItems === null ? (
-            <TableSkeleton columns={7} rows={5} />
+            <TableSkeleton columns={8} rows={5} />
           ) : (
             <>
               {/* Mobile card list */}
@@ -1435,11 +1436,18 @@ export default function CasesPage() {
                         item.rendicion_status ||
                         item.status;
                       return (
-                        <div key={item.case_id} className="cursor-pointer rounded-xl border border-gray-100 bg-gray-50/60 p-4" onClick={() => router.push(`/cases/${item.case_id}`)}>
+                        <div key={item.case_id} className={`cursor-pointer rounded-xl border p-4 ${item.human_assistance_requested ? "border-orange-200 bg-orange-50/60" : "border-gray-100 bg-gray-50/60"}`} onClick={() => router.push(`/cases/${item.case_id}`)}>
                           <div className="flex items-start gap-3">
-                            <div onClick={(e) => e.stopPropagation()}>{renderCaseMenu(item)}</div>
                             <div className="min-w-0 flex-1">
-                              <Badge tone={statusTone}>{statusLabel}</Badge>
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <Badge tone={statusTone}>{statusLabel}</Badge>
+                                {item.human_assistance_requested && (
+                                  <span className="inline-flex items-center gap-1 rounded-full border border-orange-300 bg-orange-100 px-2 py-0.5 text-[10px] font-semibold text-orange-700">
+                                    <Bell className="h-2.5 w-2.5" />
+                                    Asistencia solicitada
+                                  </span>
+                                )}
+                              </div>
                               <p className="mt-1.5 font-semibold leading-tight text-gray-900">
                                 {item.context_label || item.case_id}
                               </p>
@@ -1464,6 +1472,9 @@ export default function CasesPage() {
                                   <span className="text-gray-400"> · {item.employee_phone}</span>
                                 )}
                               </p>
+                            </div>
+                            <div onClick={(e) => e.stopPropagation()}>
+                              {renderCaseMenu(item, "right")}
                             </div>
                           </div>
 
@@ -1515,7 +1526,6 @@ export default function CasesPage() {
               <div className="hidden md:block">
                 <DataTable
                   columns={[
-                    "",
                     "Estado",
                     "Rendición",
                     "Empleado",
@@ -1523,20 +1533,24 @@ export default function CasesPage() {
                     "Aprobado",
                     "Progreso",
                     "Saldo",
+                    "",
                   ]}
                   rowHrefs={filteredItems.map((item) => `/cases/${item.case_id}`)}
                   rows={filteredItems.map((item) => {
                     const actionConfig = getCaseActionConfig(item);
                     return [
-                      <div key="menu" className="min-w-[36px]">
-                        {renderCaseMenu(item)}
-                      </div>,
-                      <div key="status" className="min-w-[128px] pt-0.5">
+                      <div key="status" className="min-w-[128px] space-y-1.5 pt-0.5">
                         <Badge tone={rendicionStatusTone[item.rendicion_status || item.status]}>
                           {rendicionStatusLabels[item.rendicion_status || item.status] ||
                             item.rendicion_status ||
                             item.status}
                         </Badge>
+                        {item.human_assistance_requested && (
+                          <span className="flex items-center gap-1 rounded-full border border-orange-300 bg-orange-100 px-2 py-0.5 text-[10px] font-semibold text-orange-700 w-fit">
+                            <Bell className="h-2.5 w-2.5" />
+                            Asistencia solicitada
+                          </span>
+                        )}
                       </div>,
                       <div key="id" className="min-w-[280px]">
                         <span className="block font-medium text-gray-900">
@@ -1596,6 +1610,9 @@ export default function CasesPage() {
                       >
                         {formatCLP(item.saldo_restante)}
                       </span>,
+                      <div key="menu" className="flex min-w-[36px] justify-end">
+                        {renderCaseMenu(item, "right")}
+                      </div>,
                     ];
                   })}
                 />

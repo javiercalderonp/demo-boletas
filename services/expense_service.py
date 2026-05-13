@@ -578,6 +578,29 @@ class ExpenseService:
             if budget:
                 remaining = budget - total_spent
                 lines.append(f"Saldo restante: {self._format_clp(remaining)} CLP")
+
+            status_labels = {
+                "approved": "aprobado",
+                "rejected": "rechazado",
+                "pending_approval": "pendiente aprobación",
+                "pending_review": "pendiente revisión",
+                "needs_manual_review": "revisión manual",
+                "observed": "observado",
+            }
+            lines.append("Detalle de gastos registrados:")
+            for exp in expenses:
+                merchant = str(exp.get("merchant", "") or "Sin nombre").strip()
+                date = str(exp.get("date", "") or "").strip()
+                amount = parse_float(exp.get("total_clp") or exp.get("total") or 0) or 0.0
+                exp_status = str(exp.get("review_status") or exp.get("status") or "").strip()
+                status_label = status_labels.get(exp_status, exp_status) if exp_status else "sin estado"
+                parts = [f"  - {merchant}"]
+                if date:
+                    parts.append(f"({date})")
+                parts.append(f"${self._format_clp(amount)} CLP")
+                parts.append(f"[{status_label}]")
+                lines.append(" ".join(parts))
+
             by_cc: dict[str, float] = {}
             for exp in expenses:
                 cc = str(exp.get("cost_center", "") or "Sin clasificar").strip() or "Sin clasificar"

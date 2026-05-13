@@ -1392,6 +1392,22 @@ def send_conversation_message(
         },
     )
 
+    # Clear human assistance flag when an operator replies
+    try:
+        active_case = container.sheets.get_active_expense_case_by_phone(phone)
+        if active_case:
+            case_id = str(active_case.get("case_id", "") or "").strip()
+            if case_id and active_case.get("human_assistance_requested"):
+                container.sheets.update_expense_case(
+                    case_id,
+                    {"human_assistance_requested": False, "human_assistance_message": ""},
+                )
+    except Exception:
+        logger.exception(
+            "Failed to clear human_assistance_requested for phone=%s",
+            phone,
+        )
+
     return {
         "ok": True,
         "message": new_entry,

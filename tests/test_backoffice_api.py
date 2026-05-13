@@ -8,6 +8,7 @@ from app.api.backoffice import (
     case_action,
     create_case,
     delete_case as delete_case_endpoint,
+    require_super_admin,
 )
 from app.schemas.backoffice import CasePayload, StatusActionPayload
 
@@ -172,6 +173,12 @@ class FailingWhatsApp:
 
 
 class BackofficeApiTests(unittest.TestCase):
+    def test_require_super_admin_rejects_non_super_admin(self):
+        with self.assertRaises(HTTPException) as ctx:
+            require_super_admin({"role": "company_admin", "scope_type": "company", "active": True})
+
+        self.assertEqual(ctx.exception.status_code, 403)
+
     def test_delete_case_notifies_user_and_logs_message(self):
         container = SimpleNamespace(
             backoffice=FakeBackofficeDelete(),

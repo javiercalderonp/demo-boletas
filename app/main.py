@@ -46,6 +46,68 @@ from utils.helpers import make_id, normalize_whatsapp_phone, utc_now_iso
 logger = logging.getLogger(__name__)
 
 
+HUMAN_ASSISTANCE_PHRASES = frozenset([
+    "quiero hablar con un humano",
+    "quiero hablar con una persona",
+    "quiero hablar con alguien",
+    "quiero hablar con un operador",
+    "quiero hablar con una operadora",
+    "quiero hablar con un agente",
+    "hablar con un humano",
+    "hablar con una persona",
+    "hablar con el operador",
+    "hablar con un operador",
+    "hablar con una operadora",
+    "hablar con un agente",
+    "necesito asistencia humana",
+    "necesito hablar con alguien",
+    "necesito un humano",
+    "necesito ayuda humana",
+    "asistencia humana",
+    "ayuda humana",
+    "atencion humana",
+    "atención humana",
+    "soporte humano",
+    "hablar con persona real",
+    "quiero ayuda de una persona",
+    "prefiero hablar con alguien",
+    "quiero que me atienda una persona",
+])
+
+
+def _is_human_assistance_request(text: str) -> bool:
+    normalized = (text or "").strip().lower()
+    return any(phrase in normalized for phrase in HUMAN_ASSISTANCE_PHRASES)
+
+
+def _set_human_assistance_flag(
+    container: ServiceContainer,
+    phone: str,
+    *,
+    value: bool,
+    message: str = "",
+) -> None:
+    try:
+        expense_case = container.sheets.get_active_expense_case_by_phone(phone)
+        if not expense_case:
+            return
+        case_id = str(expense_case.get("case_id", "") or "").strip()
+        if not case_id:
+            return
+        payload: dict[str, Any] = {"human_assistance_requested": value}
+        if value and message:
+            payload["human_assistance_message"] = message.strip()
+        elif not value:
+            payload["human_assistance_message"] = ""
+        container.sheets.update_expense_case(case_id, payload)
+    except Exception:
+        logger.exception(
+            "Failed to set human_assistance_requested=%s for phone=%s",
+            value,
+            phone,
+        )
+
+
 STICKY_CONTEXT_KEYS = (
     "message_log",
     "scheduler",
@@ -940,6 +1002,15 @@ def _handle_text_message(container: ServiceContainer, phone: str, body: str) -> 
     )
     if direct_close_reply:
         return direct_close_reply
+
+    if _is_human_assistance_request(body):
+        _set_human_assistance_flag(container, phone, value=True, message=body)
+        return (
+            "Entendido, ya notifiqué a un operador que necesitas asistencia humana. "
+            "Pronto alguien te contactará por este mismo chat.\n\n"
+            "Mientras tanto, puedo seguir ayudándote con tu rendición de gastos: "
+            "envíame fotos de tus comprobantes y los proceso como siempre. 🤝"
+        )
 
     result = container.conversation.handle_text_message(conversation, body, phone=phone)
 

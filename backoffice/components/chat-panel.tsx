@@ -57,10 +57,12 @@ export function ChatPanel({
   phone,
   maxHeight = "500px",
   initialExpanded = true,
+  onMessageSent,
 }: {
   phone: string;
   maxHeight?: string;
   initialExpanded?: boolean;
+  onMessageSent?: () => void;
 }) {
   const { token } = useAuth();
   const [conversation, setConversation] = useState<Conversation | null>(null);
@@ -124,6 +126,7 @@ export function ChatPanel({
           setEmployee(detail.employee);
         }
       }
+      onMessageSent?.();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Error al enviar mensaje";
       setSendError(message);

@@ -53,6 +53,8 @@ export type CaseItem = {
   phone?: string;
   closure_method?: string;
   status: string;
+  human_assistance_requested?: boolean;
+  human_assistance_message?: string;
   fondos_entregados?: number | string;
   fondos_por_centro?: Record<string, number>;
   rendicion_status?: string;

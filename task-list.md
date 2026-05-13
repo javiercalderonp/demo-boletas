@@ -622,6 +622,11 @@
   - Mensaje al usuario al final del día con resumen de gastos registrados y saldo
   - Implementar como slot adicional en `scheduler_service`
 
+- [x] **Contexto de gastos individuales en el chat WhatsApp**
+  - `build_case_context_text` ahora incluye el listado detallado de cada gasto (merchant, fecha, monto, estado)
+  - El LLM puede responder preguntas como "cuál fue mi último gasto" o "cuál es el estado de mis gastos"
+  - Estado mapeado a etiquetas legibles: aprobado, rechazado, pendiente aprobación, pendiente revisión, revisión manual, observado
+
 - [ ] **Comando "mis gastos" / "últimos"**
   - Mostrar los últimos 5 gastos registrados con estado (aprobado/pendiente/rechazado)
   - Accesible escribiendo "mis gastos" o "últimos" en el chat
@@ -723,6 +728,15 @@
   - `chat_whatsapp_conversational` convierte el `message_log` (formato `speaker`/`text`) al formato OpenAI (`role`/`content`)
   - `handle_text_message` extrae el historial del contexto (excluyendo el mensaje actual, que ya fue logueado) y lo pasa al LLM
   - Centros de costo, presupuesto, gastos rendidos y saldo restante siempre frescos desde Sheets (sin cambios)
+
+- [x] **Alerta de solicitud de asistencia humana**
+  - Detección de frases de asistencia humana en `_handle_text_message` (`app/main.py`): keywords como "quiero hablar con un humano", "necesito asistencia humana", etc.
+  - Al detectar la solicitud, se actualiza el campo `human_assistance_requested = True` en el caso activo vía `sheets_service.update_expense_case`
+  - El bot responde confirmando que un operador fue notificado
+  - En `send_conversation_message` (`app/api/backoffice.py`): al enviar un mensaje como operador, se limpia el flag (`human_assistance_requested = False`)
+  - Frontend: banner de alerta naranja en el detalle del caso cuando `human_assistance_requested = True`
+  - Frontend: badge "Asistencia solicitada" en la lista de rendiciones (vista mobile y tabla desktop)
+  - `ChatPanel` recibe callback `onMessageSent` para refrescar el caso tras enviar mensaje y desactivar la alerta visualmente
 
 ### Pendiente
 

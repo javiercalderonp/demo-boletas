@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import {
   AlertTriangle,
+  Bell,
   Bus,
   Camera,
   CheckCircle,
@@ -501,6 +502,23 @@ export default function CaseDetailPage() {
                   <button className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-primary-700" onClick={() => setCloseRendicionPopupError("")} type="button">Entendido</button>
                 </div>
               </div>
+            </div>
+          </div>
+        )}
+
+        {item?.human_assistance_requested && (
+          <div className="flex items-start gap-3 rounded-xl border border-orange-300 bg-orange-50 px-4 py-3.5 shadow-sm" role="alert">
+            <Bell className="mt-0.5 h-5 w-5 flex-shrink-0 animate-pulse text-orange-600" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-orange-800">Solicitud de asistencia humana</p>
+              {item.human_assistance_message && (
+                <p className="mt-1 rounded-lg border border-orange-200 bg-white/70 px-3 py-2 text-sm italic text-orange-900">
+                  &ldquo;{item.human_assistance_message}&rdquo;
+                </p>
+              )}
+              <p className="mt-1 text-xs text-orange-700">
+                Esta alerta se desactivará cuando envíes un mensaje por el chat.
+              </p>
             </div>
           </div>
         )}
@@ -1278,7 +1296,7 @@ export default function CaseDetailPage() {
 
                 {/* Chat */}
                 {(item?.employee_phone || item?.phone) && (
-                  <ChatPanel phone={item.employee_phone || item.phone || ""} maxHeight="min(72vh, 760px)" />
+                  <ChatPanel phone={item.employee_phone || item.phone || ""} maxHeight="min(72vh, 760px)" onMessageSent={fetchCase} />
                 )}
               </div>
             </div>
