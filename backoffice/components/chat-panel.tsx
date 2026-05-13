@@ -39,7 +39,11 @@ function getMediaAttachments(message: ConversationMessage) {
       const mediaUrl = attachment.media_url || "";
       const mediaType = attachment.media_content_type || "";
       const url = imageUrl || documentUrl || mediaUrl;
-      const isImage = Boolean(imageUrl) || mediaType.startsWith("image/");
+      const urlPath = url.split("?")[0].toLowerCase();
+      const isImage =
+        Boolean(imageUrl) ||
+        mediaType.startsWith("image/") ||
+        /\.(avif|gif|jpe?g|png|webp)$/i.test(urlPath);
       const isDocument = Boolean(documentUrl) || mediaType.includes("pdf");
       return { url, isImage, isDocument };
     })
@@ -52,9 +56,11 @@ function getMediaAttachments(message: ConversationMessage) {
 export function ChatPanel({
   phone,
   maxHeight = "500px",
+  initialExpanded = true,
 }: {
   phone: string;
   maxHeight?: string;
+  initialExpanded?: boolean;
 }) {
   const { token } = useAuth();
   const [conversation, setConversation] = useState<Conversation | null>(null);
@@ -62,7 +68,7 @@ export function ChatPanel({
   const [chatInput, setChatInput] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(initialExpanded);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const fetchConversation = useCallback(() => {
@@ -86,9 +92,13 @@ export function ChatPanel({
   });
 
   const messages = (conversation?.context_json?.message_log || []) as ConversationMessage[];
+  const messageCountLabel =
+    messages.length === 1 ? "1 mensaje" : `${messages.length} mensajes`;
+
   useEffect(() => {
+    if (!isExpanded) return;
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length]);
+  }, [isExpanded, messages.length]);
 
   async function handleSendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -153,6 +163,7 @@ export function ChatPanel({
       title="Chat"
       action={
         <div className="flex items-center gap-2">
+          <span className="hidden text-xs text-gray-400 sm:inline">{messageCountLabel}</span>
           <Badge>{conversation.state}</Badge>
           <button
             aria-expanded={isExpanded}
@@ -169,8 +180,8 @@ export function ChatPanel({
       {isExpanded && (
         <>
           <div
-            className="space-y-3 overflow-y-auto rounded-xl border border-emerald-100 bg-[#e7f3ec] bg-[radial-gradient(circle_at_12px_12px,rgba(255,255,255,0.42)_1px,transparent_1px)] bg-[length:24px_24px] p-3 scroll-smooth"
-            style={{ maxHeight }}
+            className="min-h-[360px] space-y-3 overflow-y-auto rounded-xl border border-emerald-100 bg-[#e7f3ec] bg-[radial-gradient(circle_at_12px_12px,rgba(255,255,255,0.42)_1px,transparent_1px)] bg-[length:24px_24px] p-3 scroll-smooth"
+            style={{ height: maxHeight, maxHeight }}
           >
             {messages.length > 0 ? (
               messages.map((message) => {
@@ -195,13 +206,13 @@ export function ChatPanel({
                   tailClasses =
                     "right-[-6px] border-l-[8px] border-l-[#dcf8c6] border-t-[8px] border-t-transparent";
                 } else if (isOperator) {
-                  alignment = "justify-end";
-                  bgClasses = "bg-[#d9fdd3] text-gray-950 shadow-sm ring-1 ring-emerald-300/70";
-                  labelColor = "text-emerald-900";
-                  timeColor = "text-gray-500";
+                  alignment = "justify-start";
+                  bgClasses = "bg-white text-gray-900 shadow-sm ring-1 ring-black/5";
+                  labelColor = "text-emerald-700";
+                  timeColor = "text-gray-400";
                   speakerLabel = message.operator_name || "Operador";
                   tailClasses =
-                    "right-[-6px] border-l-[8px] border-l-[#d9fdd3] border-t-[8px] border-t-transparent";
+                    "left-[-6px] border-r-[8px] border-r-white border-t-[8px] border-t-transparent";
                 }
 
                 return (
@@ -236,7 +247,7 @@ export function ChatPanel({
                                 <img
                                   src={attachment.url}
                                   alt="Adjunto enviado por WhatsApp"
-                                  className="max-h-72 w-full object-cover"
+                                  className="max-h-96 w-full object-contain"
                                   loading="lazy"
                                 />
                               </a>

@@ -639,6 +639,16 @@ class BackofficeService:
             data["cost_centers"] = normalize_cost_centers(data.get("cost_centers", []))
         return self.sheets_service.update_expense_case(case_id, data)
 
+    def delete_case_with_related_data(self, case_id: str) -> dict[str, Any] | None:
+        expense_case = self.sheets_service.delete_expense_case(case_id)
+        if expense_case is None:
+            return None
+        deleted_expenses = self.sheets_service.delete_expenses_for_case(case_id)
+        return {
+            "case": expense_case,
+            "deleted_expenses": deleted_expenses,
+        }
+
     def get_case_transition_gate(self, case_id: str) -> dict[str, Any]:
         expense_case = self.sheets_service.get_expense_case_by_id(case_id)
         if not expense_case:

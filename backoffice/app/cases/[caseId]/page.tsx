@@ -147,14 +147,16 @@ function StatCard({
   sub?: string;
 }) {
   return (
-    <div className="flex items-center gap-4 rounded-2xl border border-gray-100 bg-white px-5 py-4 shadow-sm">
-      <div className={`flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full ${iconBg}`}>
-        <Icon className={`h-5 w-5 ${iconColor}`} />
+    <div className="flex min-w-0 flex-col items-start gap-2 rounded-xl border border-gray-100 bg-white px-3 py-3 shadow-sm sm:flex-row sm:items-center sm:gap-4 sm:rounded-2xl sm:px-5 sm:py-4">
+      <div className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full sm:h-11 sm:w-11 ${iconBg}`}>
+        <Icon className={`h-4 w-4 sm:h-5 sm:w-5 ${iconColor}`} />
       </div>
-      <div className="min-w-0">
-        <p className="text-xs font-medium text-gray-500">{label}</p>
-        <p className={`text-xl font-bold ${valueColor ?? "text-gray-900"}`}>{value}</p>
-        {sub && <p className="text-xs text-gray-400">{sub}</p>}
+      <div className="min-w-0 w-full">
+        <p className="text-[11px] font-medium leading-tight text-gray-500 sm:text-xs">{label}</p>
+        <p className={`max-w-full whitespace-nowrap text-[clamp(0.875rem,3.8vw,1.25rem)] font-bold leading-tight tabular-nums sm:text-xl ${valueColor ?? "text-gray-900"}`}>
+          {value}
+        </p>
+        {sub && <p className="mt-0.5 text-[11px] leading-tight text-gray-400 sm:text-xs">{sub}</p>}
       </div>
     </div>
   );
@@ -342,6 +344,10 @@ export default function CaseDetailPage() {
 
   const totalRendido = expenses.reduce((sum, e) => sum + (parseAmount(e.total_clp) || (e.currency === "CLP" ? parseAmount(e.total) : 0)), 0);
   const diffGlobal = fondos > 0 ? totalRendido - fondos : null;
+  const globalSpentPct = fondos > 0 ? Math.round((totalRendido / fondos) * 100) : null;
+  const globalProgressPct = globalSpentPct != null ? Math.min(globalSpentPct, 100) : totalRendido > 0 ? 100 : 0;
+  const globalIsOverBudget = globalSpentPct != null && globalSpentPct > 100;
+  const globalBalance = fondos - totalRendido;
 
   return (
     <ProtectedPage>
@@ -377,14 +383,14 @@ export default function CaseDetailPage() {
         )}
 
         {item && (
-          <div className="space-y-6">
+          <div className="space-y-4 sm:space-y-6">
             {/* ── Header ── */}
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <h1 className="text-2xl font-bold text-gray-900">
+            <div className="flex flex-wrap items-start justify-between gap-3 sm:gap-4">
+              <div className="min-w-0">
+                <h1 className="break-words text-xl font-bold leading-tight text-gray-900 sm:text-2xl">
                   Rendición: {item.context_label || caseId}
                 </h1>
-                <div className="mt-1.5 flex flex-wrap items-center gap-3 text-sm text-gray-500">
+                <div className="mt-1.5 flex flex-wrap items-center gap-2 text-sm text-gray-500 sm:gap-3">
                   {employee && (
                     <span className="flex items-center gap-1.5">
                       <Users className="h-3.5 w-3.5" />
@@ -402,7 +408,7 @@ export default function CaseDetailPage() {
               </div>
               <div className="flex items-center gap-2">
                 <button
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 px-3.5 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 sm:px-3.5 sm:py-2"
                   onClick={() => setIsEditing((v) => !v)}
                   type="button"
                 >
@@ -438,7 +444,7 @@ export default function CaseDetailPage() {
             )}
 
             {/* ── Summary stat cards ── */}
-            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
               <StatCard label="Presupuesto total" value={fondos > 0 ? formatCLP(fondos) : "-"} icon={Wallet} iconBg="bg-gray-100" iconColor="text-gray-600" />
               <StatCard label="Gastado total" value={formatCLP(totalRendido)} icon={TrendingUp} iconBg="bg-rose-100" iconColor="text-rose-600" />
               <StatCard
@@ -572,6 +578,52 @@ export default function CaseDetailPage() {
                 {/* ── Cost center view ── */}
                 {activeTab === "centers" && (
                   <div className="space-y-4">
+                    <div className="rounded-2xl border border-gray-200 bg-white px-5 py-4 shadow-sm">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-gray-900">Avance de gasto del caso</p>
+                          <p className="mt-1 text-xs text-gray-500">
+                            {globalSpentPct != null
+                              ? `${globalSpentPct}% del presupuesto utilizado`
+                              : "Sin presupuesto total asignado"}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-xs text-gray-500">Gastado total</p>
+                          <p className={`text-lg font-bold ${globalIsOverBudget ? "text-red-600" : "text-gray-900"}`}>
+                            {formatCLP(totalRendido)}
+                          </p>
+                          <p className="text-xs text-gray-400">Presupuesto {fondos > 0 ? formatCLP(fondos) : "-"}</p>
+                        </div>
+                      </div>
+                      <div
+                        aria-label="Avance de gasto total del caso"
+                        aria-valuemax={fondos > 0 ? fondos : undefined}
+                        aria-valuemin={0}
+                        aria-valuenow={fondos > 0 ? Math.min(totalRendido, fondos) : undefined}
+                        className="mt-4 h-3 w-full overflow-hidden rounded-full bg-gray-100"
+                        role={fondos > 0 ? "progressbar" : undefined}
+                      >
+                        <div
+                          className={`h-full rounded-full transition-all ${
+                            globalIsOverBudget ? "bg-red-500" : fondos > 0 ? "bg-primary-600" : "bg-gray-300"
+                          }`}
+                          style={{ width: `${globalProgressPct}%` }}
+                        />
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <span className={globalIsOverBudget ? "font-semibold text-red-600" : "text-gray-500"}>
+                          {globalIsOverBudget
+                            ? `Sobre presupuesto por ${formatCLP(Math.abs(globalBalance))}`
+                            : fondos > 0
+                              ? `Saldo disponible ${formatCLP(Math.max(globalBalance, 0))}`
+                              : "La barra muestra gasto registrado sin compararlo contra presupuesto."}
+                        </span>
+                        {globalSpentPct != null && (
+                          <span className="font-semibold text-gray-700">{globalSpentPct}%</span>
+                        )}
+                      </div>
+                    </div>
                     {expensesByCostCenter.length === 0 && (
                       <p className="text-sm text-gray-500">Sin documentos para resumir.</p>
                     )}
@@ -661,7 +713,7 @@ export default function CaseDetailPage() {
                                     const pendingInCenter = row.expenses.filter((e) => e.review_status !== "approved" && e.review_status !== "rejected");
                                     const allPendingSelected = pendingInCenter.length > 0 && pendingInCenter.every((e) => selectedExpenses.has(e.expense_id));
                                     return (
-                                      <table className="w-full min-w-[760px]">
+                                      <table className="w-full min-w-[680px]">
                                         <thead>
                                           <tr className="border-b border-gray-100 text-left text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-400">
                                             <th className="w-10 px-3 py-3">
@@ -686,7 +738,6 @@ export default function CaseDetailPage() {
                                             <th className="px-5 py-3">Monto</th>
                                             <th className="px-5 py-3">Estado</th>
                                             <th className="px-5 py-3 text-center">Score</th>
-                                            <th className="px-5 py-3 text-center">Acciones</th>
                                           </tr>
                                         </thead>
                                         <tbody className="divide-y divide-gray-50">
@@ -741,25 +792,22 @@ export default function CaseDetailPage() {
                                                   <p className="text-[10px] text-gray-400">Líquido</p>
                                                 </td>
                                                 <td className="px-5 py-3.5 align-top">
-                                                  {isApproved ? (
-                                                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">
-                                                      <CheckCircle className="h-3 w-3" /> Aprobado
-                                                    </span>
-                                                  ) : isRejected ? (
-                                                    <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
-                                                      <XCircle className="h-3 w-3" /> Rechazado
-                                                    </span>
-                                                  ) : (
-                                                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
-                                                      <Clock className="h-3 w-3" /> Pendiente
-                                                    </span>
-                                                  )}
-                                                </td>
-                                                <td className="px-5 py-3.5 text-center align-top">
-                                                  <ScoreBadge score={expense.review_score} />
-                                                </td>
-                                                <td className="px-5 py-3.5 align-top">
-                                                  <div className="flex items-center justify-center gap-1">
+                                                  <div>
+                                                    {isApproved ? (
+                                                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">
+                                                        <CheckCircle className="h-3 w-3" /> Aprobado
+                                                      </span>
+                                                    ) : isRejected ? (
+                                                      <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
+                                                        <XCircle className="h-3 w-3" /> Rechazado
+                                                      </span>
+                                                    ) : (
+                                                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
+                                                        <Clock className="h-3 w-3" /> Pendiente
+                                                      </span>
+                                                    )}
+                                                  </div>
+                                                  <div className="mt-2 flex items-start gap-1">
                                                     <Link href={`/expenses/${expense.expense_id}`} className="rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700">
                                                       <Eye className="h-4 w-4" />
                                                     </Link>
@@ -784,6 +832,9 @@ export default function CaseDetailPage() {
                                                       </div>
                                                     )}
                                                   </div>
+                                                </td>
+                                                <td className="px-5 py-3.5 text-center align-top">
+                                                  <ScoreBadge score={expense.review_score} />
                                                 </td>
                                               </tr>
                                             );
@@ -841,7 +892,7 @@ export default function CaseDetailPage() {
                           const pendingAll = expenses.filter((e) => e.review_status !== "approved" && e.review_status !== "rejected");
                           const allPendingSelected = pendingAll.length > 0 && pendingAll.every((e) => selectedExpenses.has(e.expense_id));
                           return (
-                            <table className="w-full min-w-[760px]">
+                            <table className="w-full min-w-[680px]">
                               <thead>
                                 <tr className="border-b border-gray-100 text-left text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-400">
                                   <th className="w-10 px-3 py-3">
@@ -866,7 +917,6 @@ export default function CaseDetailPage() {
                                   <th className="px-5 py-3">Monto</th>
                                   <th className="px-5 py-3">Estado</th>
                                   <th className="px-5 py-3 text-center">Score</th>
-                                  <th className="px-5 py-3 text-center">Acciones</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-gray-50">
@@ -914,25 +964,22 @@ export default function CaseDetailPage() {
                                         <p className="text-[10px] text-gray-400">Líquido</p>
                                       </td>
                                       <td className="px-5 py-3.5 align-top">
-                                        {isApproved ? (
-                                          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">
-                                            <CheckCircle className="h-3 w-3" /> Aprobado
-                                          </span>
-                                        ) : isRejected ? (
-                                          <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
-                                            <XCircle className="h-3 w-3" /> Rechazado
-                                          </span>
-                                        ) : (
-                                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
-                                            <Clock className="h-3 w-3" /> Pendiente
-                                          </span>
-                                        )}
-                                      </td>
-                                      <td className="px-5 py-3.5 text-center align-top">
-                                        <ScoreBadge score={expense.review_score} />
-                                      </td>
-                                      <td className="px-5 py-3.5 align-top">
-                                        <div className="flex items-center justify-center gap-1">
+                                        <div>
+                                          {isApproved ? (
+                                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">
+                                              <CheckCircle className="h-3 w-3" /> Aprobado
+                                            </span>
+                                          ) : isRejected ? (
+                                            <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
+                                              <XCircle className="h-3 w-3" /> Rechazado
+                                            </span>
+                                          ) : (
+                                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
+                                              <Clock className="h-3 w-3" /> Pendiente
+                                            </span>
+                                          )}
+                                        </div>
+                                        <div className="mt-2 flex items-start gap-1">
                                           <Link href={`/expenses/${expense.expense_id}`} className="rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700">
                                             <Eye className="h-4 w-4" />
                                           </Link>
@@ -957,6 +1004,9 @@ export default function CaseDetailPage() {
                                             </div>
                                           )}
                                         </div>
+                                      </td>
+                                      <td className="px-5 py-3.5 text-center align-top">
+                                        <ScoreBadge score={expense.review_score} />
                                       </td>
                                     </tr>
                                   );

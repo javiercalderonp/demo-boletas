@@ -1214,6 +1214,17 @@ class SheetsService:
             return None
         return existing
 
+    def delete_expenses_for_case(self, case_id: str) -> int:
+        normalized_case_id = str(case_id or "").strip()
+        if not normalized_case_id:
+            return 0
+
+        def _matches(row: dict[str, Any]) -> bool:
+            row_case_id = str(row.get("case_id", row.get("trip_id", "")) or "").strip()
+            return row_case_id == normalized_case_id
+
+        return self._delete_many_by_predicate(SHEET_NAMES["expenses"], _matches)
+
     def delete_expenses_for_employee_or_cases(self, phone: str, case_ids: set[str]) -> int:
         normalized_phone = normalize_whatsapp_phone(phone)
 

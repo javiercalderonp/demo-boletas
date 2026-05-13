@@ -10,9 +10,11 @@ import {
   Inbox,
   Landmark,
   MoreHorizontal,
+  Pencil,
   Plus,
   Search,
   Send,
+  Trash2,
   X,
 } from "lucide-react";
 
@@ -237,6 +239,8 @@ export default function CasesPage() {
   const [submitting, setSubmitting] = useState(false);
   const [creatingEmployee, setCreatingEmployee] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editingCase, setEditingCase] = useState<CaseItem | null>(null);
+  const [deleteModal, setDeleteModal] = useState<CaseItem | null>(null);
   const [createEmployeeOpen, setCreateEmployeeOpen] = useState(false);
   const [companyAccordionOpen, setCompanyAccordionOpen] = useState(false);
   const [costCenterDraft, setCostCenterDraft] = useState("");
@@ -410,13 +414,22 @@ export default function CasesPage() {
               )
             : null,
       };
-      await apiRequest("/cases", { method: "POST", body: payload, token });
+      if (editingCase) {
+        await apiRequest(`/cases/${editingCase.case_id}`, {
+          method: "PUT",
+          body: { ...payload, case_id: editingCase.case_id },
+          token,
+        });
+      } else {
+        await apiRequest("/cases", { method: "POST", body: payload, token });
+      }
       setForm(emptyForm);
       setCostCenterDraft("");
       setEmployeeSearch("");
       setEmployeeForm(emptyEmployeeForm);
       setCreateEmployeeOpen(false);
       setCreateOpen(false);
+      setEditingCase(null);
       setCompanyAccordionOpen(false);
       setFondosMode("total");
       setFondosPorCentro({});
@@ -425,7 +438,9 @@ export default function CasesPage() {
       const message =
         nextError instanceof Error
           ? nextError.message
-          : "No se pudo crear la rendición.";
+          : editingCase
+            ? "No se pudo actualizar la rendición."
+            : "No se pudo crear la rendición.";
       const conflict = parseActiveCaseConflict(message);
       if (conflict) {
         setCreateConflictPopup({
@@ -567,6 +582,109 @@ export default function CasesPage() {
     }
   }
 
+  function resetCaseForm() {
+    setForm(emptyForm);
+    setCostCenterDraft("");
+    setEmployeeSearch("");
+    setEmployeeForm(emptyEmployeeForm);
+    setCreateEmployeeOpen(false);
+    setCompanyAccordionOpen(false);
+    setFondosMode("total");
+    setFondosPorCentro({});
+    setEditingCase(null);
+  }
+
+  function openCreateCase() {
+    setError("");
+    resetCaseForm();
+    setCreateOpen(true);
+  }
+
+  function openEditCase(item: CaseItem) {
+    const employeePhone = item.employee_phone || item.phone || "";
+    const nextFondosPorCentro = Object.fromEntries(
+      Object.entries(item.fondos_por_centro || {}).map(([center, value]) => [
+        center,
+        String(value ?? ""),
+      ]),
+    );
+    setError("");
+    setEditingCase(item);
+    setForm({
+      employee_phone: employeePhone,
+      context_label: item.context_label || "",
+      cost_centers: item.cost_centers || [],
+      company_id: item.company_id || item.employee?.company_id || "",
+      closure_method: item.closure_method || "docusign",
+      status: item.status || "active",
+      fondos_entregados:
+        item.fondos_entregados == null ? "" : String(item.fondos_entregados),
+      notes: item.notes || "",
+    });
+    setEmployeeSearch(item.employee?.name || employeePhone);
+    setCostCenterDraft("");
+    setEmployeeForm(emptyEmployeeForm);
+    setCreateEmployeeOpen(false);
+    setCompanyAccordionOpen(false);
+    setFondosMode(Object.keys(nextFondosPorCentro).length ? "por_centro" : "total");
+    setFondosPorCentro(nextFondosPorCentro);
+    setCreateOpen(true);
+  }
+
+  async function deleteCase(item: CaseItem) {
+    if (!token) return;
+    setActionLoading(`${item.case_id}:delete`);
+    setError("");
+    try {
+      await apiRequest(`/cases/${item.case_id}`, { method: "DELETE", token });
+      setDeleteModal(null);
+      load();
+    } catch (nextError) {
+      setError(
+        nextError instanceof Error
+          ? nextError.message
+          : "No se pudo eliminar la rendición.",
+      );
+    } finally {
+      setActionLoading("");
+    }
+  }
+
+  function renderCaseMenu(item: CaseItem, align: "left" | "right" = "left") {
+    return (
+      <details className="relative shrink-0">
+        <summary
+          aria-label={`Acciones para ${item.context_label || item.case_id}`}
+          className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-full transition hover:bg-gray-200 [&::-webkit-details-marker]:hidden"
+        >
+          <MoreHorizontal className="h-4 w-4 text-gray-500" />
+        </summary>
+        <div
+          className={`absolute top-11 z-20 min-w-[11rem] overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-lg ${
+            align === "right" ? "right-0" : "left-0"
+          }`}
+        >
+          <button
+            type="button"
+            onClick={() => openEditCase(item)}
+            className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-gray-700 transition hover:bg-slate-50 hover:text-gray-900"
+          >
+            <Pencil className="h-4 w-4" />
+            Editar caso
+          </button>
+          <button
+            type="button"
+            onClick={() => setDeleteModal(item)}
+            className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-red-600 transition hover:bg-red-50"
+          >
+            <Trash2 className="h-4 w-4" />
+            Eliminar caso
+          </button>
+        </div>
+      </details>
+    );
+  }
+
   return (
     <ProtectedPage>
       <Shell
@@ -609,6 +727,65 @@ export default function CasesPage() {
                     type="button"
                   >
                     Entendido
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {deleteModal && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center bg-gray-950/50 px-4">
+            <div
+              aria-modal="true"
+              role="alertdialog"
+              className="w-full max-w-md rounded-2xl border border-red-100 bg-white shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-5 py-4">
+                <div>
+                  <h2 className="text-base font-semibold text-gray-900">
+                    Eliminar rendición
+                  </h2>
+                  <p className="mt-1 text-sm text-gray-500">
+                    También se eliminarán los gastos asociados a este caso.
+                  </p>
+                </div>
+                <button
+                  aria-label="Cerrar popup"
+                  className="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
+                  onClick={() => setDeleteModal(null)}
+                  type="button"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="px-5 py-4">
+                <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3">
+                  <p className="text-sm font-semibold text-gray-950">
+                    {deleteModal.context_label || deleteModal.case_id}
+                  </p>
+                  <p className="mt-1 font-mono text-xs text-red-700">
+                    {deleteModal.case_id}
+                  </p>
+                </div>
+                <div className="mt-5 flex justify-end gap-3">
+                  <button
+                    className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
+                    onClick={() => setDeleteModal(null)}
+                    type="button"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-red-700 disabled:opacity-50"
+                    onClick={() => deleteCase(deleteModal)}
+                    disabled={actionLoading === `${deleteModal.case_id}:delete`}
+                    type="button"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    {actionLoading === `${deleteModal.case_id}:delete`
+                      ? "Eliminando..."
+                      : "Eliminar"}
                   </button>
                 </div>
               </div>
@@ -684,22 +861,19 @@ export default function CasesPage() {
               <div className="flex shrink-0 items-center justify-between border-b border-gray-100 px-5 py-4">
                 <div>
                   <h2 className="text-base font-semibold text-gray-900">
-                    Nueva rendición
+                    {editingCase ? "Editar rendición" : "Nueva rendición"}
                   </h2>
                   <p className="text-sm text-gray-500">
-                    Crea un expediente de fondos por rendir para una persona.
+                    {editingCase
+                      ? "Actualiza los datos principales del expediente."
+                      : "Crea un expediente de fondos por rendir para una persona."}
                   </p>
                 </div>
                 <button
                   className="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
                   onClick={() => {
                     setCreateOpen(false);
-                    setForm(emptyForm);
-                    setCostCenterDraft("");
-                    setEmployeeSearch("");
-                    setEmployeeForm(emptyEmployeeForm);
-                    setCreateEmployeeOpen(false);
-                    setCompanyAccordionOpen(false);
+                    resetCaseForm();
                   }}
                   type="button"
                 >
@@ -1097,13 +1271,7 @@ export default function CasesPage() {
                     className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
                     onClick={() => {
                       setCreateOpen(false);
-                      setForm(emptyForm);
-                      setCostCenterDraft("");
-                      setEmployeeSearch("");
-                      setEmployeeForm(emptyEmployeeForm);
-                      setCreateEmployeeOpen(false);
-                      setFondosMode("total");
-                      setFondosPorCentro({});
+                      resetCaseForm();
                     }}
                     type="button"
                   >
@@ -1120,7 +1288,13 @@ export default function CasesPage() {
                       !form.context_label.trim()
                     }
                   >
-                    {submitting ? "Creando..." : "Crear rendición"}
+                    {submitting
+                      ? editingCase
+                        ? "Guardando..."
+                        : "Creando..."
+                      : editingCase
+                        ? "Guardar cambios"
+                        : "Crear rendición"}
                   </button>
                 </div>
               </form>
@@ -1231,10 +1405,7 @@ export default function CasesPage() {
           action={
             <button
               className="flex h-9 w-9 items-center justify-center rounded-full bg-primary-600 text-white shadow-sm transition hover:bg-primary-700"
-              onClick={() => {
-                setError("");
-                setCreateOpen(true);
-              }}
+              onClick={openCreateCase}
               type="button"
             >
               <Plus className="h-5 w-5" />
@@ -1263,7 +1434,8 @@ export default function CasesPage() {
                         item.status;
                       return (
                         <div key={item.case_id} className="rounded-xl border border-gray-100 bg-gray-50/60 p-4">
-                          <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-start gap-3">
+                            {renderCaseMenu(item)}
                             <div className="min-w-0 flex-1">
                               <Badge tone={statusTone}>{statusLabel}</Badge>
                               <p className="mt-1.5 font-semibold leading-tight text-gray-900">
@@ -1291,19 +1463,6 @@ export default function CasesPage() {
                                 )}
                               </p>
                             </div>
-                            <details className="relative shrink-0">
-                              <summary className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-full transition hover:bg-gray-200 [&::-webkit-details-marker]:hidden">
-                                <MoreHorizontal className="h-4 w-4 text-gray-500" />
-                              </summary>
-                              <div className="absolute right-0 top-11 z-10 min-w-[11rem] overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-lg">
-                                <Link
-                                  href={`/cases/${item.case_id}`}
-                                  className="block px-4 py-2.5 text-sm text-gray-700 transition hover:bg-slate-50 hover:text-gray-900"
-                                >
-                                  Ver detalle
-                                </Link>
-                              </div>
-                            </details>
                           </div>
 
                           <div className="mt-3 grid grid-cols-3 gap-2 rounded-lg border border-gray-100 bg-white p-3 text-center text-xs">
@@ -1359,6 +1518,7 @@ export default function CasesPage() {
               <div className="hidden md:block">
                 <DataTable
                   columns={[
+                    "",
                     "Estado",
                     "Rendición",
                     "Empleado",
@@ -1371,6 +1531,9 @@ export default function CasesPage() {
                   rows={filteredItems.map((item) => {
                     const actionConfig = getCaseActionConfig(item);
                     return [
+                      <div key="menu" className="min-w-[36px]">
+                        {renderCaseMenu(item)}
+                      </div>,
                       <div key="status" className="min-w-[128px] pt-0.5">
                         <Badge tone={rendicionStatusTone[item.rendicion_status || item.status]}>
                           {rendicionStatusLabels[item.rendicion_status || item.status] ||

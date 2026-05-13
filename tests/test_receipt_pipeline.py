@@ -17,6 +17,7 @@ from app.main import (
     _reset_receipt_processing_state,
     _safe_send_outbound_response,
     _send_single_outbound_response,
+    _stamp_media_entries,
     _sync_manual_cost_center_to_case,
 )
 from app.config import Settings
@@ -566,6 +567,20 @@ class FakeContainerNoDocument:
 
 
 class ReceiptPipelineTests(unittest.TestCase):
+    def test_stamp_media_entries_uses_event_message_id_when_attachment_has_none(self):
+        entries = _stamp_media_entries(
+            [
+                {
+                    "media_id": "media-1",
+                    "media_url": "https://example.com/receipt.jpg",
+                    "media_content_type": "image/jpeg",
+                }
+            ],
+            message_id="wamid.meta-message",
+        )
+
+        self.assertEqual(entries[0]["message_id"], "wamid.meta-message")
+
     def test_initial_wait_receipt_reply_uses_employee_first_name(self):
         container = FakeContainer({"state": "WAIT_RECEIPT", "current_step": "", "context_json": {}})
 

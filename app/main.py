@@ -1188,9 +1188,9 @@ async def _handle_meta_webhook(
         phone = normalize_whatsapp_phone(event.get("phone"))
         body = str(event.get("body") or "").strip()
         raw_media_entries = event.get("media_entries", [])
-        media_entries = _stamp_media_entries(raw_media_entries)
         message_type = str(event.get("message_type") or "").strip().lower()
         inbound_message_id = str(event.get("message_id") or "").strip()
+        media_entries = _stamp_media_entries(raw_media_entries, message_id=inbound_message_id)
         logger.warning(
             "Meta webhook event phone=%s type=%s media_count=%d has_body=%s message_id=%s",
             phone,
@@ -1280,7 +1280,7 @@ async def _handle_meta_webhook(
                 "MediaId0": first_entry.get("media_id", ""),
                 "MediaUrl0": first_entry.get("media_url", ""),
                 "MediaContentType0": first_entry.get("media_content_type"),
-                "InboundMessageId": first_entry.get("message_id", ""),
+                "InboundMessageId": first_entry.get("message_id", "") or inbound_message_id,
             }
             logger.warning(
                 "Meta image queued for processing phone=%s media_id=%s mime=%s",
@@ -2045,10 +2045,15 @@ def _get_pending_receipts(context: dict[str, Any] | None) -> list[dict[str, str]
     return entries
 
 
-def _stamp_media_entries(media_entries: list[dict[str, Any]] | Any) -> list[dict[str, str]]:
+def _stamp_media_entries(
+    media_entries: list[dict[str, Any]] | Any,
+    *,
+    message_id: str = "",
+) -> list[dict[str, str]]:
     if not isinstance(media_entries, list):
         return []
     queued_at = utc_now_iso()
+    fallback_message_id = str(message_id or "").strip()
     stamped_entries: list[dict[str, str]] = []
     for item in media_entries:
         if not isinstance(item, dict):
@@ -2062,7 +2067,7 @@ def _stamp_media_entries(media_entries: list[dict[str, Any]] | Any) -> list[dict
                 "media_id": media_id,
                 "media_url": media_url,
                 "media_content_type": str(item.get("media_content_type") or "").strip(),
-                "message_id": str(item.get("message_id") or "").strip(),
+                "message_id": str(item.get("message_id") or "").strip() or fallback_message_id,
                 "queued_at": str(item.get("queued_at") or "").strip() or queued_at,
             }
         )

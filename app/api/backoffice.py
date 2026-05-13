@@ -861,10 +861,28 @@ def update_case(
     if not existing:
         raise HTTPException(status_code=404, detail="Case not found")
     _ensure_user_can_access_company(user, payload.company_id)
-    expense_case = _get_container(request).backoffice.update_case(case_id, payload.model_dump())
+    expense_case = _get_container(request).backoffice.update_case(
+        case_id,
+        payload.model_dump(exclude_none=True),
+    )
     if not expense_case:
         raise HTTPException(status_code=404, detail="Case not found")
     return expense_case
+
+
+@router.delete("/cases/{case_id}")
+def delete_case(
+    case_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    existing = _get_container(request).backoffice.get_case_detail(case_id, user)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Case not found")
+    result = _get_container(request).backoffice.delete_case_with_related_data(case_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return result
 
 
 @router.post("/cases/{case_id}/actions")
