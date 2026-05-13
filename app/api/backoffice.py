@@ -35,7 +35,6 @@ from services.backoffice_permissions import (
 )
 from services.statuses import (
     CaseStatus,
-    ExpenseReviewStatus,
     ExpenseStatus,
     RendicionStatus,
 )
@@ -132,6 +131,13 @@ def _safe_user(user: dict[str, Any]) -> dict[str, Any]:
 def require_admin(user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
     role = str(user.get("role", "") or "").strip().lower()
     if role not in ADMIN_ROLES:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No autorizado")
+    return user
+
+
+def require_super_admin(user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    role = str(user.get("role", "") or "").strip().lower()
+    if role != SUPER_ADMIN_ROLE:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No autorizado")
     return user
 
@@ -312,6 +318,7 @@ def _build_expense_status_notification(expense: dict[str, Any], action: str) -> 
     total = expense.get("total", "")
     currency = str(expense.get("currency", "") or "").strip()
     amount_str = f"{currency} {total}".strip() if total else ""
+    reason = str(expense.get("review_reason", "") or "").strip()
 
     if action == "approve":
         return "Tu documento fue aprobado"
@@ -319,16 +326,71 @@ def _build_expense_status_notification(expense: dict[str, Any], action: str) -> 
         msg = f"Tu documento fue rechazado: {merchant}"
         if amount_str:
             msg += f" por {amount_str}"
+        if reason:
+            msg += f". Motivo: {reason}"
         return msg + ". Si tienes dudas, contacta a soporte."
-    if action == "observe":
-        msg = f"Tu documento quedó observado: {merchant}"
-        if amount_str:
-            msg += f" por {amount_str}"
-        return msg + ". Podrían pedirte información adicional."
     msg = f"Tu documento quedó en revisión manual: {merchant}"
     if amount_str:
         msg += f" por {amount_str}"
     return msg + ". Te avisaremos cuando haya una resolución."
+
+
+def _build_case_deleted_notification(expense_case: dict[str, Any]) -> str:
+    case_label = str(expense_case.get("context_label", "") or "").strip()
+    case_id = str(expense_case.get("case_id", "") or "").strip()
+    if case_label and case_id:
+        case_reference = f"{case_label} ({case_id})"
+    elif case_label:
+        case_reference = case_label
+    elif case_id:
+        case_reference = case_id
+    else:
+        case_reference = "tu rendición"
+    return f"Tu caso {case_reference} ha sido eliminado por administración."
+
+
+def _log_outbound_bot_message(
+    container: Any,
+    *,
+    phone: str,
+    message: str,
+    created_at: str | None = None,
+) -> None:
+    conversation = container.sheets.get_conversation(phone)
+    if not conversation:
+        conversation = container.sheets.update_conversation(
+            phone,
+            {
+                "state": "WAIT_RECEIPT",
+                "current_step": "",
+                "context_json": container.conversation.default_context(),
+            },
+        )
+    conversation = container.conversation.ensure_conversation(conversation)
+    context = conversation.get("context_json", {})
+    if not isinstance(context, dict):
+        context = container.conversation.default_context()
+    message_log = context.get("message_log", [])
+    if not isinstance(message_log, list):
+        message_log = []
+    message_log.append(
+        {
+            "id": make_id("msg"),
+            "speaker": "bot",
+            "type": "text",
+            "text": message,
+            "created_at": created_at or utc_now_iso(),
+        }
+    )
+    context["message_log"] = message_log[-MAX_MESSAGE_LOG_ITEMS:]
+    container.sheets.update_conversation(
+        phone,
+        {
+            "state": conversation.get("state", "WAIT_RECEIPT"),
+            "current_step": conversation.get("current_step", ""),
+            "context_json": context,
+        },
+    )
 
 
 def _build_case_settlement_message(expense_case: dict[str, Any]) -> str:
@@ -443,7 +505,7 @@ def list_backoffice_users(
 def create_backoffice_user(
     payload: BackofficeUserPayload,
     request: Request,
-    user: dict[str, Any] = Depends(require_admin),
+    user: dict[str, Any] = Depends(require_super_admin),
 ) -> dict[str, Any]:
     container = _get_container(request)
     email = str(payload.email or "").strip().lower()
@@ -876,12 +938,34 @@ def delete_case(
     request: Request,
     user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
-    existing = _get_container(request).backoffice.get_case_detail(case_id, user)
+    container = _get_container(request)
+    existing = container.backoffice.get_case_detail(case_id, user)
     if not existing:
         raise HTTPException(status_code=404, detail="Case not found")
-    result = _get_container(request).backoffice.delete_case_with_related_data(case_id)
+    result = container.backoffice.delete_case_with_related_data(case_id)
     if not result:
         raise HTTPException(status_code=404, detail="Case not found")
+    deleted_case = result.get("case") or existing.get("case") or {}
+    phone = str(
+        deleted_case.get("employee_phone", deleted_case.get("phone", "")) or ""
+    ).strip()
+    if phone:
+        message = _build_case_deleted_notification(deleted_case)
+        try:
+            container.whatsapp.send_outbound_text(phone, message)
+            _log_outbound_bot_message(container, phone=phone, message=message)
+            result["delete_notification"] = {"status": "sent"}
+        except Exception as exc:
+            result["delete_notification"] = {
+                "status": "send_failed",
+                "error": str(exc),
+            }
+            logger.exception(
+                "Failed to send case deletion WhatsApp case_id=%s phone=%s provider=%s",
+                case_id,
+                phone,
+                str(getattr(container.whatsapp, "provider", "") or "") or None,
+            )
     return result
 
 
@@ -1059,18 +1143,19 @@ def expense_action(
     status_map = {
         "approve": ExpenseStatus.APPROVED,
         "reject": ExpenseStatus.REJECTED,
-        "observe": ExpenseStatus.OBSERVED,
-        "request_review": ExpenseStatus.NEEDS_MANUAL_REVIEW,
     }
     if payload.action not in status_map:
         raise HTTPException(status_code=400, detail="Unsupported action")
     update_payload: dict[str, Any] = {"status": status_map[payload.action]}
     if payload.action in ("approve", "reject"):
         update_payload["review_status"] = status_map[payload.action]
-    elif payload.action == "observe":
-        update_payload["review_status"] = ExpenseReviewStatus.OBSERVED
-    elif payload.action == "request_review":
-        update_payload["review_status"] = ExpenseReviewStatus.NEEDS_MANUAL_REVIEW
+    if payload.action == "reject":
+        reason = str(payload.reason or "").strip()
+        if not reason:
+            raise HTTPException(status_code=400, detail="Debes indicar el motivo del rechazo.")
+        update_payload["review_reason"] = reason
+    elif payload.action == "approve":
+        update_payload["review_reason"] = ""
     expense = container.backoffice.update_expense(expense_id, update_payload)
     if not expense:
         raise HTTPException(status_code=404, detail="Expense not found")

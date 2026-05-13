@@ -100,9 +100,9 @@ class DashboardResponse(BaseModel):
 class StatusActionPayload(BaseModel):
     action: Literal[
         "approve", "reject", "close", "reopen", "deactivate", "activate", "resolve",
-        "observe", "request_review",
         "request_user_confirmation", "resolve_settlement", "close_rendicion",
     ]
+    reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class SendMessagePayload(BaseModel):

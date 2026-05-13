@@ -39,6 +39,7 @@ export default function UsersPage() {
   const [submitting, setSubmitting] = useState(false);
 
   const isGlobalAdmin = user?.scope_type === "global";
+  const canCreateUsers = user?.role === "super_admin";
 
   function load() {
     if (!token) {
@@ -69,7 +70,7 @@ export default function UsersPage() {
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!token) {
+    if (!token || !canCreateUsers) {
       return;
     }
     setSubmitting(true);
@@ -111,17 +112,19 @@ export default function UsersPage() {
           <SectionCard
             title="Accesos"
             action={
-              <button
-                className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-primary-700"
-                onClick={() => setCreateOpen((value) => !value)}
-                type="button"
-              >
-                <Plus className="h-4 w-4" />
-                Crear usuario
-              </button>
+              canCreateUsers ? (
+                <button
+                  className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-primary-700"
+                  onClick={() => setCreateOpen((value) => !value)}
+                  type="button"
+                >
+                  <Plus className="h-4 w-4" />
+                  Crear usuario
+                </button>
+              ) : null
             }
           >
-            {createOpen && (
+            {canCreateUsers && createOpen && (
               <form className="mb-6 grid gap-4 rounded-lg border border-gray-200 bg-gray-50 p-4 md:grid-cols-2" onSubmit={onSubmit}>
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-gray-700">Nombre</label>

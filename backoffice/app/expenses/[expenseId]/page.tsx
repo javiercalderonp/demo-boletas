@@ -13,7 +13,6 @@ import {
   Coins,
   CreditCard,
   ExternalLink,
-  Eye,
   FileText,
   FolderOpen,
   Globe,
@@ -22,7 +21,6 @@ import {
   Minus,
   Pencil,
   Receipt,
-  RotateCcw,
   Store,
   Tag,
   TrendingDown,
@@ -33,6 +31,7 @@ import {
 
 import { Badge } from "@/components/badge";
 import { ProtectedPage } from "@/components/protected-page";
+import { RejectExpenseDialog } from "@/components/reject-expense-dialog";
 import { SectionCard } from "@/components/section-card";
 import { Shell } from "@/components/shell";
 import { useAuth } from "@/components/auth-provider";
@@ -227,6 +226,7 @@ export default function ExpenseDetailPage() {
   const [saving, setSaving] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [actionLoading, setActionLoading] = useState("");
+  const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
 
   function fetchExpense() {
     if (!token || !expenseId) return;
@@ -283,17 +283,16 @@ export default function ExpenseDetailPage() {
     }
   }
 
-  async function runAction(
-    action: "approve" | "reject" | "observe" | "request_review",
-  ) {
+  async function runAction(action: "approve" | "reject", reason?: string) {
     if (!token) return;
     setActionLoading(action);
     try {
       await apiRequest(`/expenses/${expenseId}/actions`, {
         method: "POST",
-        body: { action },
+        body: { action, ...(reason ? { reason } : {}) },
         token,
       });
+      setRejectDialogOpen(false);
       fetchExpense();
     } finally {
       setActionLoading("");
@@ -351,66 +350,41 @@ export default function ExpenseDetailPage() {
                         ))}
                       </div>
                     )}
-                    {/* Action buttons */}
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-50"
-                        onClick={() => runAction("approve")}
-                        disabled={
-                          actionLoading === "approve" ||
-                          expense.review_status === "approved"
-                        }
-                        type="button"
-                      >
-                        <CheckCircle className="h-4 w-4" />
-                        {actionLoading === "approve"
-                          ? "Aprobando..."
-                          : "Aprobar"}
-                      </button>
-                      <button
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-red-700 disabled:opacity-50"
-                        onClick={() => runAction("reject")}
-                        disabled={
-                          actionLoading === "reject" ||
-                          expense.review_status === "rejected"
-                        }
-                        type="button"
-                      >
-                        <XCircle className="h-4 w-4" />
-                        {actionLoading === "reject"
-                          ? "Rechazando..."
-                          : "Rechazar"}
-                      </button>
-                      <button
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-purple-300 px-3.5 py-2 text-sm font-semibold text-purple-700 transition hover:bg-purple-50 disabled:opacity-50"
-                        onClick={() => runAction("observe")}
-                        disabled={
-                          actionLoading === "observe" ||
-                          expense.review_status === "observed"
-                        }
-                        type="button"
-                      >
-                        <Eye className="h-4 w-4" />
-                        {actionLoading === "observe"
-                          ? "Observando..."
-                          : "Observar"}
-                      </button>
-                      <button
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-orange-300 px-3.5 py-2 text-sm font-semibold text-orange-700 transition hover:bg-orange-50 disabled:opacity-50"
-                        onClick={() => runAction("request_review")}
-                        disabled={
-                          actionLoading === "request_review" ||
-                          expense.review_status === "needs_manual_review"
-                        }
-                        type="button"
-                      >
-                        <RotateCcw className="h-4 w-4" />
-                        Solicitar revisión
-                      </button>
-                    </div>
+                    {expense.review_status !== "approved" &&
+                      expense.review_status !== "rejected" && (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-50"
+                            onClick={() => runAction("approve")}
+                            disabled={actionLoading === "approve"}
+                            type="button"
+                          >
+                            <CheckCircle className="h-4 w-4" />
+                            {actionLoading === "approve"
+                              ? "Aprobando..."
+                              : "Aprobar"}
+                          </button>
+                          <button
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-red-700 disabled:opacity-50"
+                            onClick={() => setRejectDialogOpen(true)}
+                            disabled={actionLoading === "reject"}
+                            type="button"
+                          >
+                            <XCircle className="h-4 w-4" />
+                            Rechazar
+                          </button>
+                        </div>
+                      )}
                   </div>
                 </div>
               </div>
+            )}
+            {rejectDialogOpen && (
+              <RejectExpenseDialog
+                loading={actionLoading === "reject"}
+                onCancel={() => setRejectDialogOpen(false)}
+                onConfirm={(reason) => runAction("reject", reason)}
+              />
             )}
 
             {/* Review breakdown */}

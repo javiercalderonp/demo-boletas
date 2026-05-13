@@ -28,9 +28,9 @@ import {
 } from "lucide-react";
 
 import { ChatPanel } from "@/components/chat-panel";
-import { AiCaseChatPanel } from "@/components/ai-case-chat-panel";
 import { Badge } from "@/components/badge";
 import { ProtectedPage } from "@/components/protected-page";
+import { RejectExpenseDialog } from "@/components/reject-expense-dialog";
 import { Shell } from "@/components/shell";
 import { useAuth } from "@/components/auth-provider";
 import { apiRequest } from "@/lib/api";
@@ -285,6 +285,10 @@ type TimelineEvent = {
   tone: "default" | "success" | "warning" | "error";
 };
 
+type RejectConfirm = {
+  ids: string[];
+} | null;
+
 function buildTimeline(item: CaseItem, expenses: Expense[]): TimelineEvent[] {
   const events: TimelineEvent[] = [];
   if (item.created_at) events.push({ date: item.created_at, label: "Rendición creada", icon: PlusCircle, tone: "default" });
@@ -323,6 +327,7 @@ export default function CaseDetailPage() {
   const [expenseActionLoading, setExpenseActionLoading] = useState("");
   const [bulkActionLoading, setBulkActionLoading] = useState(false);
   const [selectedExpenses, setSelectedExpenses] = useState<Set<string>>(new Set());
+  const [rejectConfirm, setRejectConfirm] = useState<RejectConfirm>(null);
   const [actionError, setActionError] = useState("");
   const [closeRendicionPopupError, setCloseRendicionPopupError] = useState("");
   const [expandedCenters, setExpandedCenters] = useState<Record<string, boolean>>({});
@@ -376,12 +381,17 @@ export default function CaseDetailPage() {
     }
   }
 
-  async function runExpenseAction(expenseId: string, action: "approve" | "reject" | "observe") {
+  async function runExpenseAction(expenseId: string, action: "approve" | "reject", reason?: string) {
     if (!token) return;
     setExpenseActionLoading(`${expenseId}:${action}`);
     setActionError("");
     try {
-      await apiRequest(`/expenses/${expenseId}/actions`, { method: "POST", body: { action }, token });
+      await apiRequest(`/expenses/${expenseId}/actions`, {
+        method: "POST",
+        body: { action, ...(reason ? { reason } : {}) },
+        token,
+      });
+      setRejectConfirm(null);
       fetchCase();
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "No se pudo actualizar el gasto.");
@@ -390,15 +400,20 @@ export default function CaseDetailPage() {
     }
   }
 
-  async function runBulkAction(action: "approve" | "reject") {
+  async function runBulkAction(action: "approve" | "reject", reason?: string) {
     if (!token || selectedExpenses.size === 0) return;
     setBulkActionLoading(true);
     setActionError("");
     try {
       for (const expenseId of Array.from(selectedExpenses)) {
-        await apiRequest(`/expenses/${expenseId}/actions`, { method: "POST", body: { action }, token });
+        await apiRequest(`/expenses/${expenseId}/actions`, {
+          method: "POST",
+          body: { action, ...(reason ? { reason } : {}) },
+          token,
+        });
       }
       setSelectedExpenses(new Set());
+      setRejectConfirm(null);
       fetchCase();
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "No se pudo completar la acción masiva.");
@@ -652,7 +667,7 @@ export default function CaseDetailPage() {
                   <button
                     className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-red-600 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-red-700 disabled:opacity-50 sm:py-1.5"
                     disabled={bulkActionLoading}
-                    onClick={() => runBulkAction("reject")}
+                    onClick={() => setRejectConfirm({ ids: Array.from(selectedExpenses) })}
                     type="button"
                   >
                     <XCircle className="h-4 w-4" />
@@ -667,6 +682,29 @@ export default function CaseDetailPage() {
                   </button>
                 </div>
               </div>
+            )}
+
+            {rejectConfirm && (
+              <RejectExpenseDialog
+                title={
+                  rejectConfirm.ids.length > 1
+                    ? "Rechazar gastos seleccionados"
+                    : "Rechazar gasto"
+                }
+                description={
+                  rejectConfirm.ids.length > 1
+                    ? `Selecciona el motivo del rechazo para ${rejectConfirm.ids.length} documentos. Se notificará a cada empleado por WhatsApp.`
+                    : "Selecciona el motivo del rechazo. Se notificará al empleado por WhatsApp."
+                }
+                loading={bulkActionLoading || Boolean(expenseActionLoading)}
+                onCancel={() => setRejectConfirm(null)}
+                onConfirm={(reason) => {
+                  if (rejectConfirm.ids.length === 1) {
+                    return runExpenseAction(rejectConfirm.ids[0], "reject", reason);
+                  }
+                  return runBulkAction("reject", reason);
+                }}
+              />
             )}
 
             <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-12">
@@ -831,7 +869,7 @@ export default function CaseDetailPage() {
                                   expenseActionLoading={expenseActionLoading}
                                   onToggleSelect={toggleExpenseSelection}
                                   onApprove={(id) => runExpenseAction(id, "approve")}
-                                  onReject={(id) => runExpenseAction(id, "reject")}
+                                  onReject={(id) => setRejectConfirm({ ids: [id] })}
                                 />
                               </div>
                               {/* Desktop table */}
@@ -951,7 +989,7 @@ export default function CaseDetailPage() {
                                                         <button
                                                           className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-xs font-semibold text-red-700 transition hover:bg-red-100 disabled:opacity-50"
                                                           disabled={!!expenseActionLoading}
-                                                          onClick={() => runExpenseAction(expense.expense_id, "reject")}
+                                                          onClick={() => setRejectConfirm({ ids: [expense.expense_id] })}
                                                           type="button"
                                                         >
                                                           <XCircle className="h-3 w-3" /> Rechazar
@@ -1023,7 +1061,7 @@ export default function CaseDetailPage() {
                             expenseActionLoading={expenseActionLoading}
                             onToggleSelect={toggleExpenseSelection}
                             onApprove={(id) => runExpenseAction(id, "approve")}
-                            onReject={(id) => runExpenseAction(id, "reject")}
+                            onReject={(id) => setRejectConfirm({ ids: [id] })}
                             showCostCenter
                           />
                         </div>
@@ -1137,7 +1175,7 @@ export default function CaseDetailPage() {
                                                 <button
                                                   className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-xs font-semibold text-red-700 transition hover:bg-red-100 disabled:opacity-50"
                                                   disabled={!!expenseActionLoading}
-                                                  onClick={() => runExpenseAction(expense.expense_id, "reject")}
+                                                  onClick={() => setRejectConfirm({ ids: [expense.expense_id] })}
                                                   type="button"
                                                 >
                                                   <XCircle className="h-3 w-3" /> Rechazar
@@ -1237,9 +1275,6 @@ export default function CaseDetailPage() {
                     })()}
                   </div>
                 )}
-
-                {/* AI Assistant */}
-                <AiCaseChatPanel caseId={caseId} />
 
                 {/* Chat */}
                 {(item?.employee_phone || item?.phone) && (

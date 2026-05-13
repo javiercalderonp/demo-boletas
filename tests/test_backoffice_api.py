@@ -3,7 +3,12 @@ from types import SimpleNamespace
 
 from fastapi import HTTPException
 
-from app.api.backoffice import _build_new_case_conversation_state, case_action, create_case
+from app.api.backoffice import (
+    _build_new_case_conversation_state,
+    case_action,
+    create_case,
+    delete_case as delete_case_endpoint,
+)
 from app.schemas.backoffice import CasePayload, StatusActionPayload
 
 SUPER_ADMIN_USER = {"role": "super_admin", "scope_type": "global", "active": True}
@@ -115,6 +120,27 @@ class FakeBackofficeActions:
         return "Tu liquidación quedó resuelta.\nConfirmamos que llegó tu depósito por $4.500."
 
 
+class FakeBackofficeDelete:
+    def __init__(self):
+        self.case_row = {
+            "case_id": "CASE-DEL",
+            "employee_phone": "+56911111111",
+            "context_label": "Viaje Santiago",
+        }
+
+    def get_case_detail(self, case_id, user=None):
+        if self.case_row.get("case_id") != case_id:
+            return None
+        return {"case": dict(self.case_row)}
+
+    def delete_case_with_related_data(self, case_id):
+        if self.case_row.get("case_id") != case_id:
+            return None
+        deleted = dict(self.case_row)
+        self.case_row = {}
+        return {"case": deleted, "deleted_expenses": 2}
+
+
 class FakeScheduler:
     def _resolve_case_timezone(self, expense_case):
         return "America/Santiago"
@@ -146,6 +172,28 @@ class FailingWhatsApp:
 
 
 class BackofficeApiTests(unittest.TestCase):
+    def test_delete_case_notifies_user_and_logs_message(self):
+        container = SimpleNamespace(
+            backoffice=FakeBackofficeDelete(),
+            whatsapp=FakeWhatsApp(),
+            sheets=FakeSheets({"context_json": {"message_log": []}}),
+            conversation=FakeConversationService(),
+        )
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(services=container)))
+
+        result = delete_case_endpoint("CASE-DEL", request, SUPER_ADMIN_USER)
+
+        expected_message = "Tu caso Viaje Santiago (CASE-DEL) ha sido eliminado por administración."
+        self.assertEqual(result["deleted_expenses"], 2)
+        self.assertEqual(result["delete_notification"], {"status": "sent"})
+        self.assertEqual(
+            container.whatsapp.sent,
+            [("+56911111111", expected_message, None)],
+        )
+        message_log = container.sheets.conversation["context_json"]["message_log"]
+        self.assertEqual(message_log[-1]["speaker"], "bot")
+        self.assertEqual(message_log[-1]["text"], expected_message)
+
     def test_resolve_settlement_closes_case_automatically(self):
         container = SimpleNamespace(
             backoffice=FakeBackofficeActions(),

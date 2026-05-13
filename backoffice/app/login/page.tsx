@@ -54,9 +54,9 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
+    <main className="flex min-h-dvh items-center justify-center bg-gray-50 px-4 py-8">
       <div className="w-full max-w-sm">
-        <div className="mb-8 text-center">
+        <div className="mb-6 text-center">
           <BrandLogo size="lg" href="/" priority className="mx-auto mb-4" />
           <p className="mt-2 text-sm text-gray-500">
             {mode === "login"

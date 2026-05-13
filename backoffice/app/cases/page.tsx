@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
@@ -229,6 +230,7 @@ function parseActiveCaseConflict(message: string): {
 }
 
 export default function CasesPage() {
+  const router = useRouter();
   const { token } = useAuth();
   const [items, setItems] = useState<CaseItem[] | null>(null);
   const [employees, setEmployees] = useState<Employee[] | null>(null);
@@ -1433,9 +1435,9 @@ export default function CasesPage() {
                         item.rendicion_status ||
                         item.status;
                       return (
-                        <div key={item.case_id} className="rounded-xl border border-gray-100 bg-gray-50/60 p-4">
+                        <div key={item.case_id} className="cursor-pointer rounded-xl border border-gray-100 bg-gray-50/60 p-4" onClick={() => router.push(`/cases/${item.case_id}`)}>
                           <div className="flex items-start gap-3">
-                            {renderCaseMenu(item)}
+                            <div onClick={(e) => e.stopPropagation()}>{renderCaseMenu(item)}</div>
                             <div className="min-w-0 flex-1">
                               <Badge tone={statusTone}>{statusLabel}</Badge>
                               <p className="mt-1.5 font-semibold leading-tight text-gray-900">
@@ -1490,15 +1492,9 @@ export default function CasesPage() {
                             </div>
                           </div>
 
-                          <div className="mt-3 flex flex-wrap items-center gap-2">
-                            <Link
-                              href={`/cases/${item.case_id}`}
-                              className="rounded-lg border border-gray-300 px-3 py-2 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
-                            >
-                              Ver caso
-                            </Link>
-                            {actionConfig &&
-                              renderActionButton({
+                          {actionConfig && (
+                            <div className="mt-3 flex flex-wrap items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                              {renderActionButton({
                                 icon: actionConfig.icon,
                                 label: actionConfig.label,
                                 loadingLabel: actionConfig.loadingLabel,
@@ -1506,7 +1502,8 @@ export default function CasesPage() {
                                 onClick: () => runAction(item.case_id, actionConfig.action),
                                 className: `${actionButtonClassName} ${actionConfig.className}`,
                               })}
-                          </div>
+                            </div>
+                          )}
                         </div>
                       );
                     })}

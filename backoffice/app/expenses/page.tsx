@@ -18,6 +18,7 @@ import {
 import { DataTable } from "@/components/data-table";
 import { Badge } from "@/components/badge";
 import { ProtectedPage } from "@/components/protected-page";
+import { RejectExpenseDialog } from "@/components/reject-expense-dialog";
 import { SectionCard } from "@/components/section-card";
 import { Shell } from "@/components/shell";
 import { TableSkeleton } from "@/components/table-skeleton";
@@ -85,23 +86,22 @@ type BatchConfirm = {
   ids: string[];
 } | null;
 
+type RejectConfirm = {
+  ids: string[];
+} | null;
+
 function renderSecondaryExpenseAction({
   label,
   tone,
   onClick,
 }: {
   label: string;
-  tone: "danger" | "accent";
+  tone: "danger";
   onClick: () => void;
 }) {
-  const className =
-    tone === "danger"
-      ? "text-red-600 hover:bg-red-50"
-      : "text-purple-600 hover:bg-purple-50";
-
   return (
     <button
-      className={`block w-full rounded-md px-3 py-2 text-left text-xs font-medium transition ${className}`}
+      className="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-red-600 transition hover:bg-red-50"
       onClick={(event) => {
         (event.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open");
         onClick();
@@ -121,6 +121,7 @@ export default function ExpensesPage() {
   const [quickFilter, setQuickFilter] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batchConfirm, setBatchConfirm] = useState<BatchConfirm>(null);
+  const [rejectConfirm, setRejectConfirm] = useState<RejectConfirm>(null);
   const [batchLoading, setBatchLoading] = useState(false);
 
   async function exportCsv() {
@@ -188,14 +189,11 @@ export default function ExpensesPage() {
     load();
   }
 
-  async function runAction(
-    expenseId: string,
-    action: "approve" | "reject" | "observe" | "request_review",
-  ) {
+  async function runAction(expenseId: string, action: "approve" | "reject", reason?: string) {
     if (!token) return;
     await apiRequest(`/expenses/${expenseId}/actions`, {
       method: "POST",
-      body: { action },
+      body: { action, ...(reason ? { reason } : {}) },
       token,
     });
     load();
@@ -222,7 +220,7 @@ export default function ExpensesPage() {
     }
   }
 
-  async function executeBatch(action: "approve" | "reject", ids: string[]) {
+  async function executeBatch(action: "approve" | "reject", ids: string[], reason?: string) {
     if (!token || ids.length === 0) return;
     setBatchLoading(true);
     try {
@@ -230,7 +228,7 @@ export default function ExpensesPage() {
         ids.map((id) =>
           apiRequest(`/expenses/${id}/actions`, {
             method: "POST",
-            body: { action },
+            body: { action, ...(reason ? { reason } : {}) },
             token,
           }),
         ),
@@ -238,6 +236,7 @@ export default function ExpensesPage() {
     } finally {
       setBatchLoading(false);
       setBatchConfirm(null);
+      setRejectConfirm(null);
       setSelected(new Set());
       load();
     }
@@ -445,9 +444,7 @@ export default function ExpensesPage() {
               </button>
               <button
                 className="rounded-lg bg-red-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-red-700"
-                onClick={() =>
-                  setBatchConfirm({ action: "reject", ids: [...selected] })
-                }
+                onClick={() => setRejectConfirm({ ids: [...selected] })}
                 type="button"
               >
                 Rechazar seleccionados
@@ -500,6 +497,26 @@ export default function ExpensesPage() {
           </div>
         )}
 
+        {rejectConfirm && (
+          <RejectExpenseDialog
+            title={
+              rejectConfirm.ids.length > 1
+                ? "Rechazar gastos seleccionados"
+                : "Rechazar gasto"
+            }
+            description={
+              rejectConfirm.ids.length > 1
+                ? `Selecciona el motivo del rechazo para ${rejectConfirm.ids.length} documentos. Se notificará a cada empleado por WhatsApp.`
+                : "Selecciona el motivo del rechazo. Se notificará al empleado por WhatsApp."
+            }
+            loading={batchLoading}
+            onCancel={() => setRejectConfirm(null)}
+            onConfirm={(reason) =>
+              executeBatch("reject", rejectConfirm.ids, reason)
+            }
+          />
+        )}
+
         <SectionCard title="Listado de gastos">
           {items === null ? (
             <TableSkeleton columns={5} rows={6} />
@@ -520,7 +537,6 @@ export default function ExpensesPage() {
                         expense.review_status !== "rejected";
                       const canApprove = expense.review_status !== "approved";
                       const canReject = expense.review_status !== "rejected";
-                      const canObserve = expense.review_status !== "observed";
                       const employeeName =
                         expense.employee?.name ||
                         expense.case?.employee?.name ||
@@ -597,7 +613,7 @@ export default function ExpensesPage() {
                                 Aprobar
                               </button>
                             )}
-                            {(canReject || canObserve) && (
+                            {canReject && (
                               <details className="relative">
                                 <summary className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-full transition hover:bg-gray-200 [&::-webkit-details-marker]:hidden">
                                   <Ellipsis className="h-4 w-4 text-gray-500" />
@@ -607,13 +623,8 @@ export default function ExpensesPage() {
                                     renderSecondaryExpenseAction({
                                       label: "Rechazar",
                                       tone: "danger",
-                                      onClick: () => runAction(expense.expense_id, "reject"),
-                                    })}
-                                  {canObserve &&
-                                    renderSecondaryExpenseAction({
-                                      label: "Observar",
-                                      tone: "accent",
-                                      onClick: () => runAction(expense.expense_id, "observe"),
+                                      onClick: () =>
+                                        setRejectConfirm({ ids: [expense.expense_id] }),
                                     })}
                                 </div>
                               </details>
@@ -662,7 +673,6 @@ export default function ExpensesPage() {
                       expense.review_status !== "rejected";
                     const canApprove = expense.review_status !== "approved";
                     const canReject = expense.review_status !== "rejected";
-                    const canObserve = expense.review_status !== "observed";
                     return [
                       <button
                         key="check"
@@ -709,7 +719,7 @@ export default function ExpensesPage() {
                               Aprobar
                             </button>
                           )}
-                          {(canReject || canObserve) && (
+                          {canReject && (
                             <details className="relative">
                               <summary className="flex h-8 w-8 cursor-pointer list-none items-center justify-center rounded-md border border-gray-300 bg-white text-gray-600 transition hover:bg-gray-50 [&::-webkit-details-marker]:hidden">
                                 <Ellipsis className="h-4 w-4" />
@@ -719,13 +729,8 @@ export default function ExpensesPage() {
                                   renderSecondaryExpenseAction({
                                     label: "Rechazar",
                                     tone: "danger",
-                                    onClick: () => runAction(expense.expense_id, "reject"),
-                                  })}
-                                {canObserve &&
-                                  renderSecondaryExpenseAction({
-                                    label: "Observar",
-                                    tone: "accent",
-                                    onClick: () => runAction(expense.expense_id, "observe"),
+                                    onClick: () =>
+                                      setRejectConfirm({ ids: [expense.expense_id] }),
                                   })}
                               </div>
                             </details>
