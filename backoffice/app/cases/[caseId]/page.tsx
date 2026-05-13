@@ -129,6 +129,121 @@ function ScoreBadge({ score }: { score?: number }) {
   );
 }
 
+function MobileExpenseList({
+  expenses,
+  selectedExpenses,
+  expenseActionLoading,
+  onToggleSelect,
+  onApprove,
+  onReject,
+  showCostCenter,
+}: {
+  expenses: Expense[];
+  selectedExpenses: Set<string>;
+  expenseActionLoading: string;
+  onToggleSelect: (id: string) => void;
+  onApprove: (id: string) => void;
+  onReject: (id: string) => void;
+  showCostCenter?: boolean;
+}) {
+  return (
+    <div className="divide-y divide-gray-100">
+      {expenses.map((expense) => {
+        const isApproved = expense.review_status === "approved";
+        const isRejected = expense.review_status === "rejected";
+        const isPending = !isApproved && !isRejected;
+        const docType =
+          expense.document_type === "invoice"
+            ? "Factura"
+            : expense.document_type === "professional_fee_receipt"
+              ? "Honorarios"
+              : "Boleta";
+        return (
+          <div
+            key={expense.expense_id}
+            className={`px-4 py-3.5 ${selectedExpenses.has(expense.expense_id) ? "bg-primary-50/40" : ""}`}
+          >
+            <div className="flex items-start gap-3">
+              {isPending && (
+                <input
+                  type="checkbox"
+                  checked={selectedExpenses.has(expense.expense_id)}
+                  onChange={() => onToggleSelect(expense.expense_id)}
+                  className="mt-1.5 h-5 w-5 flex-shrink-0 rounded border-gray-300 accent-primary-600"
+                />
+              )}
+              <Link href={`/expenses/${expense.expense_id}`} className="flex-shrink-0">
+                {expense.image_url ? (
+                  <img src={expense.image_url} alt="" className="h-12 w-12 rounded-xl border border-gray-200 object-cover" loading="lazy" />
+                ) : (
+                  <span className="flex h-12 w-12 items-center justify-center rounded-xl border border-gray-200 bg-gray-50 text-gray-400">
+                    <FileText className="h-5 w-5" />
+                  </span>
+                )}
+              </Link>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-start justify-between gap-2">
+                  <Link href={`/expenses/${expense.expense_id}`} className="min-w-0 truncate text-sm font-semibold text-gray-900 hover:text-primary-700">
+                    {expense.merchant || "Documento sin identificar"}
+                  </Link>
+                  <p className="flex-shrink-0 text-sm font-bold text-gray-900">
+                    {expense.total_clp ? formatCLP(expense.total_clp) : `${expense.currency || ""} ${expense.total || "-"}`}
+                  </p>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  {isApproved ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">
+                      <CheckCircle className="h-3 w-3" /> Aprobado
+                    </span>
+                  ) : isRejected ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
+                      <XCircle className="h-3 w-3" /> Rechazado
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
+                      <Clock className="h-3 w-3" /> Pendiente
+                    </span>
+                  )}
+                  <ScoreBadge score={expense.review_score} />
+                  <span className="text-xs text-gray-400">{formatDateShort(expense.date)}</span>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <span className="inline-flex rounded-md border border-primary-200 bg-primary-50 px-1.5 py-0.5 text-[10px] font-medium text-primary-700">
+                    {docType}
+                  </span>
+                  {showCostCenter && expense.cost_center && (
+                    <span className="text-xs text-gray-400">{expense.cost_center}</span>
+                  )}
+                </div>
+              </div>
+            </div>
+            {isPending && (
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <button
+                  className="flex items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 py-3 text-sm font-semibold text-emerald-700 transition active:bg-emerald-100 disabled:opacity-50"
+                  disabled={!!expenseActionLoading}
+                  onClick={() => onApprove(expense.expense_id)}
+                  type="button"
+                >
+                  <CheckCircle className="h-4 w-4" /> Aprobar
+                </button>
+                <button
+                  className="flex items-center justify-center gap-1.5 rounded-xl border border-red-200 bg-red-50 py-3 text-sm font-semibold text-red-700 transition active:bg-red-100 disabled:opacity-50"
+                  disabled={!!expenseActionLoading}
+                  onClick={() => onReject(expense.expense_id)}
+                  type="button"
+                >
+                  <XCircle className="h-4 w-4" /> Rechazar
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function StatCard({
   label,
   value,
@@ -153,7 +268,7 @@ function StatCard({
       </div>
       <div className="min-w-0 w-full">
         <p className="text-[11px] font-medium leading-tight text-gray-500 sm:text-xs">{label}</p>
-        <p className={`max-w-full whitespace-nowrap text-[clamp(0.875rem,3.8vw,1.25rem)] font-bold leading-tight tabular-nums sm:text-xl ${valueColor ?? "text-gray-900"}`}>
+        <p className={`max-w-full break-words text-[clamp(0.75rem,3.2vw,1.25rem)] font-bold leading-tight tabular-nums sm:whitespace-nowrap sm:text-xl ${valueColor ?? "text-gray-900"}`}>
           {value}
         </p>
         {sub && <p className="mt-0.5 text-[11px] leading-tight text-gray-400 sm:text-xs">{sub}</p>}
@@ -485,28 +600,28 @@ export default function CaseDetailPage() {
 
             {/* ── Actions ── */}
             {(rendStatus === "open" || rendStatus === "pending_user_confirmation" || rendStatus === "approved") && (
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
                 {rendStatus === "open" && (
-                  <button className="inline-flex items-center gap-1.5 rounded-xl bg-primary-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-primary-700 disabled:opacity-50" onClick={() => runAction("request_user_confirmation")} disabled={actionLoading === "request_user_confirmation"} type="button">
+                  <button className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-primary-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-primary-700 disabled:opacity-50 sm:w-auto sm:py-2.5" onClick={() => runAction("request_user_confirmation")} disabled={actionLoading === "request_user_confirmation"} type="button">
                     <Send className="h-4 w-4" />
                     {actionLoading === "request_user_confirmation" ? "Enviando..." : item.closure_method === "simple" ? "Solicitar confirmación al usuario" : "Solicitar firma al usuario"}
                   </button>
                 )}
                 {rendStatus === "pending_user_confirmation" && (
-                  <span className="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700">
-                    <FileText className="h-4 w-4" />
+                  <span className="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-700 sm:py-2.5">
+                    <FileText className="h-4 w-4 flex-shrink-0" />
                     {item.closure_method === "simple" ? "Esperando confirmación del usuario por WhatsApp" : "Esperando firma del usuario via DocuSign"}
                   </span>
                 )}
                 {rendStatus === "approved" && (
                   <>
                     {settlementStatus === "settlement_pending" && (
-                      <button className="inline-flex items-center gap-1.5 rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-700 disabled:opacity-50" onClick={() => runAction("resolve_settlement")} disabled={actionLoading === "resolve_settlement"} type="button">
+                      <button className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-sky-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-700 disabled:opacity-50 sm:w-auto sm:py-2.5" onClick={() => runAction("resolve_settlement")} disabled={actionLoading === "resolve_settlement"} type="button">
                         <ClipboardCheck className="h-4 w-4" />
                         {actionLoading === "resolve_settlement" ? "Registrando..." : "Marcar liquidación resuelta"}
                       </button>
                     )}
-                    <button className="inline-flex items-center gap-1.5 rounded-xl border border-gray-300 px-4 py-2.5 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 disabled:opacity-50" onClick={() => runAction("close_rendicion")} disabled={actionLoading === "close_rendicion"} type="button">
+                    <button className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-gray-300 px-4 py-3 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 disabled:opacity-50 sm:w-auto sm:py-2.5" onClick={() => runAction("close_rendicion")} disabled={actionLoading === "close_rendicion"} type="button">
                       <Lock className="h-4 w-4" />
                       {actionLoading === "close_rendicion" ? "Cerrando..." : "Cerrar rendición"}
                     </button>
@@ -520,31 +635,31 @@ export default function CaseDetailPage() {
 
             {/* ── Bulk action bar ── */}
             {selectedExpenses.size > 0 && (
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary-200 bg-primary-50 px-4 py-3">
+              <div className="flex flex-col gap-3 rounded-xl border border-primary-200 bg-primary-50 px-4 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
                 <span className="text-sm font-medium text-primary-800">
                   {selectedExpenses.size} gasto{selectedExpenses.size > 1 ? "s" : ""} seleccionado{selectedExpenses.size > 1 ? "s" : ""}
                 </span>
-                <div className="flex items-center gap-2">
+                <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-2">
                   <button
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-50"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-50 sm:py-1.5"
                     disabled={bulkActionLoading}
                     onClick={() => runBulkAction("approve")}
                     type="button"
                   >
                     <CheckCircle className="h-4 w-4" />
-                    {bulkActionLoading ? "Procesando..." : "Aprobar seleccionados"}
+                    {bulkActionLoading ? "Procesando..." : "Aprobar"}
                   </button>
                   <button
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-red-700 disabled:opacity-50"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-red-600 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-red-700 disabled:opacity-50 sm:py-1.5"
                     disabled={bulkActionLoading}
                     onClick={() => runBulkAction("reject")}
                     type="button"
                   >
                     <XCircle className="h-4 w-4" />
-                    {bulkActionLoading ? "Procesando..." : "Rechazar seleccionados"}
+                    {bulkActionLoading ? "Procesando..." : "Rechazar"}
                   </button>
                   <button
-                    className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
+                    className="col-span-2 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 sm:col-span-1 sm:py-1.5"
                     onClick={() => setSelectedExpenses(new Set())}
                     type="button"
                   >
@@ -637,7 +752,7 @@ export default function CaseDetailPage() {
                         <div key={row.center} className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
                           {/* CC header */}
                           <div className="px-5 py-4">
-                            <div className="flex flex-wrap items-start justify-between gap-4">
+                            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-4">
                               <div className="flex items-center gap-3">
                                 <div className={`flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full ${colors.icon}`}>
                                   <CcIcon className={`h-5 w-5 ${colors.iconColor}`} />
@@ -647,17 +762,17 @@ export default function CaseDetailPage() {
                                   <p className="text-xs text-gray-500">{row.count} gasto{row.count === 1 ? "" : "s"}</p>
                                 </div>
                               </div>
-                              <div className="flex flex-wrap items-center gap-6">
-                                <div className="text-right">
+                              <div className="grid grid-cols-2 gap-x-4 gap-y-2 sm:flex sm:flex-wrap sm:items-center sm:gap-6">
+                                <div>
                                   <p className="text-xs text-gray-500">Presupuesto</p>
                                   <p className="text-sm font-semibold text-gray-900">{row.hasAssigned ? formatCLP(row.assignedClp) : "-"}</p>
                                 </div>
-                                <div className="text-right">
+                                <div>
                                   <p className="text-xs text-gray-500">Gastado</p>
                                   <p className="text-sm font-semibold text-gray-900">{formatCLP(row.renderedClp)}</p>
                                 </div>
                                 {row.diff != null && (
-                                  <div className="text-right">
+                                  <div>
                                     <p className="text-xs text-gray-500">Diferencia</p>
                                     <p className={`text-sm font-bold ${row.isOver ? "text-red-600" : "text-emerald-600"}`}>
                                       {row.diff >= 0 ? "+" : ""}{formatCLP(row.diff)}
@@ -665,7 +780,7 @@ export default function CaseDetailPage() {
                                   </div>
                                 )}
                                 {row.pct != null && (
-                                  <span className={`rounded-full px-3 py-1 text-xs font-bold ${row.isOver ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"}`}>
+                                  <span className={`col-span-2 inline-flex w-fit rounded-full px-3 py-1 text-xs font-bold sm:col-span-1 ${row.isOver ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"}`}>
                                     {row.pct}% del presupuesto
                                   </span>
                                 )}
@@ -705,10 +820,22 @@ export default function CaseDetailPage() {
                             </div>
                           </div>
 
-                          {/* Expense table */}
+                          {/* Expense list */}
                           {isExpanded && row.expenses.length > 0 && (
                             <div className="border-t border-gray-100">
-                              <div className="overflow-x-auto">
+                              {/* Mobile card list */}
+                              <div className="sm:hidden">
+                                <MobileExpenseList
+                                  expenses={row.expenses}
+                                  selectedExpenses={selectedExpenses}
+                                  expenseActionLoading={expenseActionLoading}
+                                  onToggleSelect={toggleExpenseSelection}
+                                  onApprove={(id) => runExpenseAction(id, "approve")}
+                                  onReject={(id) => runExpenseAction(id, "reject")}
+                                />
+                              </div>
+                              {/* Desktop table */}
+                              <div className="hidden overflow-x-auto sm:block">
                                 {(() => {
                                     const pendingInCenter = row.expenses.filter((e) => e.review_status !== "approved" && e.review_status !== "rejected");
                                     const allPendingSelected = pendingInCenter.length > 0 && pendingInCenter.every((e) => selectedExpenses.has(e.expense_id));
@@ -887,135 +1014,150 @@ export default function CaseDetailPage() {
                     {expenses.length === 0 ? (
                       <p className="px-5 py-6 text-sm text-gray-500">Sin gastos registrados.</p>
                     ) : (
-                      <div className="overflow-x-auto">
-                        {(() => {
-                          const pendingAll = expenses.filter((e) => e.review_status !== "approved" && e.review_status !== "rejected");
-                          const allPendingSelected = pendingAll.length > 0 && pendingAll.every((e) => selectedExpenses.has(e.expense_id));
-                          return (
-                            <table className="w-full min-w-[680px]">
-                              <thead>
-                                <tr className="border-b border-gray-100 text-left text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-400">
-                                  <th className="w-10 px-3 py-3">
-                                    <input
-                                      type="checkbox"
-                                      checked={allPendingSelected}
-                                      disabled={pendingAll.length === 0}
-                                      onChange={() => {
-                                        setSelectedExpenses((prev) => {
-                                          const next = new Set(prev);
-                                          if (allPendingSelected) pendingAll.forEach((e) => next.delete(e.expense_id));
-                                          else pendingAll.forEach((e) => next.add(e.expense_id));
-                                          return next;
-                                        });
-                                      }}
-                                      className="h-4 w-4 rounded border-gray-300 accent-primary-600 disabled:cursor-not-allowed disabled:opacity-40"
-                                    />
-                                  </th>
-                                  <th className="px-5 py-3">Gasto</th>
-                                  <th className="px-5 py-3">Fecha</th>
-                                  <th className="px-5 py-3">Centro de costo</th>
-                                  <th className="px-5 py-3">Monto</th>
-                                  <th className="px-5 py-3">Estado</th>
-                                  <th className="px-5 py-3 text-center">Score</th>
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-gray-50">
-                                {expenses.map((expense) => {
-                                  const isApproved = expense.review_status === "approved";
-                                  const isRejected = expense.review_status === "rejected";
-                                  const isPending = !isApproved && !isRejected;
-                                  return (
-                                    <tr key={expense.expense_id} className={`hover:bg-slate-50/60 ${selectedExpenses.has(expense.expense_id) ? "bg-primary-50/40" : ""}`}>
-                                      <td className="px-3 py-3.5 align-top">
-                                        {isPending && (
-                                          <input
-                                            type="checkbox"
-                                            checked={selectedExpenses.has(expense.expense_id)}
-                                            onChange={() => toggleExpenseSelection(expense.expense_id)}
-                                            className="h-4 w-4 rounded border-gray-300 accent-primary-600"
-                                          />
-                                        )}
-                                      </td>
-                                      <td className="px-5 py-3.5 align-top">
-                                        <div className="flex items-start gap-3">
-                                          <Link href={`/expenses/${expense.expense_id}`} className="mt-0.5 flex-shrink-0">
-                                            {expense.image_url ? (
-                                              <img src={expense.image_url} alt="" className="h-9 w-9 rounded-lg border border-gray-200 object-cover" loading="lazy" />
+                      <>
+                        {/* Mobile card list */}
+                        <div className="sm:hidden">
+                          <MobileExpenseList
+                            expenses={expenses}
+                            selectedExpenses={selectedExpenses}
+                            expenseActionLoading={expenseActionLoading}
+                            onToggleSelect={toggleExpenseSelection}
+                            onApprove={(id) => runExpenseAction(id, "approve")}
+                            onReject={(id) => runExpenseAction(id, "reject")}
+                            showCostCenter
+                          />
+                        </div>
+                        {/* Desktop table */}
+                        <div className="hidden overflow-x-auto sm:block">
+                          {(() => {
+                            const pendingAll = expenses.filter((e) => e.review_status !== "approved" && e.review_status !== "rejected");
+                            const allPendingSelected = pendingAll.length > 0 && pendingAll.every((e) => selectedExpenses.has(e.expense_id));
+                            return (
+                              <table className="w-full min-w-[680px]">
+                                <thead>
+                                  <tr className="border-b border-gray-100 text-left text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-400">
+                                    <th className="w-10 px-3 py-3">
+                                      <input
+                                        type="checkbox"
+                                        checked={allPendingSelected}
+                                        disabled={pendingAll.length === 0}
+                                        onChange={() => {
+                                          setSelectedExpenses((prev) => {
+                                            const next = new Set(prev);
+                                            if (allPendingSelected) pendingAll.forEach((e) => next.delete(e.expense_id));
+                                            else pendingAll.forEach((e) => next.add(e.expense_id));
+                                            return next;
+                                          });
+                                        }}
+                                        className="h-4 w-4 rounded border-gray-300 accent-primary-600 disabled:cursor-not-allowed disabled:opacity-40"
+                                      />
+                                    </th>
+                                    <th className="px-5 py-3">Gasto</th>
+                                    <th className="px-5 py-3">Fecha</th>
+                                    <th className="px-5 py-3">Centro de costo</th>
+                                    <th className="px-5 py-3">Monto</th>
+                                    <th className="px-5 py-3">Estado</th>
+                                    <th className="px-5 py-3 text-center">Score</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-50">
+                                  {expenses.map((expense) => {
+                                    const isApproved = expense.review_status === "approved";
+                                    const isRejected = expense.review_status === "rejected";
+                                    const isPending = !isApproved && !isRejected;
+                                    return (
+                                      <tr key={expense.expense_id} className={`hover:bg-slate-50/60 ${selectedExpenses.has(expense.expense_id) ? "bg-primary-50/40" : ""}`}>
+                                        <td className="px-3 py-3.5 align-top">
+                                          {isPending && (
+                                            <input
+                                              type="checkbox"
+                                              checked={selectedExpenses.has(expense.expense_id)}
+                                              onChange={() => toggleExpenseSelection(expense.expense_id)}
+                                              className="h-4 w-4 rounded border-gray-300 accent-primary-600"
+                                            />
+                                          )}
+                                        </td>
+                                        <td className="px-5 py-3.5 align-top">
+                                          <div className="flex items-start gap-3">
+                                            <Link href={`/expenses/${expense.expense_id}`} className="mt-0.5 flex-shrink-0">
+                                              {expense.image_url ? (
+                                                <img src={expense.image_url} alt="" className="h-9 w-9 rounded-lg border border-gray-200 object-cover" loading="lazy" />
+                                              ) : (
+                                                <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-gray-50 text-gray-400">
+                                                  <FileText className="h-4 w-4" />
+                                                </span>
+                                              )}
+                                            </Link>
+                                            <div>
+                                              <Link className="block text-sm font-semibold text-gray-900 hover:text-primary-700" href={`/expenses/${expense.expense_id}`}>
+                                                {expense.merchant || "Documento sin identificar"}
+                                              </Link>
+                                              {expense.category && <p className="text-xs text-gray-400">{expense.category}</p>}
+                                            </div>
+                                          </div>
+                                        </td>
+                                        <td className="px-5 py-3.5 align-top text-xs text-gray-500">{formatDateShort(expense.date)}</td>
+                                        <td className="px-5 py-3.5 align-top text-sm text-gray-500">{expense.cost_center || "-"}</td>
+                                        <td className="px-5 py-3.5 align-top">
+                                          <p className="text-sm font-semibold text-gray-900">
+                                            {expense.total_clp ? formatCLP(expense.total_clp) : `${expense.currency || ""} ${expense.total || "-"}`}
+                                          </p>
+                                          <p className="text-[10px] text-gray-400">Líquido</p>
+                                        </td>
+                                        <td className="px-5 py-3.5 align-top">
+                                          <div>
+                                            {isApproved ? (
+                                              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">
+                                                <CheckCircle className="h-3 w-3" /> Aprobado
+                                              </span>
+                                            ) : isRejected ? (
+                                              <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
+                                                <XCircle className="h-3 w-3" /> Rechazado
+                                              </span>
                                             ) : (
-                                              <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-gray-50 text-gray-400">
-                                                <FileText className="h-4 w-4" />
+                                              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
+                                                <Clock className="h-3 w-3" /> Pendiente
                                               </span>
                                             )}
-                                          </Link>
-                                          <div>
-                                            <Link className="block text-sm font-semibold text-gray-900 hover:text-primary-700" href={`/expenses/${expense.expense_id}`}>
-                                              {expense.merchant || "Documento sin identificar"}
-                                            </Link>
-                                            {expense.category && <p className="text-xs text-gray-400">{expense.category}</p>}
                                           </div>
-                                        </div>
-                                      </td>
-                                      <td className="px-5 py-3.5 align-top text-xs text-gray-500">{formatDateShort(expense.date)}</td>
-                                      <td className="px-5 py-3.5 align-top text-sm text-gray-500">{expense.cost_center || "-"}</td>
-                                      <td className="px-5 py-3.5 align-top">
-                                        <p className="text-sm font-semibold text-gray-900">
-                                          {expense.total_clp ? formatCLP(expense.total_clp) : `${expense.currency || ""} ${expense.total || "-"}`}
-                                        </p>
-                                        <p className="text-[10px] text-gray-400">Líquido</p>
-                                      </td>
-                                      <td className="px-5 py-3.5 align-top">
-                                        <div>
-                                          {isApproved ? (
-                                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">
-                                              <CheckCircle className="h-3 w-3" /> Aprobado
-                                            </span>
-                                          ) : isRejected ? (
-                                            <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
-                                              <XCircle className="h-3 w-3" /> Rechazado
-                                            </span>
-                                          ) : (
-                                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
-                                              <Clock className="h-3 w-3" /> Pendiente
-                                            </span>
-                                          )}
-                                        </div>
-                                        <div className="mt-2 flex items-start gap-1">
-                                          <Link href={`/expenses/${expense.expense_id}`} className="rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700">
-                                            <Eye className="h-4 w-4" />
-                                          </Link>
-                                          {isPending && (
-                                            <div className="flex flex-col gap-1">
-                                              <button
-                                                className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50"
-                                                disabled={!!expenseActionLoading}
-                                                onClick={() => runExpenseAction(expense.expense_id, "approve")}
-                                                type="button"
-                                              >
-                                                <CheckCircle className="h-3 w-3" /> Aprobar
-                                              </button>
-                                              <button
-                                                className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-xs font-semibold text-red-700 transition hover:bg-red-100 disabled:opacity-50"
-                                                disabled={!!expenseActionLoading}
-                                                onClick={() => runExpenseAction(expense.expense_id, "reject")}
-                                                type="button"
-                                              >
-                                                <XCircle className="h-3 w-3" /> Rechazar
-                                              </button>
-                                            </div>
-                                          )}
-                                        </div>
-                                      </td>
-                                      <td className="px-5 py-3.5 text-center align-top">
-                                        <ScoreBadge score={expense.review_score} />
-                                      </td>
-                                    </tr>
-                                  );
-                                })}
-                              </tbody>
-                            </table>
-                          );
-                        })()}
-                      </div>
+                                          <div className="mt-2 flex items-start gap-1">
+                                            <Link href={`/expenses/${expense.expense_id}`} className="rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700">
+                                              <Eye className="h-4 w-4" />
+                                            </Link>
+                                            {isPending && (
+                                              <div className="flex flex-col gap-1">
+                                                <button
+                                                  className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50"
+                                                  disabled={!!expenseActionLoading}
+                                                  onClick={() => runExpenseAction(expense.expense_id, "approve")}
+                                                  type="button"
+                                                >
+                                                  <CheckCircle className="h-3 w-3" /> Aprobar
+                                                </button>
+                                                <button
+                                                  className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-xs font-semibold text-red-700 transition hover:bg-red-100 disabled:opacity-50"
+                                                  disabled={!!expenseActionLoading}
+                                                  onClick={() => runExpenseAction(expense.expense_id, "reject")}
+                                                  type="button"
+                                                >
+                                                  <XCircle className="h-3 w-3" /> Rechazar
+                                                </button>
+                                              </div>
+                                            )}
+                                          </div>
+                                        </td>
+                                        <td className="px-5 py-3.5 text-center align-top">
+                                          <ScoreBadge score={expense.review_score} />
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            );
+                          })()}
+                        </div>
+                      </>
                     )}
                     {fondos > 0 && (
                       <div className="border-t border-gray-100 px-5 py-3 text-xs text-gray-400">
