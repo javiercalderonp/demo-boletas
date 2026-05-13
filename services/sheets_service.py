@@ -144,6 +144,9 @@ _BACKOFFICE_USER_HEADERS = [
     "email",
     "password_hash",
     "role",
+    "scope_type",
+    "company_ids",
+    "company_id",
     "active",
     "created_at",
     "updated_at",
@@ -1312,6 +1315,9 @@ class SheetsService:
             if row_email == target:
                 user = dict(row)
                 user["active"] = truthy(user.get("active", True))
+                user["scope_type"] = str(user.get("scope_type", "") or "").strip()
+                user["company_ids"] = user.get("company_ids", "")
+                user["company_id"] = str(user.get("company_id", "") or "").strip()
                 return user
         return None
 
@@ -1320,6 +1326,9 @@ class SheetsService:
         for row in self._get_records(SHEET_NAMES["backoffice_users"]):
             item = dict(row)
             item["active"] = truthy(item.get("active", True))
+            item["scope_type"] = str(item.get("scope_type", "") or "").strip()
+            item["company_ids"] = item.get("company_ids", "")
+            item["company_id"] = str(item.get("company_id", "") or "").strip()
             users.append(item)
         users.sort(key=lambda item: str(item.get("name", "") or "").lower())
         return users
@@ -1331,6 +1340,9 @@ class SheetsService:
         merged.update(payload)
         merged["id"] = str(user_id or merged.get("id", "")).strip()
         merged["email"] = str(merged.get("email", "") or "").strip().lower()
+        merged["scope_type"] = str(merged.get("scope_type", "") or "").strip()
+        merged["company_ids"] = merged.get("company_ids", "")
+        merged["company_id"] = str(merged.get("company_id", "") or "").strip()
         merged["active"] = bool(merged.get("active", True))
         merged["created_at"] = str(merged.get("created_at", "") or "").strip() or now
         merged["updated_at"] = str(payload.get("updated_at", "") or "").strip() or now

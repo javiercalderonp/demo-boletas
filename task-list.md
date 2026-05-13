@@ -415,6 +415,12 @@
   - Definir comportamiento para registros sin `company_id`: bloquear, ocultar o dejar solo para admin
   - Agregar tests de autorización para `GET /api/cases`, `GET /api/expenses`, `GET /api/employees`, `GET /api/dashboard`, exports y `POST /api/cases`
 
+- [ ] **Eliminar gastos asociados al eliminar una rendición**
+  - Cuando se elimine un caso/rendición, eliminar también todos los gastos/documentos asociados al `case_id`
+  - Asegurar que no queden gastos huérfanos visibles en listados, dashboard, exports ni conversaciones del backoffice
+  - Agregar confirmación clara en UI indicando cuántos gastos/documentos serán eliminados junto con la rendición
+  - Cubrir con tests de servicio/API para validar el borrado en cascada
+
 ### Alta prioridad — Mejoras flujo WhatsApp
 
 - [ ] **Notificaciones por WhatsApp ligadas al documento revisado**
@@ -723,6 +729,16 @@
 - [ ] **PDF consolidado con balance final**
   - Reporte PDF descargable desde el detalle de rendición
   - Incluye balance final (fondos entregados vs rendido) y listado de documentos
+
+- [ ] **Quitar ayudante IA de la vista de rendición**
+  - Remover el panel/entrada del ayudante IA en el detalle del caso/rendición
+  - Mantener visibles las secciones operativas: balance, acciones, documentos, actividad y conversación
+  - Revisar que el endpoint de chat de caso no quede expuesto desde esa vista si ya no se usa
+
+- [ ] **Mostrar conversación completa en el chat del backoffice**
+  - En el chat visible desde backoffice, cargar y renderizar todo el historial disponible de la conversación
+  - Evitar truncar a los últimos mensajes en la vista de detalle de rendición y en `/conversations/[phone]`
+  - Mantener scroll automático al último mensaje sin impedir revisar mensajes antiguos
 
 - [ ] **Historial de auditoría**
   - Log persistente de quién aprobó/rechazó qué y cuándo

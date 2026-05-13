@@ -6,6 +6,8 @@ from fastapi import HTTPException
 from app.api.backoffice import _build_new_case_conversation_state, case_action, create_case
 from app.schemas.backoffice import CasePayload, StatusActionPayload
 
+SUPER_ADMIN_USER = {"role": "super_admin", "scope_type": "global", "active": True}
+
 
 class FakeConversationService:
     def default_context(self):
@@ -89,6 +91,11 @@ class FakeBackofficeActions:
         self.calls.append(("ensure_case_ready_for_settlement_resolution", case_id))
         return None
 
+    def get_case_detail(self, case_id, user=None):
+        if self.case_row.get("case_id") != case_id:
+            return None
+        return {"case": dict(self.case_row)}
+
     def sync_case_settlement(self, case_id, *, mark_settled=False, resolved_at=None):
         self.calls.append(("sync_case_settlement", case_id, mark_settled, bool(resolved_at)))
         self.case_row = {
@@ -131,6 +138,13 @@ class FakeWhatsApp:
         return {"sid": "SM123"}
 
 
+class FailingWhatsApp:
+    provider = "meta"
+
+    def send_outbound_text(self, phone, message, reply_to_message_id=None):
+        raise RuntimeError("Meta API error HTTP 400: outside customer care window")
+
+
 class BackofficeApiTests(unittest.TestCase):
     def test_resolve_settlement_closes_case_automatically(self):
         container = SimpleNamespace(
@@ -143,7 +157,7 @@ class BackofficeApiTests(unittest.TestCase):
             "CASE-1",
             StatusActionPayload(action="resolve_settlement"),
             request,
-            {},
+            SUPER_ADMIN_USER,
         )
 
         self.assertEqual(result["settlement_status"], "settled")
@@ -184,7 +198,7 @@ class BackofficeApiTests(unittest.TestCase):
             create_case(
                 CasePayload(employee_phone="+56911111111", company_id="COMP-1", case_id="CASE-NEW"),
                 request,
-                {},
+                SUPER_ADMIN_USER,
             )
 
         self.assertEqual(ctx.exception.status_code, 409)
@@ -254,7 +268,7 @@ class BackofficeApiTests(unittest.TestCase):
         result = create_case(
             CasePayload(employee_phone="+56911111111", company_id="COMP-1", case_id="CASE-NEW"),
             request,
-            {},
+            SUPER_ADMIN_USER,
         )
 
         self.assertEqual(result["case_id"], "CASE-NEW")
@@ -272,6 +286,41 @@ class BackofficeApiTests(unittest.TestCase):
         self.assertEqual(len(context["message_log"]), 2)
         self.assertEqual(context["message_log"][0]["id"], "old-msg")
         self.assertEqual(context["message_log"][1]["text"], "Hola, ya puedes enviar tu boleta.")
+
+    def test_create_case_keeps_conversation_ready_when_intro_message_fails(self):
+        conversation = {
+            "state": "PROCESSING",
+            "current_step": "confirm",
+            "context_json": {
+                "message_log": [{"id": "old-msg", "speaker": "person", "type": "media"}],
+                "pending_receipts": [{"media_url": "https://example.com/old.jpg"}],
+                "active_receipt_message_id": "wamid.old",
+            },
+        }
+        container = SimpleNamespace(
+            backoffice=FakeBackoffice(),
+            scheduler=FakeScheduler(),
+            whatsapp=FailingWhatsApp(),
+            sheets=FakeSheets(conversation),
+            conversation=FakeConversationService(),
+        )
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(services=container)))
+
+        result = create_case(
+            CasePayload(employee_phone="+56911111111", company_id="COMP-1", case_id="CASE-NEW"),
+            request,
+            SUPER_ADMIN_USER,
+        )
+
+        self.assertEqual(result["case_id"], "CASE-NEW")
+        self.assertEqual(result["intro_notification"]["status"], "send_failed")
+        updated = container.sheets.conversation
+        context = updated["context_json"]
+        self.assertEqual(updated["state"], "WAIT_RECEIPT")
+        self.assertEqual(updated["current_step"], "")
+        self.assertNotIn("pending_receipts", context)
+        self.assertNotIn("active_receipt_message_id", context)
+        self.assertEqual(context["message_log"], [{"id": "old-msg", "speaker": "person", "type": "media"}])
 
 
 if __name__ == "__main__":

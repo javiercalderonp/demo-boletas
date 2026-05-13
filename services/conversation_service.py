@@ -657,9 +657,15 @@ class ConversationService:
         if not normalized:
             return False
         signals = (
+            "centro de costo",
+            "centros de costo",
+            "centro costo",
+            "centros costo",
+            "mis centros",
             "resumen",
             "saldo",
             "presupuesto",
+            "fondos",
             "cuanto me queda",
             "cuánto me queda",
             "ultimo gasto",

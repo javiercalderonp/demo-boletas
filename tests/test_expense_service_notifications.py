@@ -10,7 +10,7 @@ class FakeSheetsService:
         self.case_expenses = []
 
     def get_active_expense_case_by_phone(self, phone):
-        return {"case_id": "CASE-1", "phone": phone}
+        return {**self.case, "phone": phone}
 
     def list_expenses_by_phone_case(self, phone, case_id):
         return list(self.case_expenses)
@@ -95,6 +95,91 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
         self.assertIn("- Fondos entregados: $1.000.000 CLP", answer)
         self.assertIn("- Rendido: $110.300 CLP (11.0%)", answer)
         self.assertIn("- Saldo restante: $889.700 CLP", answer)
+
+    def test_case_context_includes_budget_by_cost_center(self):
+        sheets = FakeSheetsService()
+        sheets.case.update(
+            {
+                "context_label": "Rendición mayo",
+                "cost_centers": ["Operaciones", "Ventas"],
+                "fondos_entregados": 150000,
+                "fondos_por_centro": {"Operaciones": 100000, "Ventas": 50000},
+            }
+        )
+        sheets.case_expenses = [
+            {"cost_center": "Operaciones", "total_clp": 30000},
+            {"cost_center": "Ventas", "total_clp": 12000},
+            {"cost_center": "Marketing", "total_clp": 8000},
+        ]
+        service = ExpenseService(sheets_service=sheets)
+
+        context = service.build_case_context_text("+56911111111")
+
+        self.assertIn("Nombre de la rendición: Rendición mayo", context)
+        self.assertIn("Fondos entregados: $150.000 CLP", context)
+        self.assertIn("Total rendido: $50.000 CLP (3 gasto(s))", context)
+        self.assertIn("Saldo restante: $100.000 CLP", context)
+        self.assertIn(
+            "Operaciones: presupuesto $100.000 CLP; rendido $30.000 CLP; saldo $70.000 CLP",
+            context,
+        )
+        self.assertIn(
+            "Ventas: presupuesto $50.000 CLP; rendido $12.000 CLP; saldo $38.000 CLP",
+            context,
+        )
+        self.assertIn(
+            "Marketing: presupuesto no asignado; rendido $8.000 CLP",
+            context,
+        )
+
+    def test_rendicion_cost_centers_question_is_answered_from_case(self):
+        sheets = FakeSheetsService()
+        sheets.case.update(
+            {
+                "cost_centers": ["Operaciones", "Ventas"],
+                "fondos_por_centro": {"Operaciones": 100000, "Ventas": 50000},
+            }
+        )
+        service = ExpenseService(sheets_service=sheets)
+
+        answer = service.answer_rendicion_question(
+            phone="+56911111111",
+            question="Cuales son mis centros de costo?",
+        )
+
+        self.assertIn("Tus centros de costo son:", answer)
+        self.assertIn("- Operaciones: $100.000 CLP", answer)
+        self.assertIn("- Ventas: $50.000 CLP", answer)
+
+    def test_rendicion_budget_question_is_answered_from_case(self):
+        sheets = FakeSheetsService()
+        sheets.case.update(
+            {
+                "cost_centers": ["Operaciones", "Ventas"],
+                "fondos_entregados": 150000,
+                "fondos_por_centro": {"Operaciones": 100000, "Ventas": 50000},
+            }
+        )
+        sheets.case_expenses = [
+            {"cost_center": "Operaciones", "total_clp": 30000},
+            {"cost_center": "Ventas", "total_clp": 12000},
+        ]
+        service = ExpenseService(sheets_service=sheets)
+
+        answer = service.answer_rendicion_question(
+            phone="+56911111111",
+            question="Cual es mi presupuesto?",
+        )
+
+        self.assertIn("Fondos entregados: $150.000 CLP", answer)
+        self.assertIn(
+            "- Operaciones: $100.000 CLP; rendido $30.000 CLP; saldo $70.000 CLP",
+            answer,
+        )
+        self.assertIn(
+            "- Ventas: $50.000 CLP; rendido $12.000 CLP; saldo $38.000 CLP",
+            answer,
+        )
 
     def test_rendicion_balance_and_last_expense_are_answered_on_request(self):
         sheets = FakeSheetsService()

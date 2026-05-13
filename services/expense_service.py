@@ -10,7 +10,7 @@ from services.review_score_service import ReviewScoreService
 from services.sheets_service import SheetsService
 from services.statuses import ExpenseStatus
 from utils.exchange_rate import convert_to_clp
-from utils.helpers import make_id, normalize_whatsapp_phone, parse_float, utc_now_iso
+from utils.helpers import json_loads, make_id, normalize_whatsapp_phone, parse_float, utc_now_iso
 
 
 logger = logging.getLogger(__name__)
@@ -539,17 +539,21 @@ class ExpenseService:
             return "El empleado no tiene una rendición activa en este momento."
 
         case_id = str(expense_case.get("case_id", expense_case.get("trip_id", "")) or "").strip()
+        case_label = str(expense_case.get("context_label", "") or "").strip()
 
         cost_centers_raw = expense_case.get("cost_centers", [])
         if isinstance(cost_centers_raw, str):
-            import json as _json
-            try:
-                cost_centers_raw = _json.loads(cost_centers_raw)
-            except Exception:
-                cost_centers_raw = [c.strip() for c in cost_centers_raw.replace(";", ",").split(",") if c.strip()]
+            parsed_cost_centers = json_loads(cost_centers_raw, default=None)
+            if isinstance(parsed_cost_centers, list):
+                cost_centers_raw = parsed_cost_centers
+            else:
+                cost_centers_raw = [
+                    c.strip() for c in cost_centers_raw.replace(";", ",").split(",") if c.strip()
+                ]
         if not isinstance(cost_centers_raw, list):
             cost_centers_raw = []
         cost_centers = [str(c).strip() for c in cost_centers_raw if str(c).strip()]
+        fondos_por_centro = self._normalize_fondos_por_centro(expense_case.get("fondos_por_centro"))
 
         fondos = parse_float(expense_case.get("fondos_entregados"))
         policy_limit = parse_float(expense_case.get("policy_limit", expense_case.get("budget")))
@@ -560,6 +564,8 @@ class ExpenseService:
         lines = []
         if case_id:
             lines.append(f"Rendición activa ID: {case_id}")
+        if case_label:
+            lines.append(f"Nombre de la rendición: {case_label}")
         if cost_centers:
             lines.append(f"Centros de costo disponibles: {', '.join(cost_centers)}")
         if budget:
@@ -581,10 +587,89 @@ class ExpenseService:
                 lines.append("Gastos por centro de costo:")
                 for cc, total in sorted(by_cc.items()):
                     lines.append(f"  {cc}: {self._format_clp(total)} CLP")
+            if fondos_por_centro:
+                lines.append("Presupuesto por centro de costo:")
+                center_names = sorted(
+                    {
+                        *cost_centers,
+                        *fondos_por_centro.keys(),
+                        *by_cc.keys(),
+                    },
+                    key=str.lower,
+                )
+                for cc in center_names:
+                    assigned = fondos_por_centro.get(cc)
+                    spent = by_cc.get(cc, 0.0)
+                    expense_count = sum(
+                        1
+                        for exp in expenses
+                        if (str(exp.get("cost_center", "") or "Sin clasificar").strip() or "Sin clasificar") == cc
+                    )
+                    if assigned is None:
+                        lines.append(
+                            f"  {cc}: presupuesto no asignado; rendido {self._format_clp(spent)} CLP "
+                            f"({expense_count} gasto(s))"
+                        )
+                    else:
+                        remaining = assigned - spent
+                        lines.append(
+                            f"  {cc}: presupuesto {self._format_clp(assigned)} CLP; "
+                            f"rendido {self._format_clp(spent)} CLP; "
+                            f"saldo {self._format_clp(remaining)} CLP ({expense_count} gasto(s))"
+                        )
         elif case_id:
             lines.append("Gastos registrados: ninguno aún.")
+            if fondos_por_centro:
+                lines.append("Presupuesto por centro de costo:")
+                center_names = sorted({*cost_centers, *fondos_por_centro.keys()}, key=str.lower)
+                for cc in center_names:
+                    assigned = fondos_por_centro.get(cc)
+                    if assigned is None:
+                        lines.append(f"  {cc}: presupuesto no asignado; rendido 0 CLP; saldo no disponible")
+                    else:
+                        lines.append(
+                            f"  {cc}: presupuesto {self._format_clp(assigned)} CLP; "
+                            f"rendido 0 CLP; saldo {self._format_clp(assigned)} CLP"
+                        )
 
         return "\n".join(lines) if lines else "Rendición activa sin datos adicionales."
+
+    def _normalize_fondos_por_centro(self, value: Any) -> dict[str, float]:
+        if isinstance(value, str):
+            value = json_loads(value, default=None)
+        if not isinstance(value, dict):
+            return {}
+
+        normalized: dict[str, float] = {}
+        for raw_center, raw_amount in value.items():
+            center = str(raw_center or "").strip()
+            if not center:
+                continue
+            normalized[center] = parse_float(raw_amount) or 0.0
+        return normalized
+
+    def _normalize_case_cost_centers(self, expense_case: dict[str, Any]) -> list[str]:
+        cost_centers_raw = expense_case.get("cost_centers", [])
+        if isinstance(cost_centers_raw, str):
+            parsed_cost_centers = json_loads(cost_centers_raw, default=None)
+            if isinstance(parsed_cost_centers, list):
+                cost_centers_raw = parsed_cost_centers
+            else:
+                cost_centers_raw = [
+                    c.strip() for c in cost_centers_raw.replace(";", ",").split(",") if c.strip()
+                ]
+        if not isinstance(cost_centers_raw, (list, tuple, set)):
+            cost_centers_raw = []
+
+        centers: list[str] = []
+        seen: set[str] = set()
+        for item in cost_centers_raw:
+            center = str(item or "").strip()
+            key = center.lower()
+            if center and key not in seen:
+                centers.append(center)
+                seen.add(key)
+        return centers
 
     def answer_rendicion_question(self, *, phone: str, question: str) -> str | None:
         intent = self._classify_rendicion_question(question)
@@ -601,6 +686,10 @@ class ExpenseService:
 
         if intent == "last_expense":
             return self.build_last_expense_message(phone=phone, case_id=case_id)
+        if intent == "cost_centers":
+            return self.build_case_cost_centers_message(expense_case)
+        if intent == "budget":
+            return self.build_case_budget_message(phone=phone, case_id=case_id, expense_case=expense_case)
 
         status_message = self.build_policy_status_message(phone=phone, case_id=case_id)
         alert_message = self.build_policy_alert_message(phone=phone, case_id=case_id)
@@ -634,14 +723,118 @@ class ExpenseService:
             parts.append(f"fecha {date}")
         return ", ".join(parts) + "."
 
+    def build_case_cost_centers_message(self, expense_case: dict[str, Any]) -> str:
+        cost_centers = self._normalize_case_cost_centers(expense_case)
+        fondos_por_centro = self._normalize_fondos_por_centro(expense_case.get("fondos_por_centro"))
+
+        center_names = []
+        seen: set[str] = set()
+        for center in [*cost_centers, *fondos_por_centro.keys()]:
+            key = center.lower()
+            if key not in seen:
+                center_names.append(center)
+                seen.add(key)
+
+        if not center_names:
+            return "Tu rendición activa no tiene centros de costo configurados."
+
+        if fondos_por_centro:
+            lines = ["Tus centros de costo son:"]
+            for center in center_names:
+                assigned = fondos_por_centro.get(center)
+                if assigned is None:
+                    lines.append(f"- {center}: sin presupuesto asignado")
+                else:
+                    lines.append(f"- {center}: {self._format_clp(assigned)} CLP")
+            return "\n".join(lines)
+
+        return "Tus centros de costo son: " + ", ".join(center_names) + "."
+
+    def build_case_budget_message(
+        self,
+        *,
+        phone: str,
+        case_id: str,
+        expense_case: dict[str, Any],
+    ) -> str:
+        fondos_por_centro = self._normalize_fondos_por_centro(expense_case.get("fondos_por_centro"))
+        fondos = parse_float(expense_case.get("fondos_entregados"))
+        policy_limit = parse_float(expense_case.get("policy_limit", expense_case.get("budget")))
+        budget = fondos or policy_limit
+
+        lines: list[str] = []
+        if budget:
+            label = "Fondos entregados" if fondos else "Límite de referencia"
+            lines.append(f"{label}: {self._format_clp(budget)} CLP")
+
+        if fondos_por_centro:
+            expenses = self.sheets_service.list_expenses_by_phone_case(phone=phone, case_id=case_id)
+            spent_by_center: dict[str, float] = {}
+            for expense in expenses:
+                center = str(expense.get("cost_center", "") or "Sin clasificar").strip() or "Sin clasificar"
+                spent = parse_float(expense.get("total_clp") or expense.get("total") or 0) or 0.0
+                spent_by_center[center] = spent_by_center.get(center, 0.0) + spent
+
+            center_names = sorted(
+                {
+                    *self._normalize_case_cost_centers(expense_case),
+                    *fondos_por_centro.keys(),
+                    *spent_by_center.keys(),
+                },
+                key=str.lower,
+            )
+            lines.append("Presupuesto por centro de costo:")
+            for center in center_names:
+                assigned = fondos_por_centro.get(center)
+                spent = spent_by_center.get(center, 0.0)
+                if assigned is None:
+                    lines.append(
+                        f"- {center}: sin presupuesto asignado; rendido {self._format_clp(spent)} CLP"
+                    )
+                else:
+                    remaining = assigned - spent
+                    lines.append(
+                        f"- {center}: {self._format_clp(assigned)} CLP; "
+                        f"rendido {self._format_clp(spent)} CLP; "
+                        f"saldo {self._format_clp(remaining)} CLP"
+                    )
+
+        if lines:
+            return "\n".join(lines)
+        return "Tu rendición activa no tiene presupuesto o fondos configurados."
+
     def _classify_rendicion_question(self, question: str) -> str | None:
         normalized = " ".join(str(question or "").strip().lower().split())
         if not normalized:
             return None
 
+        cost_center_signals = (
+            "centro de costo",
+            "centros de costo",
+            "centro costo",
+            "centros costo",
+            "mis centros",
+        )
+        if any(signal in normalized for signal in cost_center_signals):
+            return "cost_centers"
+
         last_signals = ("ultimo gasto", "último gasto", "ultima compra", "última compra", "ultima boleta", "última boleta")
         if any(signal in normalized for signal in last_signals):
             return "last_expense"
+
+        budget_signals = (
+            "cual es mi presupuesto",
+            "cuál es mi presupuesto",
+            "mi presupuesto",
+            "presupuesto asignado",
+            "presupuesto por centro",
+            "fondos asignados",
+            "fondos entregados",
+            "cuanto presupuesto tengo",
+            "cuánto presupuesto tengo",
+        )
+        if any(signal in normalized for signal in budget_signals):
+            return "budget"
 
         balance_signals = (
             "cuanto presupuesto me queda",

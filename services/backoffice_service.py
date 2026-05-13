@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from services.backoffice_permissions import can_access_company, filter_by_access, resolve_access
 from services.sheets_service import SheetsService, normalize_cost_centers
 from services.statuses import (
     CaseStatus,
@@ -30,6 +31,102 @@ STALE_RENDICION_DAYS = 3
 @dataclass
 class BackofficeService:
     sheets_service: SheetsService
+
+    def _filter_employees_for_user(
+        self,
+        employees: list[dict[str, Any]],
+        user: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        if not user or resolve_access(user).is_global:
+            return employees
+        return filter_by_access(user, employees, lambda item: item.get("company_id", ""))
+
+    def _filter_cases_for_user(
+        self,
+        cases: list[dict[str, Any]],
+        user: dict[str, Any] | None,
+        *,
+        employees: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        if not user or resolve_access(user).is_global:
+            return cases
+        employees_by_phone = {
+            str(item.get("phone", "") or "").strip(): item
+            for item in (employees or self.sheets_service.list_employees())
+        }
+
+        def _company_id(item: dict[str, Any]) -> Any:
+            direct = str(item.get("company_id", "") or "").strip()
+            if direct:
+                return direct
+            employee = employees_by_phone.get(
+                str(item.get("employee_phone", item.get("phone", "")) or "").strip()
+            )
+            return (employee or {}).get("company_id", "")
+
+        return filter_by_access(user, cases, _company_id)
+
+    def _filter_expenses_for_user(
+        self,
+        expenses: list[dict[str, Any]],
+        user: dict[str, Any] | None,
+        *,
+        employees: list[dict[str, Any]] | None = None,
+        cases: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        if not user or resolve_access(user).is_global:
+            return expenses
+        employees_by_phone = {
+            str(item.get("phone", "") or "").strip(): item
+            for item in (employees or self.sheets_service.list_employees())
+        }
+        cases_by_id = {
+            str(item.get("case_id", "") or "").strip(): item
+            for item in (cases or self.sheets_service.list_expense_cases())
+        }
+
+        def _company_id(item: dict[str, Any]) -> Any:
+            case = cases_by_id.get(str(item.get("case_id", "") or "").strip()) or {}
+            direct = str(case.get("company_id", "") or "").strip()
+            if direct:
+                return direct
+            employee = employees_by_phone.get(str(item.get("phone", "") or "").strip())
+            if not employee and case:
+                employee = employees_by_phone.get(
+                    str(case.get("employee_phone", case.get("phone", "")) or "").strip()
+                )
+            return (employee or {}).get("company_id", "")
+
+        return filter_by_access(user, expenses, _company_id)
+
+    def _filter_conversations_for_user(
+        self,
+        conversations: list[dict[str, Any]],
+        user: dict[str, Any] | None,
+        *,
+        employees: list[dict[str, Any]] | None = None,
+        cases: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        if not user or resolve_access(user).is_global:
+            return conversations
+        employees_by_phone = {
+            str(item.get("phone", "") or "").strip(): item
+            for item in (employees or self.sheets_service.list_employees())
+        }
+        cases_by_id = {
+            str(item.get("case_id", "") or "").strip(): item
+            for item in (cases or self.sheets_service.list_expense_cases())
+        }
+
+        def _company_id(item: dict[str, Any]) -> Any:
+            case = cases_by_id.get(str(item.get("case_id", "") or "").strip()) or {}
+            direct = str(case.get("company_id", "") or "").strip()
+            if direct:
+                return direct
+            employee = employees_by_phone.get(str(item.get("phone", "") or "").strip())
+            return (employee or {}).get("company_id", "")
+
+        return filter_by_access(user, conversations, _company_id)
 
     @staticmethod
     def _format_case_reference(expense_case: dict[str, Any]) -> str:
@@ -184,11 +281,20 @@ class BackofficeService:
                 return company
         return None
 
-    def get_dashboard(self) -> dict[str, Any]:
+    def get_dashboard(self, user: dict[str, Any] | None = None) -> dict[str, Any]:
         employees = self.sheets_service.list_employees()
         cases = self.sheets_service.list_expense_cases()
         expenses = self.sheets_service.list_expenses()
         conversations = self.sheets_service.list_conversations()
+        employees = self._filter_employees_for_user(employees, user)
+        cases = self._filter_cases_for_user(cases, user, employees=employees)
+        expenses = self._filter_expenses_for_user(expenses, user, employees=employees, cases=cases)
+        conversations = self._filter_conversations_for_user(
+            conversations,
+            user,
+            employees=employees,
+            cases=cases,
+        )
         active_conversations = [
             item for item in conversations if str(item.get("state", "")).strip() not in {"DONE", ""}
         ]
@@ -309,8 +415,8 @@ class BackofficeService:
             "alerts": alerts[:10],
         }
 
-    def list_employees(self) -> list[dict[str, Any]]:
-        employees = self.sheets_service.list_employees()
+    def list_employees(self, user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        employees = self._filter_employees_for_user(self.sheets_service.list_employees(), user)
         cases = self.sheets_service.list_expense_cases()
         expenses = self.sheets_service.list_expenses()
         conversations = self.sheets_service.list_conversations()
@@ -334,12 +440,21 @@ class BackofficeService:
             )
         return employees
 
-    def list_companies(self) -> list[dict[str, Any]]:
-        return self.sheets_service.list_companies()
+    def list_companies(self, user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        companies = self.sheets_service.list_companies()
+        if not user or resolve_access(user).is_global:
+            return companies
+        return filter_by_access(user, companies, lambda item: item.get("company_id", ""))
 
-    def get_employee_detail(self, phone: str) -> dict[str, Any] | None:
+    def get_employee_detail(
+        self,
+        phone: str,
+        user: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         employee = self.sheets_service.get_employee_any_by_phone(phone)
         if not employee:
+            return None
+        if user and not can_access_company(user, employee.get("company_id", "")):
             return None
         phone_value = employee.get("phone", "")
         cases = [
@@ -414,8 +529,16 @@ class BackofficeService:
             "deleted_expenses": deleted_expenses,
         }
 
-    def list_cases(self, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        cases = self._enrich_cases(self.sheets_service.list_expense_cases())
+    def list_cases(
+        self,
+        filters: dict[str, Any] | None = None,
+        user: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        raw_cases = self._filter_cases_for_user(
+            self.sheets_service.list_expense_cases(),
+            user,
+        )
+        cases = self._enrich_cases(raw_cases)
         filters = filters or {}
         cost_center = str(filters.get("cost_center", "") or "").strip().lower()
         if cost_center:
@@ -427,9 +550,15 @@ class BackofficeService:
             ]
         return cases
 
-    def get_case_detail(self, case_id: str) -> dict[str, Any] | None:
+    def get_case_detail(
+        self,
+        case_id: str,
+        user: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         expense_case = self.sheets_service.get_expense_case_by_id(case_id)
         if not expense_case:
+            return None
+        if user and not self._filter_cases_for_user([expense_case], user):
             return None
         employee = self.sheets_service.get_employee_any_by_phone(
             expense_case.get("employee_phone", expense_case.get("phone", ""))
@@ -648,8 +777,16 @@ class BackofficeService:
             raise ValueError("Case not found")
         return updated
 
-    def list_expenses(self, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        expenses = self._enrich_expenses(self.sheets_service.list_expenses())
+    def list_expenses(
+        self,
+        filters: dict[str, Any] | None = None,
+        user: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        raw_expenses = self._filter_expenses_for_user(
+            self.sheets_service.list_expenses(),
+            user,
+        )
+        expenses = self._enrich_expenses(raw_expenses)
         filters = filters or {}
         status = str(filters.get("status", "") or "").strip().lower()
         review_status = normalize_state(filters.get("review_status"))
@@ -713,9 +850,15 @@ class BackofficeService:
         except (TypeError, ValueError):
             return 50.0
 
-    def get_expense_detail(self, expense_id: str) -> dict[str, Any] | None:
+    def get_expense_detail(
+        self,
+        expense_id: str,
+        user: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         expense = self.sheets_service.get_expense_by_id(expense_id)
         if not expense:
+            return None
+        if user and not self._filter_expenses_for_user([expense], user):
             return None
         case = self.sheets_service.get_expense_case_by_id(expense.get("case_id", ""))
         employee = self.sheets_service.get_employee_any_by_phone(expense.get("phone", ""))
@@ -759,12 +902,22 @@ class BackofficeService:
         enriched = self._enrich_expenses([updated])
         return enriched[0] if enriched else updated
 
-    def list_conversations(self) -> list[dict[str, Any]]:
-        return self._enrich_conversations(self.sheets_service.list_conversations())
+    def list_conversations(self, user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        conversations = self._filter_conversations_for_user(
+            self.sheets_service.list_conversations(),
+            user,
+        )
+        return self._enrich_conversations(conversations)
 
-    def get_conversation_detail(self, phone: str) -> dict[str, Any] | None:
+    def get_conversation_detail(
+        self,
+        phone: str,
+        user: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         conversation = self.sheets_service.get_conversation(phone)
         if not conversation:
+            return None
+        if user and not self._filter_conversations_for_user([conversation], user):
             return None
         employee = self.sheets_service.get_employee_any_by_phone(phone)
         expense_case = self.sheets_service.get_expense_case_by_id(conversation.get("case_id", ""))

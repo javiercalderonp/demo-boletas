@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.config import Settings
+from services.backoffice_permissions import GLOBAL_SCOPE, SUPER_ADMIN_ROLE, serialize_access
 from services.sheets_service import SheetsService
 from utils.helpers import make_id, utc_now_iso
 
@@ -51,7 +52,10 @@ class BackofficeAuthService:
                 "name": name,
                 "email": email,
                 "password_hash": self.hash_password(password),
-                "role": "admin",
+                "role": SUPER_ADMIN_ROLE,
+                "scope_type": GLOBAL_SCOPE,
+                "company_ids": "",
+                "company_id": "",
                 "active": True,
                 "created_at": now,
                 "updated_at": now,
@@ -83,13 +87,40 @@ class BackofficeAuthService:
         ).hex()
         return hmac.compare_digest(candidate, digest)
 
+    def user_has_password(self, user: dict[str, Any] | None) -> bool:
+        return bool(str((user or {}).get("password_hash", "") or "").strip())
+
     def authenticate(self, email: str, password: str) -> dict[str, Any] | None:
         user = self.sheets_service.get_user_by_email(email)
         if not user or not user.get("active"):
             return None
+        if not self.user_has_password(user):
+            return None
         if not self.verify_password(password, str(user.get("password_hash", "") or "")):
             return None
         return user
+
+    def can_setup_password(self, email: str) -> dict[str, Any] | None:
+        user = self.sheets_service.get_user_by_email(email)
+        if not user or not user.get("active") or self.user_has_password(user):
+            return None
+        return user
+
+    def setup_password(self, email: str, password: str, *, name: str = "") -> dict[str, Any] | None:
+        user = self.can_setup_password(email)
+        if not user:
+            return None
+        now = utc_now_iso()
+        clean_name = str(name or "").strip()
+        payload: dict[str, Any] = {
+            "password_hash": self.hash_password(password),
+            "updated_at": now,
+        }
+        if clean_name:
+            payload["name"] = clean_name
+        elif not str(user.get("name", "") or "").strip():
+            payload["name"] = str(user.get("email", "") or "").split("@", 1)[0]
+        return self.sheets_service.upsert_user(str(user.get("id", "")), payload)
 
     def create_access_token(self, user: dict[str, Any]) -> str:
         expires_at = datetime.now(timezone.utc) + timedelta(
@@ -100,6 +131,7 @@ class BackofficeAuthService:
             "email": str(user.get("email", "")),
             "name": str(user.get("name", "")),
             "role": str(user.get("role", "operator") or "operator"),
+            **serialize_access(user),
             "exp": int(expires_at.timestamp()),
         }
         body = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))

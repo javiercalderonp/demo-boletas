@@ -4,12 +4,15 @@ import { FormEvent, useEffect, useState } from "react";
 
 import { useAuth } from "@/components/auth-provider";
 import { BrandLogo } from "@/components/brand-logo";
-import { getStoredLoginEmail } from "@/lib/api";
+import { apiRequest, getStoredLoginEmail } from "@/lib/api";
 
 export default function LoginPage() {
-  const { login } = useAuth();
+  const { login, setupPassword } = useAuth();
+  const [mode, setMode] = useState<"login" | "requestSetup" | "setup">("login");
   const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
   const [password, setPassword] = useState("");
+  const [passwordConfirmation, setPasswordConfirmation] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -22,9 +25,29 @@ export default function LoginPage() {
     setSubmitting(true);
     setError("");
     try {
-      await login(email, password);
+      if (mode === "login") {
+        await login(email, password);
+      } else if (mode === "requestSetup") {
+        const data = await apiRequest<{ email: string; name?: string; can_setup_password: boolean }>(
+          "/auth/setup-password/request",
+          {
+            method: "POST",
+            body: { email },
+          },
+        );
+        setEmail(data.email);
+        setName(data.name || "");
+        setPassword("");
+        setPasswordConfirmation("");
+        setMode("setup");
+      } else {
+        if (password !== passwordConfirmation) {
+          throw new Error("Las claves no coinciden.");
+        }
+        await setupPassword(email, name, password);
+      }
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "No se pudo iniciar sesión.");
+      setError(nextError instanceof Error ? nextError.message : "No se pudo completar la solicitud.");
     } finally {
       setSubmitting(false);
     }
@@ -36,7 +59,11 @@ export default function LoginPage() {
         <div className="mb-8 text-center">
           <BrandLogo size="lg" href="/" priority className="mx-auto mb-4" />
           <p className="mt-2 text-sm text-gray-500">
-            Ingresa con tu cuenta para administrar operaciones.
+            {mode === "login"
+              ? "Ingresa con tu cuenta para administrar operaciones."
+              : mode === "requestSetup"
+                ? "Usa el email que registró un administrador."
+                : "Elige tu clave para activar tu acceso."}
           </p>
         </div>
 
@@ -50,18 +77,50 @@ export default function LoginPage() {
                 onChange={(event) => setEmail(event.target.value)}
                 className="block w-full rounded-lg border border-gray-300 px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
                 placeholder="tu@empresa.com"
+                required
+                disabled={mode === "setup"}
               />
             </div>
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                className="block w-full rounded-lg border border-gray-300 px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
-                placeholder="••••••••"
-              />
-            </div>
+            {mode === "setup" && (
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-gray-700">Nombre</label>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  className="block w-full rounded-lg border border-gray-300 px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
+                  placeholder="Tu nombre"
+                />
+              </div>
+            )}
+            {mode !== "requestSetup" && (
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-gray-700">Password</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  className="block w-full rounded-lg border border-gray-300 px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
+                  placeholder="••••••••"
+                  required
+                  minLength={mode === "setup" ? 8 : undefined}
+                />
+              </div>
+            )}
+            {mode === "setup" && (
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-gray-700">Repetir password</label>
+                <input
+                  type="password"
+                  value={passwordConfirmation}
+                  onChange={(event) => setPasswordConfirmation(event.target.value)}
+                  className="block w-full rounded-lg border border-gray-300 px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
+                  placeholder="••••••••"
+                  required
+                  minLength={8}
+                />
+              </div>
+            )}
             {error && (
               <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
             )}
@@ -76,10 +135,22 @@ export default function LoginPage() {
                   Ingresando...
                 </>
               ) : (
-                "Entrar"
+                mode === "login" ? "Entrar" : mode === "requestSetup" ? "Continuar" : "Crear clave"
               )}
             </button>
           </form>
+          <button
+            className="mt-4 w-full rounded-lg px-3 py-2 text-sm font-medium text-primary-700 transition hover:bg-primary-50"
+            onClick={() => {
+              setError("");
+              setPassword("");
+              setPasswordConfirmation("");
+              setMode(mode === "login" ? "requestSetup" : "login");
+            }}
+            type="button"
+          >
+            {mode === "login" ? "No tengo clave aún" : "Volver al login"}
+          </button>
         </div>
       </div>
     </main>

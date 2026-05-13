@@ -118,6 +118,40 @@ class BackofficeCaseTransitionTests(unittest.TestCase):
         self.assertEqual(created["case_id"], "CASE-2")
         self.assertEqual(len(sheets.created_case_payloads), 1)
 
+    def test_company_scoped_user_only_lists_their_cases_and_companies(self):
+        sheets = FakeSheetsService(
+            case_row={"case_id": "CASE-1", "company_id": "acme", "status": "active"},
+            expenses=[],
+        )
+        sheets.companies.append({"company_id": "other", "name": "Other Co"})
+        service = BackofficeService(sheets_service=sheets)
+        user = {
+            "role": "company_admin",
+            "scope_type": "company",
+            "company_ids": "acme",
+        }
+
+        cases = service.list_cases(user=user)
+        companies = service.list_companies(user=user)
+
+        self.assertEqual([item["case_id"] for item in cases], ["CASE-1"])
+        self.assertEqual([item["company_id"] for item in companies], ["acme"])
+
+    def test_company_scoped_user_cannot_read_case_from_another_company(self):
+        sheets = FakeSheetsService(
+            case_row={"case_id": "CASE-1", "company_id": "other", "status": "active"},
+            expenses=[],
+        )
+        service = BackofficeService(sheets_service=sheets)
+        user = {
+            "role": "company_admin",
+            "scope_type": "company",
+            "company_ids": "acme",
+        }
+
+        self.assertEqual(service.list_cases(user=user), [])
+        self.assertIsNone(service.get_case_detail("CASE-1", user=user))
+
     def test_document_confirmation_requires_all_documents_resolved(self):
         service = BackofficeService(
             sheets_service=FakeSheetsService(

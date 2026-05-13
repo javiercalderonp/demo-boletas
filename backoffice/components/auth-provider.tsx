@@ -11,6 +11,7 @@ type AuthContextValue = {
   user: BackofficeUser | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  setupPassword: (email: string, name: string, password: string) => Promise<void>;
   logout: () => void;
 };
 
@@ -50,6 +51,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           {
             method: "POST",
             body: { email, password },
+          },
+        );
+        setStoredLoginEmail(email);
+        setStoredToken(data.access_token);
+        setToken(data.access_token);
+        setUser(data.user);
+        router.push("/");
+      },
+      async setupPassword(email: string, name: string, password: string) {
+        const data = await apiRequest<{ access_token: string; user: BackofficeUser }>(
+          "/auth/setup-password",
+          {
+            method: "POST",
+            body: { email, name, password },
           },
         );
         setStoredLoginEmail(email);

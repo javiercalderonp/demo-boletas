@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, s
 from fastapi.responses import StreamingResponse
 
 from app.schemas.backoffice import (
+    BackofficeUserPayload,
     CasePayload,
     CaseChatPayload,
     ConversationPayload,
@@ -19,7 +20,18 @@ from app.schemas.backoffice import (
     LoginRequest,
     LoginResponse,
     SendMessagePayload,
+    SetupPasswordPayload,
+    SetupPasswordRequest,
     StatusActionPayload,
+)
+from services.backoffice_permissions import (
+    COMPANY_ADMIN_ROLE,
+    COMPANY_SCOPE,
+    GLOBAL_SCOPE,
+    LEGACY_ADMIN_ROLE,
+    SUPER_ADMIN_ROLE,
+    can_access_company,
+    resolve_access,
 )
 from services.statuses import (
     CaseStatus,
@@ -33,6 +45,7 @@ from utils.helpers import make_id, utc_now_iso
 router = APIRouter(prefix="/api", tags=["backoffice"])
 logger = logging.getLogger(__name__)
 MAX_MESSAGE_LOG_ITEMS = 500
+ADMIN_ROLES = {SUPER_ADMIN_ROLE, LEGACY_ADMIN_ROLE, COMPANY_ADMIN_ROLE}
 
 
 def _get_container(request: Request):
@@ -97,6 +110,43 @@ def require_user(
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     return user
+
+
+def _safe_user(user: dict[str, Any]) -> dict[str, Any]:
+    access = resolve_access(user)
+    return {
+        "id": user.get("id"),
+        "name": user.get("name"),
+        "email": user.get("email"),
+        "role": user.get("role"),
+        "active": user.get("active"),
+        "scope_type": access.scope_type,
+        "company_ids": sorted(access.company_ids),
+        "company_id": user.get("company_id", ""),
+        "created_at": user.get("created_at", ""),
+        "updated_at": user.get("updated_at", ""),
+        "has_password": bool(str(user.get("password_hash", "") or "").strip()),
+    }
+
+
+def require_admin(user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    role = str(user.get("role", "") or "").strip().lower()
+    if role not in ADMIN_ROLES:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No autorizado")
+    return user
+
+
+def _safe_user_payload(user: dict[str, Any]) -> dict[str, Any]:
+    return _safe_user(user)
+
+
+def _ensure_user_can_access_company(user: dict[str, Any], company_id: Any) -> None:
+    if can_access_company(user, company_id):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="No tienes acceso a esa empresa",
+    )
 
 
 def _attach_expense_receipt_urls(request: Request, expense: dict[str, Any]) -> dict[str, Any]:
@@ -318,57 +368,168 @@ def login(payload: LoginRequest, request: Request) -> LoginResponse:
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciales inválidas")
     token = container.backoffice_auth.create_access_token(user)
-    safe_user = {
-        "id": user.get("id"),
-        "name": user.get("name"),
-        "email": user.get("email"),
-        "role": user.get("role"),
-        "active": user.get("active"),
-    }
-    return LoginResponse(access_token=token, user=safe_user)
+    return LoginResponse(access_token=token, user=_safe_user_payload(user))
+
+
+@router.post("/auth/setup-password/request")
+def request_password_setup(payload: SetupPasswordRequest, request: Request) -> dict[str, Any]:
+    container = _get_container(request)
+    email = str(payload.email or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Ingresa un email válido")
+    try:
+        user = container.sheets.get_user_by_email(email)
+    except Exception as exc:
+        if _is_transient_dependency_error(exc):
+            logger.warning("Backoffice password setup lookup temporarily unavailable: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Servicio de autenticación temporalmente no disponible. Intenta nuevamente.",
+            ) from exc
+        raise
+    if not user or not user.get("active"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No hay una cuenta activa registrada con ese email.",
+        )
+    if container.backoffice_auth.user_has_password(user):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Esta cuenta ya tiene clave. Ingresa con tu password.",
+        )
+    return {"email": email, "name": user.get("name", ""), "can_setup_password": True}
+
+
+@router.post("/auth/setup-password", response_model=LoginResponse)
+def setup_password(payload: SetupPasswordPayload, request: Request) -> LoginResponse:
+    container = _get_container(request)
+    try:
+        user = container.backoffice_auth.setup_password(
+            payload.email,
+            payload.password,
+            name=payload.name,
+        )
+    except Exception as exc:
+        if _is_transient_dependency_error(exc):
+            logger.warning("Backoffice password setup temporarily unavailable: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Servicio de autenticación temporalmente no disponible. Intenta nuevamente.",
+            ) from exc
+        raise
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No se puede crear clave para esta cuenta.",
+        )
+    token = container.backoffice_auth.create_access_token(user)
+    return LoginResponse(access_token=token, user=_safe_user_payload(user))
 
 
 @router.get("/auth/me")
 def me(user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
-    return {
-        "id": user.get("id"),
-        "name": user.get("name"),
-        "email": user.get("email"),
-        "role": user.get("role"),
-        "active": user.get("active"),
-    }
+    return _safe_user_payload(user)
+
+
+@router.get("/users")
+def list_backoffice_users(
+    request: Request,
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    return {"items": [_safe_user_payload(user) for user in _get_container(request).sheets.list_users()]}
+
+
+@router.post("/users", status_code=status.HTTP_201_CREATED)
+def create_backoffice_user(
+    payload: BackofficeUserPayload,
+    request: Request,
+    user: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    container = _get_container(request)
+    email = str(payload.email or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Ingresa un email válido")
+    if container.sheets.get_user_by_email(email):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ya existe un usuario con ese email")
+
+    requester_access = resolve_access(user)
+    requested_role = str(payload.role or COMPANY_ADMIN_ROLE).strip().lower()
+    if requested_role not in {SUPER_ADMIN_ROLE, LEGACY_ADMIN_ROLE, COMPANY_ADMIN_ROLE, "operator"}:
+        requested_role = COMPANY_ADMIN_ROLE
+
+    requested_scope = str(payload.scope_type or COMPANY_SCOPE).strip().lower()
+    company_ids = [str(item or "").strip() for item in payload.company_ids if str(item or "").strip()]
+    if payload.company_id and str(payload.company_id).strip() not in company_ids:
+        company_ids.append(str(payload.company_id).strip())
+
+    if not requester_access.is_global:
+        requested_scope = COMPANY_SCOPE
+        if requested_role == SUPER_ADMIN_ROLE:
+            requested_role = COMPANY_ADMIN_ROLE
+        company_ids = [company_id for company_id in company_ids if can_access_company(user, company_id)]
+        if not company_ids and requester_access.company_ids:
+            company_ids = sorted(requester_access.company_ids)
+        if not company_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes empresas asignadas para crear usuarios.",
+            )
+    elif requested_role == SUPER_ADMIN_ROLE or requested_scope == GLOBAL_SCOPE:
+        requested_scope = GLOBAL_SCOPE
+        company_ids = []
+    else:
+        requested_scope = COMPANY_SCOPE
+
+    now = utc_now_iso()
+    created = container.sheets.upsert_user(
+        make_id("usr"),
+        {
+            "name": str(payload.name or "").strip() or email.split("@", 1)[0],
+            "email": email,
+            "password_hash": "",
+            "role": requested_role,
+            "scope_type": requested_scope,
+            "company_ids": company_ids,
+            "company_id": company_ids[0] if len(company_ids) == 1 else "",
+            "active": payload.active,
+            "created_at": now,
+            "updated_at": now,
+        },
+    )
+    return _safe_user_payload(created)
 
 
 @router.get("/dashboard")
 def dashboard(
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
-    return _get_container(request).backoffice.get_dashboard()
+    return _get_container(request).backoffice.get_dashboard(user)
 
 
 @router.get("/employees")
 def list_employees(
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
-    return {"items": _get_container(request).backoffice.list_employees()}
+    return {"items": _get_container(request).backoffice.list_employees(user)}
 
 
 @router.get("/companies")
 def list_companies(
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
-    return {"items": _get_container(request).backoffice.list_companies()}
+    return {"items": _get_container(request).backoffice.list_companies(user)}
 
 
 @router.post("/employees", status_code=status.HTTP_201_CREATED)
 def create_employee(
     payload: EmployeePayload,
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
+    _ensure_user_can_access_company(user, payload.company_id)
     return _get_container(request).backoffice.create_employee(payload.model_dump())
 
 
@@ -376,9 +537,9 @@ def create_employee(
 def get_employee(
     phone: str,
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
-    detail = _get_container(request).backoffice.get_employee_detail(phone)
+    detail = _get_container(request).backoffice.get_employee_detail(phone, user)
     if not detail:
         raise HTTPException(status_code=404, detail="Employee not found")
     return detail
@@ -389,8 +550,12 @@ def update_employee(
     phone: str,
     payload: EmployeePayload,
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
+    existing = _get_container(request).backoffice.get_employee_detail(phone, user)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    _ensure_user_can_access_company(user, payload.company_id)
     employee = _get_container(request).backoffice.update_employee(phone, payload.model_dump())
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
@@ -402,10 +567,13 @@ def employee_action(
     phone: str,
     payload: StatusActionPayload,
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
     if payload.action not in {"deactivate", "activate"}:
         raise HTTPException(status_code=400, detail="Unsupported action")
+    existing = _get_container(request).backoffice.get_employee_detail(phone, user)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Employee not found")
     employee = _get_container(request).backoffice.update_employee(
         phone,
         {"active": payload.action == "activate"},
@@ -420,8 +588,11 @@ def delete_employee(
     phone: str,
     request: Request,
     delete_cases: bool = Query(default=False),
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
+    existing = _get_container(request).backoffice.get_employee_detail(phone, user)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Employee not found")
     result = _get_container(request).backoffice.delete_employee_with_related_data(
         phone,
         delete_cases=delete_cases,
@@ -435,18 +606,24 @@ def delete_employee(
 def list_cases(
     request: Request,
     cost_center: str = Query(default=""),
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
-    return {"items": _get_container(request).backoffice.list_cases({"cost_center": cost_center})}
+    return {
+        "items": _get_container(request).backoffice.list_cases(
+            {"cost_center": cost_center},
+            user,
+        )
+    }
 
 
 @router.post("/cases", status_code=status.HTTP_201_CREATED)
 def create_case(
     payload: CasePayload,
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
     container = _get_container(request)
+    _ensure_user_can_access_company(user, payload.company_id)
     try:
         expense_case = container.backoffice.create_case(payload.model_dump())
     except ValueError as exc:
@@ -454,16 +631,13 @@ def create_case(
 
     phone = str(expense_case.get("employee_phone", expense_case.get("phone", "")) or "").strip()
     if phone:
+        timezone_name = "America/Santiago"
+        messages: list[str] = []
         try:
             timezone_name = container.scheduler._resolve_case_timezone(expense_case)
-            sent_at_utc = utc_now_iso()
             messages = container.scheduler._build_submission_start_intro_messages(
                 expense_case=expense_case
             )
-            send_results = [
-                container.whatsapp.send_outbound_text(phone, message)
-                for message in messages
-            ]
             conversation = container.sheets.update_conversation(
                 phone,
                 _build_new_case_conversation_state(
@@ -471,6 +645,25 @@ def create_case(
                     container.sheets.get_conversation(phone),
                 ),
             )
+        except Exception as exc:
+            expense_case["intro_notification"] = {
+                "status": "conversation_reset_failed",
+                "error": str(exc),
+            }
+            logger.exception(
+                "Failed to reset conversation for new case intro case_id=%s phone=%s",
+                str(expense_case.get("case_id", "") or "").strip() or None,
+                phone,
+            )
+            return expense_case
+
+        try:
+            sent_at_utc = utc_now_iso()
+            send_results = [
+                container.whatsapp.send_outbound_text(phone, message)
+                for message in messages
+            ]
+            conversation = container.sheets.get_conversation(phone)
             conversation = container.conversation.ensure_conversation(conversation)
             context = conversation.get("context_json", {})
             message_log = context.get("message_log", [])
@@ -510,8 +703,21 @@ def create_case(
                     "twilio_message_sid": send_results[-1].get("sid") if send_results else None,
                 },
             )
-        except Exception:
-            pass
+            expense_case["intro_notification"] = {
+                "status": "sent",
+                "message_count": len(messages),
+            }
+        except Exception as exc:
+            expense_case["intro_notification"] = {
+                "status": "send_failed",
+                "error": str(exc),
+            }
+            logger.exception(
+                "Failed to send new case intro WhatsApp case_id=%s phone=%s provider=%s",
+                str(expense_case.get("case_id", "") or "").strip() or None,
+                phone,
+                str(getattr(container.whatsapp, "provider", "") or "") or None,
+            )
 
     return expense_case
 
@@ -520,9 +726,9 @@ def create_case(
 def get_case(
     case_id: str,
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
-    detail = _get_container(request).backoffice.get_case_detail(case_id)
+    detail = _get_container(request).backoffice.get_case_detail(case_id, user)
     if not detail:
         raise HTTPException(status_code=404, detail="Case not found")
     return detail
@@ -620,10 +826,10 @@ def case_chat(
     case_id: str,
     payload: CaseChatPayload,
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
     container = _get_container(request)
-    detail = container.backoffice.get_case_detail(case_id)
+    detail = container.backoffice.get_case_detail(case_id, user)
     if not detail:
         raise HTTPException(status_code=404, detail="Case not found")
 
@@ -649,8 +855,12 @@ def update_case(
     case_id: str,
     payload: CasePayload,
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
+    existing = _get_container(request).backoffice.get_case_detail(case_id, user)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Case not found")
+    _ensure_user_can_access_company(user, payload.company_id)
     expense_case = _get_container(request).backoffice.update_case(case_id, payload.model_dump())
     if not expense_case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -662,9 +872,11 @@ def case_action(
     case_id: str,
     payload: StatusActionPayload,
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
     container = _get_container(request)
+    if not container.backoffice.get_case_detail(case_id, user):
+        raise HTTPException(status_code=404, detail="Case not found")
 
     # Legacy status actions
     status_map = {"close": CaseStatus.CLOSED, "reopen": CaseStatus.ACTIVE}
@@ -769,7 +981,7 @@ def list_expenses(
     date_from: str = Query(default=""),
     date_to: str = Query(default=""),
     sort_by: str = Query(default=""),
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
     return {
         "items": _get_container(request).backoffice.list_expenses(
@@ -782,7 +994,8 @@ def list_expenses(
                 "date_from": date_from,
                 "date_to": date_to,
                 "sort_by": sort_by,
-            }
+            },
+            user,
         )
     }
 
@@ -791,9 +1004,9 @@ def list_expenses(
 def get_expense(
     expense_id: str,
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
-    detail = _get_container(request).backoffice.get_expense_detail(expense_id)
+    detail = _get_container(request).backoffice.get_expense_detail(expense_id, user)
     if not detail:
         raise HTTPException(status_code=404, detail="Expense not found")
     detail["expense"] = _attach_expense_receipt_urls(request, detail["expense"])
@@ -805,8 +1018,10 @@ def update_expense(
     expense_id: str,
     payload: ExpensePayload,
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
+    if not _get_container(request).backoffice.get_expense_detail(expense_id, user):
+        raise HTTPException(status_code=404, detail="Expense not found")
     expense = _get_container(request).backoffice.update_expense(expense_id, payload.model_dump())
     if not expense:
         raise HTTPException(status_code=404, detail="Expense not found")
@@ -818,9 +1033,11 @@ def expense_action(
     expense_id: str,
     payload: StatusActionPayload,
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
     container = _get_container(request)
+    if not container.backoffice.get_expense_detail(expense_id, user):
+        raise HTTPException(status_code=404, detail="Expense not found")
     status_map = {
         "approve": ExpenseStatus.APPROVED,
         "reject": ExpenseStatus.REJECTED,
@@ -874,9 +1091,9 @@ def expense_action(
 @router.get("/cases/export/csv")
 def export_cases_csv(
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> StreamingResponse:
-    cases = _get_container(request).backoffice.list_cases()
+    cases = _get_container(request).backoffice.list_cases(user=user)
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow([
@@ -926,9 +1143,9 @@ def export_cases_csv(
 @router.get("/expenses/export/csv")
 def export_expenses_csv(
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> StreamingResponse:
-    expenses = _get_container(request).backoffice.list_expenses()
+    expenses = _get_container(request).backoffice.list_expenses(user=user)
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow([
@@ -982,18 +1199,18 @@ def export_expenses_csv(
 @router.get("/conversations")
 def list_conversations(
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
-    return {"items": _get_container(request).backoffice.list_conversations()}
+    return {"items": _get_container(request).backoffice.list_conversations(user)}
 
 
 @router.get("/conversations/{phone}")
 def get_conversation(
     phone: str,
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
-    detail = _get_container(request).backoffice.get_conversation_detail(phone)
+    detail = _get_container(request).backoffice.get_conversation_detail(phone, user)
     if not detail:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return _enrich_conversation_media_messages(request, detail)
@@ -1004,8 +1221,10 @@ def update_conversation(
     phone: str,
     payload: ConversationPayload,
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
+    if not _get_container(request).backoffice.get_conversation_detail(phone, user):
+        raise HTTPException(status_code=404, detail="Conversation not found")
     return _get_container(request).backoffice.update_conversation(phone, payload.model_dump())
 
 
@@ -1018,6 +1237,8 @@ def send_conversation_message(
 ) -> dict[str, Any]:
     """Send a message from the backoffice operator to the user via WhatsApp."""
     container = _get_container(request)
+    if not container.backoffice.get_conversation_detail(phone, user):
+        raise HTTPException(status_code=404, detail="Conversation not found")
     message_text = payload.message.strip()
 
     # Send via WhatsApp
@@ -1071,7 +1292,7 @@ def send_conversation_message(
     return {
         "ok": True,
         "message": new_entry,
-        "conversation": container.backoffice.get_conversation_detail(phone),
+        "conversation": container.backoffice.get_conversation_detail(phone, user),
     }
 
 
@@ -1080,8 +1301,10 @@ def conversation_action(
     phone: str,
     payload: StatusActionPayload,
     request: Request,
-    _: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
     if payload.action != "resolve":
         raise HTTPException(status_code=400, detail="Unsupported action")
+    if not _get_container(request).backoffice.get_conversation_detail(phone, user):
+        raise HTTPException(status_code=404, detail="Conversation not found")
     return _get_container(request).backoffice.update_conversation(phone, {"state": "DONE"})

@@ -13,6 +13,7 @@ import {
   ChevronDown,
   LogOut,
   Menu,
+  UserCog,
 } from "lucide-react";
 
 import { useAuth } from "@/components/auth-provider";
@@ -24,6 +25,7 @@ const navigation = [
   { href: "/cases", label: "Casos", icon: Briefcase },
   { href: "/expenses", label: "Gastos", icon: Receipt },
   { href: "/conversations", label: "Conversaciones", icon: MessageSquare },
+  { href: "/users", label: "Usuarios", icon: UserCog },
 ];
 
 const deployCommit = process.env.NEXT_PUBLIC_DEPLOY_COMMIT || "local";

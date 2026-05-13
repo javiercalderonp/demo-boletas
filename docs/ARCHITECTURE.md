@@ -176,6 +176,11 @@ Autenticacion del backoffice:
 - token tipo Bearer guardado en `localStorage`
 - validacion server-side con `BackofficeAuthService`
 - usuarios guardados en la hoja `BackofficeUsers`
+- alcance de datos resuelto server-side con `services/backoffice_permissions.py`
+- roles actuales:
+  - `super_admin`: alcance global, puede ver y operar sobre todas las empresas
+  - `company_admin`: alcance por empresa, puede operar sobre una o mas empresas en `company_ids`
+  - `admin`: rol legacy; si no tiene empresas asignadas se trata como global para compatibilidad, si tiene `company_ids` se comporta como admin scoped
 
 ## Flujo principal de una boleta
 
@@ -205,6 +210,24 @@ La fuente de verdad operacional es Google Sheets. El servicio mantiene compatibi
 - `Conversations`
 - `ExpenseCaseDocuments`
 - `BackofficeUsers`
+
+### BackofficeUsers
+
+Representa las cuentas que pueden entrar al panel.
+
+Campos importantes:
+
+- `id`
+- `name`
+- `email`
+- `password_hash`
+- `role`
+- `scope_type`: `global` o `company`
+- `company_ids`: lista o string separado por comas con una o mas empresas permitidas
+- `company_id`: compatibilidad para una empresa unica
+- `active`
+
+El backend filtra dashboard, empresas, empleados, rendiciones, gastos, conversaciones y exports por el alcance del usuario autenticado. Para usuarios scoped, registros sin `company_id` no se exponen; quedan disponibles solo para usuarios globales.
 
 ### ExpenseCases
 
@@ -374,6 +397,7 @@ Flujo:
 - El backoffice usa tokens HMAC propios generados por `BackofficeAuthService`.
 - Los usuarios del backoffice se guardan en `BackofficeUsers`.
 - Las contrasenas se almacenan con PBKDF2-SHA256 y salt.
+- Los permisos de empresa se aplican en backend con `can_access_company(user, company_id)`; el frontend no es la barrera de seguridad.
 - Las llamadas del backoffice a la API usan `Authorization: Bearer <token>`.
 - CORS permite origins configurados y defaults productivos/locales.
 - WhatsApp Meta puede validar firma si `META_VALIDATE_SIGNATURE=true`; actualmente esta en `false` en `.env` local enmascarado.
@@ -397,6 +421,8 @@ No incluir secretos en documentacion. Las variables no sensibles relevantes son:
 
 ## Deploy
 
+Antes de desplegar, [deploy.sh](/Users/javiercalderon/demo-boletas/deploy.sh) sincroniza la rama local con su upstream remoto usando `git fetch` y `git pull --ff-only`. Si hay cambios locales sin commit, commits sin push o divergencia con el remoto, el deploy se detiene para evitar subir una version distinta a la ultima version del repositorio.
+
 Backend:
 
 ```bash
@@ -413,6 +439,14 @@ Ambos:
 
 ```bash
 ./deploy.sh all
+```
+
+Overrides para casos puntuales:
+
+```bash
+SKIP_REPO_SYNC=1 ./deploy.sh all
+ALLOW_DIRTY_DEPLOY=1 ./deploy.sh all
+ALLOW_UNPUSHED_DEPLOY=1 ./deploy.sh all
 ```
 
 Logs backend:

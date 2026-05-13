@@ -16,6 +16,26 @@ class LoginResponse(BaseModel):
     user: dict[str, Any]
 
 
+class SetupPasswordRequest(BaseModel):
+    email: str
+
+
+class SetupPasswordPayload(BaseModel):
+    email: str
+    name: str = ""
+    password: str = Field(min_length=8)
+
+
+class BackofficeUserPayload(BaseModel):
+    name: str = ""
+    email: str
+    role: str = "company_admin"
+    scope_type: str = "company"
+    company_ids: list[str] = Field(default_factory=list)
+    company_id: str = ""
+    active: bool = True
+
+
 class EmployeePayload(BaseModel):
     phone: str
     first_name: str = ""

@@ -3,6 +3,12 @@ export type BackofficeUser = {
   name: string;
   email: string;
   role: string;
+  scope_type?: "global" | "company" | string;
+  company_ids?: string[];
+  company_id?: string;
+  has_password?: boolean;
+  created_at?: string;
+  updated_at?: string;
   active: boolean;
 };
 
