@@ -109,6 +109,12 @@ class SendMessagePayload(BaseModel):
     message: str = Field(min_length=1, max_length=4096)
 
 
+class SendTemplatePayload(BaseModel):
+    template_name: str = Field(default="hello_world", min_length=1, max_length=512)
+    language_code: str = Field(default="en_US", min_length=2, max_length=16)
+    body_parameters: list[str] = Field(default_factory=list)
+
+
 class CaseChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str

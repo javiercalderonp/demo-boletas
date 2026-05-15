@@ -20,6 +20,7 @@ from app.schemas.backoffice import (
     LoginRequest,
     LoginResponse,
     SendMessagePayload,
+    SendTemplatePayload,
     SetupPasswordPayload,
     SetupPasswordRequest,
     StatusActionPayload,
@@ -38,7 +39,8 @@ from services.statuses import (
     ExpenseStatus,
     RendicionStatus,
 )
-from utils.helpers import make_id, utc_now_iso
+from services.sheets_service import normalize_cost_centers
+from utils.helpers import make_id, parse_float, utc_now_iso
 
 
 router = APIRouter(prefix="/api", tags=["backoffice"])
@@ -414,6 +416,65 @@ def _build_case_settlement_message(expense_case: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _format_template_clp(value: Any) -> str:
+    amount = parse_float(value)
+    if amount is None or amount <= 0:
+        return "Sin presupuesto definido"
+    return f"CLP {amount:,.0f}".replace(",", ".")
+
+
+def _truncate_template_parameter(value: str, limit: int = 900) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _resolve_case_template_employee_name(container: Any, phone: str, expense_case: dict[str, Any]) -> str:
+    for key in ("employee_name", "name", "first_name"):
+        value = str(expense_case.get(key, "") or "").strip()
+        if value:
+            return value.split()[0]
+    get_employee = getattr(container.sheets, "get_employee_any_by_phone", None)
+    employee = (callable(get_employee) and get_employee(phone)) or {}
+    for key in ("first_name", "name"):
+        value = str(employee.get(key, "") or "").strip()
+        if value:
+            return value.split()[0]
+    return "Usuario"
+
+
+def _build_case_intro_template_payload(container: Any, phone: str, expense_case: dict[str, Any]) -> dict[str, Any]:
+    employee_name = _resolve_case_template_employee_name(container, phone, expense_case)
+    case_label = str(expense_case.get("context_label", "") or "").strip()
+    case_reference = case_label or str(expense_case.get("case_id", "") or "").strip() or "tu rendición"
+    cost_centers = normalize_cost_centers(expense_case.get("cost_centers", []))
+    if cost_centers:
+        budget = (
+            expense_case.get("fondos_entregados")
+            or expense_case.get("policy_limit")
+            or expense_case.get("budget")
+        )
+        return {
+            "template_name": "inicio_rendicion_detalle",
+            "language_code": "es_CL",
+            "body_parameters": [
+                _truncate_template_parameter(employee_name),
+                _truncate_template_parameter(case_reference),
+                _truncate_template_parameter(_format_template_clp(budget)),
+                _truncate_template_parameter(", ".join(cost_centers)),
+            ],
+        }
+    return {
+        "template_name": "inicio_rendicion",
+        "language_code": "es_CL",
+        "body_parameters": [
+            _truncate_template_parameter(employee_name),
+            _truncate_template_parameter(case_reference),
+        ],
+    }
+
+
 @router.post("/auth/login", response_model=LoginResponse)
 def login(payload: LoginRequest, request: Request) -> LoginResponse:
     container = _get_container(request)
@@ -694,12 +755,10 @@ def create_case(
     phone = str(expense_case.get("employee_phone", expense_case.get("phone", "")) or "").strip()
     if phone:
         timezone_name = "America/Santiago"
-        messages: list[str] = []
+        template_payload: dict[str, Any] = {}
         try:
             timezone_name = container.scheduler._resolve_case_timezone(expense_case)
-            messages = container.scheduler._build_submission_start_intro_messages(
-                expense_case=expense_case
-            )
+            template_payload = _build_case_intro_template_payload(container, phone, expense_case)
             conversation = container.sheets.update_conversation(
                 phone,
                 _build_new_case_conversation_state(
@@ -721,26 +780,29 @@ def create_case(
 
         try:
             sent_at_utc = utc_now_iso()
-            send_results = [
-                container.whatsapp.send_outbound_text(phone, message)
-                for message in messages
-            ]
+            send_result = container.whatsapp.send_outbound_template(phone, **template_payload)
             conversation = container.sheets.get_conversation(phone)
             conversation = container.conversation.ensure_conversation(conversation)
             context = conversation.get("context_json", {})
             message_log = context.get("message_log", [])
             if not isinstance(message_log, list):
                 message_log = []
-            for message in messages:
-                message_log.append(
-                    {
-                        "id": make_id("msg"),
-                        "speaker": "bot",
-                        "type": "text",
-                        "text": message,
-                        "created_at": sent_at_utc,
-                    }
-                )
+            message_log.append(
+                {
+                    "id": make_id("msg"),
+                    "speaker": "bot",
+                    "type": "text",
+                    "text": (
+                        "Plantilla WhatsApp enviada: "
+                        f"{template_payload['template_name']} ({template_payload['language_code']})"
+                    ),
+                    "created_at": sent_at_utc,
+                    "template_name": template_payload["template_name"],
+                    "template_language": template_payload["language_code"],
+                    "template_parameters": template_payload["body_parameters"],
+                    "provider_message_id": send_result.get("id") or send_result.get("sid"),
+                }
+            )
             context["message_log"] = message_log[-MAX_MESSAGE_LOG_ITEMS:]
             container.sheets.update_conversation(
                 phone,
@@ -762,17 +824,20 @@ def create_case(
                     "slot": "submission_start_intro_manual",
                     "case_id": str(expense_case.get("case_id", "") or "").strip(),
                     "timezone": timezone_name,
-                    "twilio_message_sid": send_results[-1].get("sid") if send_results else None,
+                    "whatsapp_message_id": send_result.get("id") or send_result.get("sid"),
+                    "template_name": template_payload["template_name"],
                 },
             )
             expense_case["intro_notification"] = {
                 "status": "sent",
-                "message_count": len(messages),
+                "message_count": 1,
+                "template_name": template_payload["template_name"],
             }
         except Exception as exc:
             expense_case["intro_notification"] = {
                 "status": "send_failed",
                 "error": str(exc),
+                "template_name": template_payload.get("template_name", ""),
             }
             logger.exception(
                 "Failed to send new case intro WhatsApp case_id=%s phone=%s provider=%s",
@@ -1412,6 +1477,92 @@ def send_conversation_message(
         "ok": True,
         "message": new_entry,
         "conversation": container.backoffice.get_conversation_detail(phone, user),
+    }
+
+
+@router.post("/conversations/{phone}/template-messages")
+def send_conversation_template_message(
+    phone: str,
+    payload: SendTemplatePayload,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """Send an approved WhatsApp template, useful for opening a new conversation window."""
+    container = _get_container(request)
+    template_name = str(payload.template_name or "").strip()
+    language_code = str(payload.language_code or "").strip() or "en_US"
+    body_parameters = [
+        str(parameter or "").strip()
+        for parameter in payload.body_parameters
+        if str(parameter or "").strip()
+    ]
+
+    try:
+        send_result = container.whatsapp.send_outbound_template(
+            phone,
+            template_name=template_name,
+            language_code=language_code,
+            body_parameters=body_parameters,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"No se pudo enviar la plantilla por WhatsApp: {exc}",
+        ) from exc
+
+    conversation = container.sheets.get_conversation(phone)
+    if not conversation:
+        conversation = container.sheets.update_conversation(
+            phone,
+            {
+                "state": "WAIT_RECEIPT",
+                "current_step": "",
+                "context_json": container.conversation.default_context(),
+            },
+        )
+    conversation = container.conversation.ensure_conversation(conversation)
+    context = conversation.get("context_json", {})
+    message_log = context.get("message_log", [])
+    if not isinstance(message_log, list):
+        message_log = []
+
+    operator_name = str(user.get("name", "") or user.get("email", "") or "Operador").strip()
+    preview = f"Plantilla WhatsApp enviada: {template_name} ({language_code})"
+    new_entry = {
+        "id": make_id("msg"),
+        "speaker": "operator",
+        "type": "text",
+        "text": preview,
+        "created_at": utc_now_iso(),
+        "operator_name": operator_name,
+        "template_name": template_name,
+        "template_language": language_code,
+        "template_parameters": body_parameters,
+        "provider_message_id": send_result.get("id") or send_result.get("sid"),
+    }
+    message_log.append(new_entry)
+    context["message_log"] = message_log[-MAX_MESSAGE_LOG_ITEMS:]
+
+    container.sheets.update_conversation(
+        phone,
+        {
+            "state": conversation.get("state", "WAIT_RECEIPT"),
+            "current_step": conversation.get("current_step", ""),
+            "context_json": context,
+        },
+    )
+
+    conversation_detail = None
+    try:
+        conversation_detail = container.backoffice.get_conversation_detail(phone, user)
+    except Exception:
+        logger.exception("Failed to load conversation detail after template send phone=%s", phone)
+
+    return {
+        "ok": True,
+        "send_result": send_result,
+        "message": new_entry,
+        "conversation": conversation_detail,
     }
 
 

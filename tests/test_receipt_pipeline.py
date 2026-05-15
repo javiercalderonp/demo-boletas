@@ -852,6 +852,59 @@ class ReceiptPipelineTests(unittest.TestCase):
 
         self.assertEqual(mocked_send.call_count, 1)
 
+    def test_meta_recipient_normalizes_phone_without_plus(self):
+        service = WhatsAppService(settings=Settings())
+
+        self.assertEqual(service._normalize_meta_recipient("56979956605"), "56979956605")
+        self.assertEqual(service._normalize_meta_recipient("whatsapp:+56979956605"), "56979956605")
+
+    def test_twilio_recipient_adds_plus_for_phone_without_plus(self):
+        service = WhatsAppService(settings=Settings())
+
+        self.assertEqual(
+            service._normalize_twilio_whatsapp_address("56979956605"),
+            "whatsapp:+56979956605",
+        )
+        self.assertEqual(
+            service._normalize_twilio_whatsapp_address("whatsapp:+56979956605"),
+            "whatsapp:+56979956605",
+        )
+
+    def test_meta_template_send_builds_hello_world_payload(self):
+        settings = Settings(
+            meta_access_token="token",
+            meta_phone_number_id="phone-number-id",
+        )
+        service = WhatsAppService(settings=settings)
+
+        with patch.object(
+            service,
+            "_meta_request_json",
+            return_value={"messages": [{"id": "wamid.template"}]},
+        ) as mocked_request:
+            result = service.send_outbound_template(
+                "56979956605",
+                template_name="hello_world",
+                language_code="en_US",
+            )
+
+        self.assertEqual(result["id"], "wamid.template")
+        self.assertEqual(result["message_type"], "template")
+        mocked_request.assert_called_once_with(
+            method="POST",
+            path="/phone-number-id/messages",
+            payload={
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": "56979956605",
+                "type": "template",
+                "template": {
+                    "name": "hello_world",
+                    "language": {"code": "en_US"},
+                },
+            },
+        )
+
     def test_inbound_message_deduplication_marks_and_detects_duplicates(self):
         container = FakeContainer(
             {

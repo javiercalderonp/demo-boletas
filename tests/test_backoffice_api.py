@@ -9,8 +9,9 @@ from app.api.backoffice import (
     create_case,
     delete_case as delete_case_endpoint,
     require_super_admin,
+    send_conversation_template_message,
 )
-from app.schemas.backoffice import CasePayload, StatusActionPayload
+from app.schemas.backoffice import CasePayload, SendTemplatePayload, StatusActionPayload
 
 SUPER_ADMIN_USER = {"role": "super_admin", "scope_type": "global", "active": True}
 
@@ -77,7 +78,13 @@ class FakeBackoffice:
             "case_id": payload.get("case_id") or "CASE-NEW",
             "employee_phone": payload.get("employee_phone"),
             "company_id": payload.get("company_id", ""),
+            "context_label": payload.get("context_label", ""),
+            "cost_centers": payload.get("cost_centers", []),
+            "fondos_entregados": payload.get("fondos_entregados", ""),
         }
+
+    def get_conversation_detail(self, phone, user=None):
+        return {"conversation": {"phone": phone}}
 
 
 class FakeBackofficeActions:
@@ -159,10 +166,29 @@ class FakeScheduler:
 class FakeWhatsApp:
     def __init__(self):
         self.sent = []
+        self.sent_templates = []
 
     def send_outbound_text(self, phone, message, reply_to_message_id=None):
         self.sent.append((phone, message, reply_to_message_id))
         return {"sid": "SM123"}
+
+    def send_outbound_template(
+        self,
+        phone,
+        *,
+        template_name,
+        language_code="en_US",
+        body_parameters=None,
+    ):
+        self.sent_templates.append(
+            {
+                "phone": phone,
+                "template_name": template_name,
+                "language_code": language_code,
+                "body_parameters": list(body_parameters or []),
+            }
+        )
+        return {"id": "wamid.template", "provider": "meta"}
 
 
 class FailingWhatsApp:
@@ -170,6 +196,16 @@ class FailingWhatsApp:
 
     def send_outbound_text(self, phone, message, reply_to_message_id=None):
         raise RuntimeError("Meta API error HTTP 400: outside customer care window")
+
+    def send_outbound_template(
+        self,
+        phone,
+        *,
+        template_name,
+        language_code="en_US",
+        body_parameters=None,
+    ):
+        raise RuntimeError("Meta API error HTTP 400: template send failed")
 
 
 class BackofficeApiTests(unittest.TestCase):
@@ -200,6 +236,39 @@ class BackofficeApiTests(unittest.TestCase):
         message_log = container.sheets.conversation["context_json"]["message_log"]
         self.assertEqual(message_log[-1]["speaker"], "bot")
         self.assertEqual(message_log[-1]["text"], expected_message)
+
+    def test_send_template_message_opens_conversation_and_logs_operator_message(self):
+        container = SimpleNamespace(
+            backoffice=FakeBackoffice(),
+            whatsapp=FakeWhatsApp(),
+            sheets=FakeSheets({}),
+            conversation=FakeConversationService(),
+        )
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(services=container)))
+
+        result = send_conversation_template_message(
+            "56979956605",
+            SendTemplatePayload(template_name="hello_world", language_code="en_US"),
+            request,
+            {"name": "Operador Uno"},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            container.whatsapp.sent_templates,
+            [
+                {
+                    "phone": "56979956605",
+                    "template_name": "hello_world",
+                    "language_code": "en_US",
+                    "body_parameters": [],
+                }
+            ],
+        )
+        message_log = container.sheets.conversation["context_json"]["message_log"]
+        self.assertEqual(message_log[-1]["speaker"], "operator")
+        self.assertEqual(message_log[-1]["text"], "Plantilla WhatsApp enviada: hello_world (en_US)")
+        self.assertEqual(message_log[-1]["provider_message_id"], "wamid.template")
 
     def test_resolve_settlement_closes_case_automatically(self):
         container = SimpleNamespace(
@@ -340,7 +409,65 @@ class BackofficeApiTests(unittest.TestCase):
         self.assertEqual(context["trip_closure"], {"status": "pending"})
         self.assertEqual(len(context["message_log"]), 2)
         self.assertEqual(context["message_log"][0]["id"], "old-msg")
-        self.assertEqual(context["message_log"][1]["text"], "Hola, ya puedes enviar tu boleta.")
+        self.assertEqual(
+            context["message_log"][1]["text"],
+            "Plantilla WhatsApp enviada: inicio_rendicion (es_CL)",
+        )
+        self.assertEqual(context["message_log"][1]["template_name"], "inicio_rendicion")
+        self.assertEqual(context["message_log"][1]["template_parameters"], ["Usuario", "CASE-NEW"])
+        self.assertEqual(
+            container.whatsapp.sent_templates,
+            [
+                {
+                    "phone": "+56911111111",
+                    "template_name": "inicio_rendicion",
+                    "language_code": "es_CL",
+                    "body_parameters": ["Usuario", "CASE-NEW"],
+                }
+            ],
+        )
+
+    def test_create_case_uses_detail_template_when_cost_centers_are_enabled(self):
+        container = SimpleNamespace(
+            backoffice=FakeBackoffice(),
+            scheduler=FakeScheduler(),
+            whatsapp=FakeWhatsApp(),
+            sheets=FakeSheets({"context_json": {"message_log": []}}),
+            conversation=FakeConversationService(),
+        )
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(services=container)))
+
+        result = create_case(
+            CasePayload(
+                employee_phone="+56911111111",
+                company_id="COMP-1",
+                case_id="CASE-NEW",
+                context_label="Viaje Santiago",
+                cost_centers=["Operaciones", "Ventas"],
+                fondos_entregados=250000,
+            ),
+            request,
+            SUPER_ADMIN_USER,
+        )
+
+        self.assertEqual(result["intro_notification"]["status"], "sent")
+        self.assertEqual(result["intro_notification"]["template_name"], "inicio_rendicion_detalle")
+        self.assertEqual(
+            container.whatsapp.sent_templates,
+            [
+                {
+                    "phone": "+56911111111",
+                    "template_name": "inicio_rendicion_detalle",
+                    "language_code": "es_CL",
+                    "body_parameters": [
+                        "Usuario",
+                        "Viaje Santiago",
+                        "CLP 250.000",
+                        "Operaciones, Ventas",
+                    ],
+                }
+            ],
+        )
 
     def test_create_case_keeps_conversation_ready_when_intro_message_fails(self):
         conversation = {

@@ -11,6 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from app.config import Settings
+from utils.helpers import normalize_whatsapp_phone
 
 logger = logging.getLogger(__name__)
 
@@ -117,9 +118,8 @@ class WhatsAppService:
                 "(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM)."
             )
 
-        if not from_whatsapp.startswith("whatsapp:"):
-            from_whatsapp = f"whatsapp:{from_whatsapp}"
-        to_whatsapp = to_phone if str(to_phone).startswith("whatsapp:") else f"whatsapp:{to_phone}"
+        from_whatsapp = self._normalize_twilio_whatsapp_address(from_whatsapp)
+        to_whatsapp = self._normalize_twilio_whatsapp_address(to_phone)
 
         try:
             from twilio.rest import Client
@@ -198,6 +198,23 @@ class WhatsAppService:
             to_phone,
             "\n".join(fallback_lines).strip(),
             reply_to_message_id=reply_to_message_id,
+        )
+
+    def send_outbound_template(
+        self,
+        to_phone: str,
+        *,
+        template_name: str,
+        language_code: str = "en_US",
+        body_parameters: list[str] | None = None,
+    ) -> dict[str, Any]:
+        if self.provider != "meta":
+            raise RuntimeError("El envío de plantillas solo está implementado para Meta WhatsApp Cloud API.")
+        return self._send_outbound_template_meta(
+            to_phone,
+            template_name=template_name,
+            language_code=language_code,
+            body_parameters=body_parameters or [],
         )
 
     def send_outbound_list(
@@ -279,9 +296,8 @@ class WhatsAppService:
                 "(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM)."
             )
 
-        if not from_whatsapp.startswith("whatsapp:"):
-            from_whatsapp = f"whatsapp:{from_whatsapp}"
-        to_whatsapp = to_phone if str(to_phone).startswith("whatsapp:") else f"whatsapp:{to_phone}"
+        from_whatsapp = self._normalize_twilio_whatsapp_address(from_whatsapp)
+        to_whatsapp = self._normalize_twilio_whatsapp_address(to_phone)
 
         try:
             from twilio.rest import Client
@@ -457,6 +473,70 @@ class WhatsAppService:
             "id": message_id,
             "to": self._normalize_meta_recipient(to_phone),
             "provider": "meta",
+        }
+
+    def _send_outbound_template_meta(
+        self,
+        to_phone: str,
+        *,
+        template_name: str,
+        language_code: str,
+        body_parameters: list[str],
+    ) -> dict[str, Any]:
+        phone_number_id = (self.settings.meta_phone_number_id or "").strip()
+        access_token = (self.settings.meta_access_token or "").strip()
+        clean_template_name = str(template_name or "").strip()
+        clean_language_code = str(language_code or "").strip() or "en_US"
+        if not phone_number_id or not access_token:
+            raise RuntimeError(
+                "Faltan credenciales/config de Meta para envío saliente "
+                "(META_ACCESS_TOKEN, META_PHONE_NUMBER_ID)."
+            )
+        if not clean_template_name:
+            raise RuntimeError("template_name vacío para envío de plantilla WhatsApp.")
+
+        template_payload: dict[str, Any] = {
+            "name": clean_template_name,
+            "language": {"code": clean_language_code},
+        }
+        clean_body_parameters = [
+            str(parameter or "").strip()
+            for parameter in body_parameters
+            if str(parameter or "").strip()
+        ]
+        if clean_body_parameters:
+            template_payload["components"] = [
+                {
+                    "type": "body",
+                    "parameters": [
+                        {"type": "text", "text": parameter}
+                        for parameter in clean_body_parameters
+                    ],
+                }
+            ]
+
+        response = self._meta_request_json(
+            method="POST",
+            path=f"/{phone_number_id}/messages",
+            payload={
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": self._normalize_meta_recipient(to_phone),
+                "type": "template",
+                "template": template_payload,
+            },
+        )
+        messages = response.get("messages", []) or []
+        message_id = None
+        if messages and isinstance(messages[0], dict):
+            message_id = messages[0].get("id")
+        return {
+            "id": message_id,
+            "to": self._normalize_meta_recipient(to_phone),
+            "provider": "meta",
+            "message_type": "template",
+            "template_name": clean_template_name,
+            "language_code": clean_language_code,
         }
 
     def _send_outbound_buttons_meta(
@@ -670,12 +750,12 @@ class WhatsAppService:
             raise RuntimeError("Meta devolvió una respuesta JSON inválida.") from exc
 
     def _normalize_meta_recipient(self, to_phone: str) -> str:
-        normalized = str(to_phone or "").strip()
-        if normalized.startswith("whatsapp:"):
-            normalized = normalized.split(":", 1)[1]
-        if normalized.startswith("+"):
-            normalized = normalized[1:]
-        return normalized
+        normalized = normalize_whatsapp_phone(to_phone)
+        return normalized[1:] if normalized.startswith("+") else normalized
+
+    def _normalize_twilio_whatsapp_address(self, phone: str) -> str:
+        normalized = normalize_whatsapp_phone(phone)
+        return f"whatsapp:{normalized}" if normalized else "whatsapp:"
 
     def _is_meta_access_token_expired(self, status_code: int, detail: str) -> bool:
         if status_code != 401:
