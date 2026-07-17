@@ -49,9 +49,9 @@ class BackofficeAuthService:
         password = os.getenv("BACKOFFICE_DEFAULT_ADMIN_PASSWORD", "").strip()
         name = os.getenv("BACKOFFICE_DEFAULT_ADMIN_NAME", "Admin").strip() or "Admin"
 
-        if not email and not password:
+        if not email:
             return
-        if not email or not password:
+        if not password:
             raise RuntimeError(
                 "BACKOFFICE_DEFAULT_ADMIN_EMAIL and BACKOFFICE_DEFAULT_ADMIN_PASSWORD "
                 "must be configured together"

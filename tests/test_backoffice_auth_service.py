@@ -71,6 +71,25 @@ class BackofficeAuthServiceTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 service.ensure_default_admin()
 
+    def test_legacy_password_without_email_does_not_bootstrap_admin(self):
+        sheets = SheetsService(settings=Settings(google_sheets_spreadsheet_id=""))
+        service = BackofficeAuthService(
+            settings=Settings(backoffice_auth_secret="x" * 32),
+            sheets_service=sheets,
+        )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "BACKOFFICE_DEFAULT_ADMIN_EMAIL": "",
+                "BACKOFFICE_DEFAULT_ADMIN_PASSWORD": "Secure!123",
+            },
+            clear=False,
+        ):
+            service.ensure_default_admin()
+
+        self.assertIsNone(sheets.get_user_by_email("admin@example.com"))
+
     def test_access_token_requires_strong_secret(self):
         sheets = SheetsService(settings=Settings(google_sheets_spreadsheet_id=""))
         service = BackofficeAuthService(settings=Settings(), sheets_service=sheets)
