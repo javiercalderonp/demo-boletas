@@ -57,10 +57,10 @@ export function DataTable({
   }
 
   function isInteractiveTarget(target: EventTarget | null) {
-    return target instanceof HTMLElement
+    return target instanceof Element
       ? Boolean(
           target.closest(
-            "a, button, input, select, textarea, summary, [role='button']",
+            "a, button, details, input, select, textarea, summary, [role='button']",
           ),
         )
       : false;

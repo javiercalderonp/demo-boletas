@@ -1,4 +1,6 @@
 import unittest
+from tempfile import TemporaryDirectory
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from app.config import Settings
@@ -11,6 +13,55 @@ class SheetsServiceFallbackTests(unittest.TestCase):
         self.assertEqual(_column_label(26), "Z")
         self.assertEqual(_column_label(27), "AA")
         self.assertEqual(_column_label(31), "AE")
+
+    def test_backoffice_case_daily_reminders_normalizes_sheet_booleans(self):
+        service = SheetsService(
+            Settings(
+                google_application_credentials="",
+                google_sheets_spreadsheet_id="",
+            )
+        )
+
+        disabled = service._normalize_backoffice_case_row(
+            {
+                "case_id": "CASE-1",
+                "employee_phone": "+56911111111",
+                "daily_reminders_enabled": "FALSE",
+            }
+        )
+        missing = service._normalize_backoffice_case_row(
+            {"case_id": "CASE-2", "employee_phone": "+56922222222"}
+        )
+        denormalized = service._denormalize_backoffice_case_row(disabled)
+
+        self.assertIs(disabled["daily_reminders_enabled"], False)
+        self.assertIs(missing["daily_reminders_enabled"], True)
+        self.assertEqual(denormalized["daily_reminders_enabled"], "FALSE")
+
+    def test_append_audit_log_uses_local_store_when_sheets_disabled(self):
+        service = SheetsService(
+            Settings(
+                google_application_credentials="",
+                google_sheets_spreadsheet_id="",
+            )
+        )
+
+        row = service.append_audit_log(
+            user_email="Operator@Example.com",
+            user_role="company_admin",
+            action="expense.approve",
+            resource_type="expense",
+            resource_id="EXP-1",
+            company_id="COMP-1",
+            details={"case_id": "CASE-1"},
+        )
+
+        self.assertTrue(row["audit_id"].startswith("audit-"))
+        self.assertEqual(row["user_email"], "operator@example.com")
+        self.assertEqual(row["action"], "expense.approve")
+        rows = service.list_audit_log()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["resource_id"], "EXP-1")
 
     def test_get_records_uses_stale_cache_on_retryable_timeout(self):
         service = SheetsService(
@@ -267,6 +318,73 @@ class SheetsServiceFallbackTests(unittest.TestCase):
             ],
             value_input_option="USER_ENTERED",
         )
+
+    def test_sqlite_persistence_survives_new_service_instance(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "expenses.sqlite3")
+            settings = Settings(
+                google_application_credentials="",
+                google_sheets_spreadsheet_id="",
+                persistence_backend="sqlite",
+                sqlite_database_path=db_path,
+            )
+            service = SheetsService(settings)
+            service.create_employee(
+                {
+                    "phone": "+56911111111",
+                    "first_name": "Javier",
+                    "active": True,
+                }
+            )
+            service.create_expense_case(
+                {
+                    "case_id": "CASE-1",
+                    "employee_phone": "+56911111111",
+                    "status": "active",
+                    "context_label": "Demo",
+                }
+            )
+            service.create_expense(
+                {
+                    "expense_id": "EXP-1",
+                    "phone": "+56911111111",
+                    "case_id": "CASE-1",
+                    "total_clp": 12000,
+                }
+            )
+
+            reloaded = SheetsService(settings)
+
+            self.assertTrue(reloaded.sqlite_enabled)
+            self.assertEqual(reloaded.get_employee_by_phone("+56911111111")["first_name"], "Javier")
+            self.assertEqual(reloaded.get_expense_case_by_id("CASE-1")["context_label"], "Demo")
+            self.assertEqual(len(reloaded.list_expenses_by_phone_case("+56911111111", "CASE-1")), 1)
+
+    def test_sqlite_upsert_and_delete_match_sheet_api(self):
+        with TemporaryDirectory() as tmpdir:
+            service = SheetsService(
+                Settings(
+                    google_application_credentials="",
+                    google_sheets_spreadsheet_id="",
+                    persistence_backend="sqlite",
+                    sqlite_database_path=str(Path(tmpdir) / "expenses.sqlite3"),
+                )
+            )
+            service.create_expense_case(
+                {
+                    "case_id": "CASE-1",
+                    "employee_phone": "+56911111111",
+                    "status": "active",
+                    "context_label": "Original",
+                }
+            )
+
+            updated = service.update_expense_case("CASE-1", {"context_label": "Actualizada"})
+            deleted = service.delete_expense_case("CASE-1")
+
+            self.assertEqual(updated["context_label"], "Actualizada")
+            self.assertEqual(deleted["context_label"], "Actualizada")
+            self.assertIsNone(service.get_expense_case_by_id("CASE-1"))
 
 
 if __name__ == "__main__":

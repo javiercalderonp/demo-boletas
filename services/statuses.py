@@ -54,6 +54,11 @@ class SettlementDirection:
 
 class SettlementStatus:
     PENDING = "settlement_pending"
+    PENDING_EMPLOYEE_PAYMENT_PROOF = "pending_employee_payment_proof"
+    PAYMENT_PROOF_UNDER_REVIEW = "payment_proof_under_review"
+    PAYMENT_PROOF_REJECTED = "payment_proof_rejected"
+    PENDING_COMPANY_PAYMENT = "pending_company_payment"
+    COMPANY_PAYMENT_SENT = "company_payment_sent"
     SETTLED = "settled"
 
 

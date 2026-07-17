@@ -13,14 +13,16 @@ from services.consolidated_document_service import ConsolidatedDocumentService
 from services.backoffice_service import BackofficeService
 from services.docusign_service import DocusignError, DocusignService
 from services.sheets_service import SheetsService
-from services.statuses import CaseStatus, RendicionStatus, normalize_rendicion_status
+from services.statuses import CaseStatus, ExpenseStatus, RendicionStatus, normalize_rendicion_status
 from services.whatsapp_service import WhatsAppService
-from utils.helpers import json_loads, normalize_whatsapp_phone, parse_float, parse_iso_date, utc_now_iso
+from utils.helpers import json_loads, make_id, normalize_whatsapp_phone, parse_float, parse_iso_date, truthy, utc_now_iso
 
 
 logger = logging.getLogger(__name__)
 
 WAIT_SUBMISSION_CLOSURE_CONFIRMATION = "WAIT_SUBMISSION_CLOSURE_CONFIRMATION"
+NEEDS_INFO = "NEEDS_INFO"
+WAIT_RECEIPT = "WAIT_RECEIPT"
 SUBMISSION_CLOSURE_STEP = "submission_closure_confirmation"
 SUBMISSION_CLOSURE_TIMEOUT_HOURS = 24
 ACTIVE_RECEIPT_STATES = {"PROCESSING", "NEEDS_INFO", "CONFIRM_SUMMARY"}
@@ -103,6 +105,8 @@ class SchedulerService:
             "skipped_count": 0,
             "submission_closure_prompted_count": 0,
             "submission_closure_closed_count": 0,
+            "needs_info_reminder_sent_count": 0,
+            "needs_info_timeout_count": 0,
             "errors": [],
             "items": [],
         }
@@ -141,6 +145,16 @@ class SchedulerService:
                 report["skipped_count"] += 1
             if closure_item.get("error"):
                 report["errors"].append(closure_item["error"])
+
+        for needs_info_item in self._evaluate_needs_info_timeouts(now_utc=now, dry_run=dry_run):
+            report["items"].append(needs_info_item)
+            needs_info_outcome = needs_info_item.get("outcome")
+            if needs_info_outcome == "sent_needs_info_reminder":
+                report["needs_info_reminder_sent_count"] += 1
+            elif needs_info_outcome == "needs_info_timeout":
+                report["needs_info_timeout_count"] += 1
+            elif needs_info_outcome == "error":
+                report["errors"].append(needs_info_item.get("error", "needs_info_timeout_error"))
 
         return report
 
@@ -469,6 +483,18 @@ class SchedulerService:
             item["send_results"] = send_results
             return item
 
+        raw_daily_reminders_enabled = expense_case.get("daily_reminders_enabled", True)
+        daily_reminders_enabled = (
+            raw_daily_reminders_enabled
+            if isinstance(raw_daily_reminders_enabled, bool)
+            else True
+            if raw_daily_reminders_enabled in (None, "")
+            else truthy(raw_daily_reminders_enabled)
+        )
+        if not daily_reminders_enabled:
+            item["outcome"] = "skipped_daily_reminders_disabled"
+            return item
+
         reminder_slot = self._current_slot(local_now)
         if not reminder_slot:
             return item
@@ -482,7 +508,11 @@ class SchedulerService:
             item["outcome"] = "skipped_already_sent"
             return item
 
-        message = self._build_submission_reminder_message(expense_case=expense_case, slot=reminder_slot)
+        message = self._build_submission_reminder_message(
+            expense_case=expense_case,
+            slot=reminder_slot,
+            local_date=local_date,
+        )
         item["message"] = message
 
         if dry_run:
@@ -515,6 +545,255 @@ class SchedulerService:
 
     def _evaluate_trip_reminder(self, *, trip: dict[str, Any], now_utc: datetime, dry_run: bool) -> dict[str, Any]:
         return self._evaluate_case_reminder(expense_case=trip, now_utc=now_utc, dry_run=dry_run)
+
+    def _evaluate_needs_info_timeouts(
+        self,
+        *,
+        now_utc: datetime,
+        dry_run: bool,
+    ) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        timeout_hours = max(1, int(getattr(self.settings, "scheduler_needs_info_timeout_hours", 6) or 6))
+        reminder_before_hours = max(
+            0,
+            int(getattr(self.settings, "scheduler_needs_info_reminder_before_hours", 2) or 2),
+        )
+
+        for conversation in self.sheets_service.list_conversations():
+            state = str(conversation.get("state", "") or "").strip()
+            if state != NEEDS_INFO:
+                continue
+            phone = normalize_whatsapp_phone(conversation.get("phone", ""))
+            context = self._normalize_conversation_context(conversation.get("context_json"))
+            tracking = context.get("needs_info_timeout")
+            if not isinstance(tracking, dict):
+                tracking = {}
+
+            started_at = (
+                self._parse_datetime_utc(tracking.get("started_at_utc"))
+                or self._parse_datetime_utc(conversation.get("updated_at"))
+                or now_utc
+            )
+            deadline = started_at + timedelta(hours=timeout_hours)
+            reminder_at = deadline - timedelta(hours=reminder_before_hours)
+            current_step = str(conversation.get("current_step") or context.get("last_question") or "").strip()
+            draft = context.get("draft_expense") if isinstance(context.get("draft_expense"), dict) else {}
+            case_id = str(draft.get("case_id", "") or "").strip()
+
+            item: dict[str, Any] = {
+                "item_type": "needs_info_timeout",
+                "phone": phone,
+                "case_id": case_id,
+                "current_step": current_step,
+                "started_at_utc": started_at.isoformat(),
+                "deadline_at_utc": deadline.isoformat(),
+                "due": False,
+                "outcome": "not_due",
+            }
+            if not phone:
+                item["outcome"] = "skipped_invalid_phone"
+                items.append(item)
+                continue
+
+            if now_utc >= deadline:
+                item["due"] = True
+                if dry_run:
+                    item["outcome"] = "needs_info_timeout"
+                    item["dry_run"] = True
+                    items.append(item)
+                    continue
+                try:
+                    expense = self._timeout_needs_info_conversation(
+                        phone=phone,
+                        context=context,
+                        started_at=started_at,
+                        deadline=deadline,
+                        current_step=current_step,
+                    )
+                    item["outcome"] = "needs_info_timeout"
+                    item["expense_id"] = expense.get("expense_id", "")
+                except Exception as exc:
+                    logger.exception("NEEDS_INFO timeout failed phone=%s", phone)
+                    item["outcome"] = "error"
+                    item["error"] = str(exc)
+                items.append(item)
+                continue
+
+            if reminder_before_hours and now_utc >= reminder_at and not tracking.get("reminder_sent_at_utc"):
+                item["due"] = True
+                message = self._build_needs_info_reminder_message(current_step=current_step)
+                item["message"] = message
+                if dry_run:
+                    item["outcome"] = "sent_needs_info_reminder"
+                    item["dry_run"] = True
+                    items.append(item)
+                    continue
+                try:
+                    send_result = self.whatsapp_service.send_outbound_text(phone, message)
+                    tracking.update(
+                        {
+                            "started_at_utc": started_at.isoformat(),
+                            "deadline_at_utc": deadline.isoformat(),
+                            "reminder_sent_at_utc": utc_now_iso(),
+                            "current_step": current_step,
+                        }
+                    )
+                    context["needs_info_timeout"] = tracking
+                    self.sheets_service.update_conversation(
+                        phone,
+                        {
+                            "state": NEEDS_INFO,
+                            "current_step": current_step,
+                            "context_json": context,
+                        },
+                    )
+                    item["outcome"] = "sent_needs_info_reminder"
+                    item["send_result"] = send_result
+                except Exception as exc:
+                    logger.exception("NEEDS_INFO reminder failed phone=%s", phone)
+                    item["outcome"] = "error"
+                    item["error"] = str(exc)
+                items.append(item)
+                continue
+
+            if not tracking.get("started_at_utc"):
+                tracking.update(
+                    {
+                        "started_at_utc": started_at.isoformat(),
+                        "deadline_at_utc": deadline.isoformat(),
+                        "current_step": current_step,
+                    }
+                )
+                context["needs_info_timeout"] = tracking
+                if not dry_run:
+                    self.sheets_service.update_conversation(
+                        phone,
+                        {
+                            "state": NEEDS_INFO,
+                            "current_step": current_step,
+                            "context_json": context,
+                        },
+                    )
+            items.append(item)
+
+        return items
+
+    def _build_needs_info_reminder_message(self, *, current_step: str) -> str:
+        field_label = {
+            "document_type": "tipo de documento",
+            "merchant": "comercio",
+            "date": "fecha",
+            "total": "monto total",
+            "currency": "moneda",
+            "category": "categoría",
+            "country": "país",
+        }.get(current_step, "dato pendiente")
+        return (
+            "Tienes un gasto pendiente de completar. "
+            f"Respóndeme con el {field_label} para terminar de registrarlo."
+        )
+
+    def _timeout_needs_info_conversation(
+        self,
+        *,
+        phone: str,
+        context: dict[str, Any],
+        started_at: datetime,
+        deadline: datetime,
+        current_step: str,
+    ) -> dict[str, Any]:
+        draft = context.get("draft_expense")
+        if not isinstance(draft, dict):
+            draft = {}
+        expense = self._create_pending_review_expense_from_draft(
+            phone=phone,
+            draft=draft,
+            current_step=current_step,
+            started_at=started_at,
+            deadline=deadline,
+        )
+        next_context = self._normalize_conversation_context({})
+        next_context["message_log"] = [
+            item for item in context.get("message_log", []) if isinstance(item, dict)
+        ]
+        next_context["last_needs_info_timeout"] = {
+            "timed_out_at_utc": utc_now_iso(),
+            "started_at_utc": started_at.isoformat(),
+            "deadline_at_utc": deadline.isoformat(),
+            "current_step": current_step,
+            "expense_id": expense.get("expense_id", ""),
+        }
+        self.sheets_service.update_conversation(
+            phone,
+            {
+                "state": WAIT_RECEIPT,
+                "current_step": "",
+                "context_json": next_context,
+            },
+        )
+        try:
+            self.whatsapp_service.send_outbound_text(
+                phone,
+                (
+                    "Guardé el gasto incompleto como pendiente de revisión. "
+                    "Puedes enviar un nuevo comprobante cuando quieras."
+                ),
+            )
+        except Exception:
+            logger.exception("NEEDS_INFO timeout notice failed phone=%s", phone)
+        return expense
+
+    def _create_pending_review_expense_from_draft(
+        self,
+        *,
+        phone: str,
+        draft: dict[str, Any],
+        current_step: str,
+        started_at: datetime,
+        deadline: datetime,
+    ) -> dict[str, Any]:
+        active_case = self.sheets_service.get_active_expense_case_by_phone(phone) or {}
+        case_id = str(draft.get("case_id") or active_case.get("case_id") or "").strip()
+        total = parse_float(draft.get("total"))
+        currency = str(draft.get("currency", "") or "").strip().upper()
+        now = utc_now_iso()
+        expense = {
+            "expense_id": make_id("EXP"),
+            "phone": phone,
+            "case_id": case_id,
+            "trip_id": case_id,
+            "merchant": draft.get("merchant", ""),
+            "date": draft.get("date", ""),
+            "currency": currency,
+            "total": total if total is not None else draft.get("total", ""),
+            "total_clp": draft.get("total_clp", ""),
+            "category": draft.get("category", ""),
+            "cost_center": str(draft.get("cost_center", "") or "").strip(),
+            "country": draft.get("country", ""),
+            "shared": "FALSE",
+            "status": ExpenseStatus.PENDING_REVIEW,
+            "processing_status": "review_required",
+            "case_lookup_status": "active_case_linked" if case_id else "missing_case",
+            "review_status": "needs_info_timeout",
+            "review_reason": f"needs_info_timeout:{current_step or 'unknown'}",
+            "source_message_id": str(draft.get("source_message_id", "") or "").strip(),
+            "receipt_storage_provider": draft.get("receipt_storage_provider", ""),
+            "receipt_object_key": draft.get("receipt_object_key", ""),
+            "document_type": draft.get("document_type", ""),
+            "invoice_number": draft.get("invoice_number", ""),
+            "tax_amount": draft.get("tax_amount", ""),
+            "issuer_tax_id": draft.get("issuer_tax_id", ""),
+            "receiver_tax_id": draft.get("receiver_tax_id", ""),
+            "gross_amount": draft.get("gross_amount", ""),
+            "withholding_rate": draft.get("withholding_rate", ""),
+            "withholding_amount": draft.get("withholding_amount", ""),
+            "net_amount": draft.get("net_amount", ""),
+            "receiver_name": draft.get("receiver_name", ""),
+            "service_description": draft.get("service_description", ""),
+            "created_at": now,
+            "updated_at": now,
+        }
+        return self.sheets_service.create_expense(expense)
 
     def _evaluate_submission_closure(
         self,
@@ -723,7 +1002,13 @@ class SchedulerService:
     def _resolve_trip_timezone(self, trip: dict[str, Any]) -> str:
         return self._resolve_case_timezone(trip)
 
-    def _build_submission_reminder_message(self, *, expense_case: dict[str, Any], slot: str) -> str:
+    def _build_submission_reminder_message(
+        self,
+        *,
+        expense_case: dict[str, Any],
+        slot: str,
+        local_date=None,
+    ) -> str:
         context_label = str(
             expense_case.get("context_label", expense_case.get("destination", "")) or ""
         ).strip()
@@ -733,13 +1018,64 @@ class SchedulerService:
                 f"Buen día. Recordatorio de rendición{context_text}:\n"
                 "Guarda tus boletas, facturas o comprobantes de hoy y envíalos por este chat cuando puedas."
             )
-        return (
-            f"Cierre del día{context_text}:\n"
-            "Si tienes documentos pendientes, envíalos ahora por este chat para dejar tu rendición al día."
+        return self._build_daily_summary_message(
+            expense_case=expense_case,
+            context_text=context_text,
+            local_date=local_date,
         )
 
     def _build_trip_reminder_message(self, *, trip: dict[str, Any], slot: str) -> str:
         return self._build_submission_reminder_message(expense_case=trip, slot=slot)
+
+    def _build_daily_summary_message(
+        self,
+        *,
+        expense_case: dict[str, Any],
+        context_text: str,
+        local_date,
+    ) -> str:
+        phone = normalize_whatsapp_phone(expense_case.get("phone"))
+        case_id = str(expense_case.get("case_id", expense_case.get("trip_id", "")) or "").strip()
+        fondos_entregados = parse_float(expense_case.get("fondos_entregados"))
+        if fondos_entregados is None:
+            fondos_entregados = parse_float(expense_case.get("policy_limit", expense_case.get("budget"))) or 0.0
+
+        case_expenses = [
+            item
+            for item in self.sheets_service.list_expenses()
+            if normalize_whatsapp_phone(item.get("phone")) == phone
+            and str(item.get("case_id", item.get("trip_id", "")) or "").strip() == case_id
+        ]
+        balance = BackofficeService._compute_rendicion_balance(fondos_entregados, case_expenses)
+        today_count = self._count_expenses_for_local_date(case_expenses, local_date)
+
+        return (
+            f"Cierre del día{context_text}:\n"
+            f"Documentos registrados hoy: {today_count}\n"
+            f"Fondos entregados: {self._format_clp(fondos_entregados)}\n"
+            f"Rendido aprobado: {self._format_clp(balance['monto_rendido_aprobado'])}\n"
+            f"Pendiente de revisión: {self._format_clp(balance['monto_pendiente_revision'])}\n"
+            f"Saldo restante: {self._format_clp(balance['saldo_restante'])}\n"
+            "Si tienes documentos pendientes, envíalos ahora por este chat para dejar tu rendición al día."
+        )
+
+    def _count_expenses_for_local_date(self, expenses: list[dict[str, Any]], local_date) -> int:
+        if local_date is None:
+            return 0
+        total = 0
+        for expense in expenses:
+            for field_name in ("date", "expense_date", "created_at", "updated_at"):
+                expense_date = parse_iso_date(expense.get(field_name))
+                if expense_date is not None:
+                    if expense_date == local_date:
+                        total += 1
+                    break
+        return total
+
+    @staticmethod
+    def _format_clp(value: Any) -> str:
+        amount = parse_float(value) or 0.0
+        return f"${amount:,.0f} CLP".replace(",", ".")
 
     def _build_submission_start_intro_messages(self, *, expense_case: dict[str, Any]) -> list[str]:
         context_label = str(
@@ -932,6 +1268,17 @@ class SchedulerService:
             "closure_yes_more_documents",
             "confirmar consolidado",
             "simple_confirmation_yes_confirm_consolidated",
+            "dale",
+            "listo",
+            "va",
+            "perfecto",
+            "de acuerdo",
+            "👍",
+            "👍🏻",
+            "👍🏼",
+            "👍🏽",
+            "👍🏾",
+            "👍🏿",
         }:
             return "yes"
         if normalized in {

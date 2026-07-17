@@ -1009,6 +1009,12 @@ class BackofficeService:
         elif mark_settled:
             settlement_status = SettlementStatus.SETTLED
             settlement_resolved_at = resolved_at or calculated_at
+        elif direction == SettlementDirection.EMPLOYEE_OWES_COMPANY:
+            settlement_status = SettlementStatus.PENDING_EMPLOYEE_PAYMENT_PROOF
+            settlement_resolved_at = ""
+        elif direction == SettlementDirection.COMPANY_OWES_EMPLOYEE:
+            settlement_status = SettlementStatus.PENDING_COMPANY_PAYMENT
+            settlement_resolved_at = ""
         else:
             settlement_status = SettlementStatus.PENDING
             settlement_resolved_at = ""

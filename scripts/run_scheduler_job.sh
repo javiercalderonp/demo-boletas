@@ -17,6 +17,11 @@ SCHEDULER_TIMEOUT_SECONDS="${SCHEDULER_TIMEOUT_SECONDS:-20}"
 SCHEDULER_DRY_RUN="${SCHEDULER_DRY_RUN:-false}"
 LOG_DIR="${LOG_DIR:-$ROOT_DIR/logs}"
 
+if [[ -z "$SCHEDULER_ENDPOINT_TOKEN" ]]; then
+  echo "SCHEDULER_ENDPOINT_TOKEN is required to call internal scheduler endpoints." >&2
+  exit 1
+fi
+
 mkdir -p "$LOG_DIR"
 timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
@@ -34,12 +39,9 @@ curl_args=(
   --show-error
   --fail
   --max-time "$SCHEDULER_TIMEOUT_SECONDS"
+  -H "X-Scheduler-Token: $SCHEDULER_ENDPOINT_TOKEN"
   -X POST "$url"
 )
-
-if [[ -n "$SCHEDULER_ENDPOINT_TOKEN" ]]; then
-  curl_args+=(-H "X-Scheduler-Token: $SCHEDULER_ENDPOINT_TOKEN")
-fi
 
 response="$(curl "${curl_args[@]}")"
 echo "[$timestamp] scheduler run ok: $response"

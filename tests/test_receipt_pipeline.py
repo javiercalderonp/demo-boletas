@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import hmac
 import os
 import unittest
 from unittest.mock import patch
@@ -10,10 +12,16 @@ os.environ["GCS_BUCKET_NAME"] = ""
 from app.main import (
     _build_initial_wait_receipt_reply,
     _debounced_send_receipt_batch_notice,
+    _extract_media_entries,
     _is_duplicate_inbound_message,
+    _log_inbound_media_message,
+    _maybe_handle_settlement_payment_proof,
     _mark_inbound_message_processed,
     _handle_media_message,
+    _handle_case_selection_response,
+    _list_active_cases_for_phone,
     _process_media_message_async,
+    _prompt_for_expense_case_selection,
     _reset_receipt_processing_state,
     _safe_send_outbound_response,
     _send_single_outbound_response,
@@ -24,6 +32,7 @@ from app.config import Settings
 from services.conversation_service import ConversationService
 from services.expense_service import ExpenseService
 from services.llm_service import LLMService
+from services.ocr_service import OCRService
 from services.whatsapp_service import MetaAccessTokenExpiredError, WhatsAppService
 
 
@@ -34,9 +43,13 @@ class FakeSheets:
         self.expenses = []
         self.expense_case = {
             "case_id": "CASE-1",
+            "employee_phone": "+56911111111",
+            "status": "active",
             "cost_centers": ["Operaciones", "Ventas"],
         }
+        self.expense_cases = [self.expense_case]
         self.employee = {"phone": "+56911111111", "first_name": "Javier", "name": "Javier Calderon"}
+        self.case_documents = []
 
     def get_conversation(self, phone):
         return {
@@ -61,15 +74,36 @@ class FakeSheets:
         return dict(payload)
 
     def get_expense_case_by_id(self, case_id):
-        if case_id == self.expense_case.get("case_id"):
-            return dict(self.expense_case)
+        for expense_case in self.expense_cases:
+            if case_id == expense_case.get("case_id"):
+                return dict(expense_case)
         return None
 
     def update_expense_case(self, case_id, payload):
-        if case_id != self.expense_case.get("case_id"):
-            return None
-        self.expense_case.update(dict(payload))
-        return dict(self.expense_case)
+        for index, expense_case in enumerate(self.expense_cases):
+            if case_id != expense_case.get("case_id"):
+                continue
+            expense_case.update(dict(payload))
+            self.expense_cases[index] = expense_case
+            if self.expense_case.get("case_id") == case_id:
+                self.expense_case = expense_case
+            return dict(expense_case)
+        return None
+
+    def list_expense_cases(self):
+        return [dict(item) for item in self.expense_cases]
+
+    def list_active_expense_cases_by_phone(self, phone):
+        return [
+            dict(item)
+            for item in self.expense_cases
+            if item.get("employee_phone", item.get("phone")) == phone
+            and str(item.get("status", "")).strip().lower() == "active"
+        ]
+
+    def create_expense_case_document(self, payload):
+        self.case_documents.append(dict(payload))
+        return dict(payload)
 
     def get_employee_by_phone(self, phone):
         if phone == self.employee.get("phone"):
@@ -199,6 +233,21 @@ class FakeExpense:
                 missing.append(field)
         return missing
 
+    def compute_draft_review(self, phone, draft_expense):
+        return {"review_score": 80, "review_flags": ["requires_confirmation"]}
+
+    def save_confirmed_expense(self, phone, draft_expense):
+        saved = {
+            "expense_id": "EXP-SAVED-1",
+            "phone": phone,
+            "case_id": draft_expense.get("case_id", draft_expense.get("trip_id", "")),
+            "status": "pending_approval",
+            "review_score": 80,
+            "review_flags": ["requires_confirmation"],
+            **dict(draft_expense),
+        }
+        return self.sheets_service.create_expense(saved) if hasattr(self, "sheets_service") else saved
+
     def create_expense_for_review(self, *, phone, draft_expense, review_reason):
         return {
             "expense_id": "EXP-REVIEW-1",
@@ -214,11 +263,28 @@ class FakeExpense:
     def answer_rendicion_question(self, *, phone="", question=""):
         return None
 
-    def chat_whatsapp_conversational(self, message, *, phone=""):
+    def chat_whatsapp_conversational(self, message, *, phone="", message_log=None):
         return None
 
     def classify_message_intent(self, message):
         return "unknown"
+
+
+class FakePerfectExpense(FakeExpense):
+    def compute_draft_review(self, phone, draft_expense):
+        return {"review_score": 95, "review_flags": []}
+
+    def save_confirmed_expense(self, phone, draft_expense):
+        saved = {
+            "expense_id": "EXP-AUTO-1",
+            "phone": phone,
+            "case_id": draft_expense.get("case_id", draft_expense.get("trip_id", "")),
+            "status": "pending_approval",
+            "review_score": 95,
+            "review_flags": [],
+            **dict(draft_expense),
+        }
+        return self.sheets_service.create_expense(saved) if hasattr(self, "sheets_service") else saved
 
 
 class FakeGeoLLM:
@@ -360,6 +426,43 @@ class ConversationDocumentTypeTests(unittest.TestCase):
             ["Operaciones", "Ventas", "Marketing"],
         )
 
+    def test_confirm_summary_saves_without_cost_center_prompt_when_case_has_no_centers(self):
+        service = ConversationService(ExpenseService(sheets_service=FakeSheets({})))
+        conversation = {
+            "state": "CONFIRM_SUMMARY",
+            "current_step": "confirm_summary",
+            "context_json": {
+                "draft_expense": {"case_id": "CASE-1", "cost_centers": []},
+                "missing_fields": [],
+                "last_question": None,
+            },
+        }
+
+        result = service.handle_text_message(conversation, "1")
+
+        self.assertEqual(result["state"], "DONE")
+        self.assertEqual(result["current_step"], "")
+        self.assertEqual(result["action"], "save_expense")
+        self.assertNotIn("centro de costo", result["reply"].lower())
+
+    def test_confirm_summary_accepts_quick_confirmation_variants(self):
+        service = ConversationService(ExpenseService(sheets_service=FakeSheets({})))
+        for message in ("dale", "listo", "va", "perfecto", "👍"):
+            conversation = {
+                "state": "CONFIRM_SUMMARY",
+                "current_step": "confirm_summary",
+                "context_json": {
+                    "draft_expense": {"case_id": "CASE-1", "cost_centers": []},
+                    "missing_fields": [],
+                    "last_question": None,
+                },
+            }
+
+            result = service.handle_text_message(conversation, message)
+
+            self.assertEqual(result["state"], "DONE")
+            self.assertEqual(result["action"], "save_expense")
+
     def test_cost_center_prompt_uses_all_centers_as_reply_buttons_up_to_three(self):
         container = FakeContainer(
             {
@@ -462,6 +565,148 @@ class ConversationDocumentTypeTests(unittest.TestCase):
             ["Operaciones", "Ventas", "Marketing"],
         )
 
+    def test_settlement_payment_proof_is_saved_as_case_document(self):
+        container = FakeContainer({"state": "WAIT_RECEIPT", "current_step": "", "context_json": {}})
+        container.sheets.expense_case.update(
+            {
+                "rendicion_status": "approved",
+                "settlement_direction": "employee_owes_company",
+                "settlement_status": "pending_employee_payment_proof",
+                "settlement_amount_clp": 9700,
+            }
+        )
+
+        reply = _maybe_handle_settlement_payment_proof(
+            container=container,
+            phone="+56911111111",
+            payload={"MediaFilename0": "deposito.pdf"},
+            media_url="https://example.com/deposito.pdf",
+            media_content_type="application/pdf",
+            ocr_data={"is_document": True, "total": 9700, "date": "2026-04-20"},
+            storage_result={"receipt_storage_provider": "gcs", "receipt_object_key": "receipts/proof.pdf"},
+            inbound_message_id="wamid.payment",
+        )
+
+        self.assertIn("revisión financiera", reply)
+        self.assertEqual(container.sheets.expenses, [])
+        self.assertEqual(len(container.sheets.case_documents), 1)
+        document = container.sheets.case_documents[0]
+        self.assertEqual(document["document_type"], "settlement_payment_proof")
+        self.assertEqual(document["status"], "payment_proof_under_review")
+        self.assertEqual(document["object_key"], "receipts/proof.pdf")
+        self.assertEqual(document["source_message_id"], "wamid.payment")
+        self.assertEqual(
+            container.sheets.expense_case["settlement_status"],
+            "payment_proof_under_review",
+        )
+        self.assertEqual(
+            container.sheets.expense_case["settlement_payment_proof_document_id"],
+            document["document_id"],
+        )
+
+    def test_multiple_active_cases_prompt_for_case_selection(self):
+        container = FakeContainer({"state": "WAIT_RECEIPT", "current_step": "", "context_json": {}})
+        container.sheets.expense_cases = [
+            {
+                "case_id": "CASE-1",
+                "employee_phone": "+56911111111",
+                "status": "active",
+                "context_label": "Viaje norte",
+            },
+            {
+                "case_id": "CASE-2",
+                "employee_phone": "+56911111111",
+                "status": "active",
+                "context_label": "Proyecto sur",
+            },
+        ]
+
+        active_cases = _list_active_cases_for_phone(container, "+56911111111")
+        reply = _prompt_for_expense_case_selection(
+            container=container,
+            phone="+56911111111",
+            ocr_data={"is_document": True, "merchant": "Hotel", "total": 20000, "currency": "CLP"},
+            active_cases=active_cases,
+        )
+
+        self.assertIn("más de una rendición activa", reply)
+        self.assertIn("1. Viaje norte (CASE-1)", reply)
+        self.assertIn("2. Proyecto sur (CASE-2)", reply)
+        self.assertEqual(container.sheets.conversation["state"], "NEEDS_INFO")
+        self.assertEqual(container.sheets.conversation["current_step"], "case_selection")
+        pending = container.sheets.conversation["context_json"]["pending_case_selection"]
+        self.assertEqual(pending["draft_expense"]["merchant"], "Hotel")
+        self.assertEqual(pending["options"][1]["case_id"], "CASE-2")
+
+    def test_case_selection_response_resumes_receipt_summary_with_selected_case(self):
+        container = FakeContainer({"state": "WAIT_RECEIPT", "current_step": "", "context_json": {}})
+        container.conversation = FakeConversationProcessor()
+        container.sheets.expense_cases = [
+            {
+                "case_id": "CASE-1",
+                "employee_phone": "+56911111111",
+                "phone": "+56911111111",
+                "status": "active",
+                "context_label": "Viaje norte",
+                "country": "Chile",
+            },
+            {
+                "case_id": "CASE-2",
+                "employee_phone": "+56911111111",
+                "phone": "+56911111111",
+                "status": "active",
+                "context_label": "Proyecto sur",
+                "country": "Chile",
+            },
+        ]
+        _prompt_for_expense_case_selection(
+            container=container,
+            phone="+56911111111",
+            ocr_data={
+                "is_document": True,
+                "merchant": "Hotel",
+                "date": "2026-04-17",
+                "total": 20000,
+                "currency": "CLP",
+                "country": "Chile",
+                "category": "lodging",
+            },
+            active_cases=container.sheets.list_active_expense_cases_by_phone("+56911111111"),
+        )
+
+        reply = _handle_case_selection_response(
+            container,
+            "+56911111111",
+            "2",
+            container.sheets.get_conversation("+56911111111"),
+        )
+
+        self.assertIn("Proyecto sur (CASE-2)", reply)
+        self.assertEqual(container.sheets.conversation["state"], "CONFIRM_SUMMARY")
+        draft = container.sheets.conversation["context_json"]["draft_expense"]
+        self.assertEqual(draft["case_id"], "CASE-2")
+        self.assertEqual(draft["trip_id"], "CASE-2")
+
+    def test_conversation_detects_english_and_replies_in_english(self):
+        service = ConversationService(FakeExpense())
+        conversation = service.ensure_conversation(None)
+
+        result = service.handle_text_message(conversation, "hello, I need help", phone="+56911111111")
+
+        self.assertEqual(result["context_json"]["language"], "en")
+        self.assertIn("expense reporting assistant", result["reply"])
+        self.assertIn("receipt", result["reply"])
+
+    def test_conversation_detects_portuguese_and_replies_in_portuguese(self):
+        service = ConversationService(FakeExpense())
+        conversation = service.ensure_conversation(None)
+
+        result = service.handle_text_message(conversation, "olá, preciso de ajuda", phone="+56911111111")
+
+        self.assertEqual(result["context_json"]["language"], "pt")
+        self.assertIn("prestação de contas", result["reply"])
+        self.assertIn("comprovante", result["reply"])
+
 
 class FakeConversationProcessor(FakeConversationService):
     def __init__(self):
@@ -502,6 +747,15 @@ class FakeContainerSuccess:
         self.travel = FakeTravel()
         self.storage = type("Storage", (), {"enabled": False})()
         self.whatsapp = type("WhatsApp", (), {"provider": "meta"})()
+        self.expense = FakeExpense()
+        self.expense.sheets_service = self.sheets
+
+
+class FakeContainerPerfectOCR(FakeContainerSuccess):
+    def __init__(self):
+        super().__init__()
+        self.expense = FakePerfectExpense()
+        self.expense.sheets_service = self.sheets
 
 
 class FakeContainerNoActiveCase:
@@ -580,6 +834,66 @@ class ReceiptPipelineTests(unittest.TestCase):
         )
 
         self.assertEqual(entries[0]["message_id"], "wamid.meta-message")
+
+    def test_extract_twilio_pdf_media_preserves_filename_and_document_type(self):
+        entries = _extract_media_entries(
+            {
+                "NumMedia": "1",
+                "MessageSid": "SM123",
+                "MediaUrl0": "https://api.twilio.com/media/documento.pdf",
+                "MediaContentType0": "application/pdf",
+                "MediaFilename0": "factura.pdf",
+            }
+        )
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["media_content_type"], "application/pdf")
+        self.assertEqual(entries[0]["filename"], "factura.pdf")
+        self.assertEqual(entries[0]["message_type"], "document")
+
+    def test_ocr_resolves_pdf_mime_from_content_type_or_url(self):
+        service = OCRService(settings=Settings())
+
+        self.assertEqual(
+            service._resolve_mime_type(
+                "https://example.com/media",
+                "application/pdf",
+                None,
+            ),
+            "application/pdf",
+        )
+        self.assertEqual(
+            service._resolve_mime_type(
+                "https://example.com/factura.pdf",
+                "",
+                None,
+            ),
+            "application/pdf",
+        )
+
+    def test_log_inbound_pdf_media_uses_document_url(self):
+        container = FakeContainer({"state": "WAIT_RECEIPT", "current_step": "", "context_json": {}})
+
+        _log_inbound_media_message(
+            container,
+            "+56911111111",
+            [
+                {
+                    "media_url": "https://example.com/factura.pdf",
+                    "media_content_type": "application/pdf",
+                    "filename": "factura.pdf",
+                    "message_id": "wamid.pdf",
+                }
+            ],
+            caption="Factura proveedor",
+            message_id="wamid.pdf",
+        )
+
+        message_log = container.sheets.conversation["context_json"]["message_log"]
+        self.assertEqual(message_log[-1]["document_url"], "https://example.com/factura.pdf")
+        self.assertEqual(message_log[-1]["filename"], "factura.pdf")
+        self.assertNotIn("media_url", message_log[-1])
+        self.assertEqual(message_log[-1]["attachments"][0]["document_url"], "https://example.com/factura.pdf")
 
     def test_initial_wait_receipt_reply_uses_employee_first_name(self):
         container = FakeContainer({"state": "WAIT_RECEIPT", "current_step": "", "context_json": {}})
@@ -835,6 +1149,83 @@ class ReceiptPipelineTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["body"], "4")
 
+    def test_meta_document_pdf_message_is_media_entry(self):
+        service = WhatsAppService(settings=Settings())
+        payload = {
+            "entry": [
+                {
+                    "changes": [
+                        {
+                            "value": {
+                                "contacts": [{"profile": {"name": "Javier"}}],
+                                "messages": [
+                                    {
+                                        "from": "56911111111",
+                                        "id": "wamid.pdf",
+                                        "type": "document",
+                                        "document": {
+                                            "id": "media-pdf-1",
+                                            "mime_type": "application/pdf",
+                                            "filename": "factura.pdf",
+                                            "caption": "Factura proveedor",
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+        events = service.parse_meta_webhook_messages(payload)
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["message_type"], "document")
+        self.assertEqual(events[0]["body"], "Factura proveedor")
+        self.assertEqual(events[0]["media_entries"][0]["media_id"], "media-pdf-1")
+        self.assertEqual(events[0]["media_entries"][0]["media_content_type"], "application/pdf")
+        self.assertEqual(events[0]["media_entries"][0]["filename"], "factura.pdf")
+        self.assertEqual(events[0]["media_entries"][0]["message_type"], "document")
+
+    def test_meta_signature_validation_accepts_valid_sha256_signature(self):
+        body = b'{"object":"whatsapp_business_account"}'
+        app_secret = "test-app-secret"
+        digest = hmac.new(app_secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+        service = WhatsAppService(
+            settings=Settings(
+                whatsapp_provider="meta",
+                meta_validate_signature=True,
+                meta_app_secret=app_secret,
+            )
+        )
+
+        self.assertTrue(service.validate_meta_signature(body, f"sha256={digest}"))
+
+    def test_meta_signature_validation_rejects_missing_or_invalid_signature(self):
+        service = WhatsAppService(
+            settings=Settings(
+                whatsapp_provider="meta",
+                meta_validate_signature=True,
+                meta_app_secret="test-app-secret",
+            )
+        )
+
+        self.assertFalse(service.validate_meta_signature(b"{}", None))
+        self.assertFalse(service.validate_meta_signature(b"{}", "sha1=abc"))
+        self.assertFalse(service.validate_meta_signature(b"{}", "sha256=invalid"))
+
+    def test_meta_signature_validation_requires_app_secret_when_enabled(self):
+        service = WhatsAppService(
+            settings=Settings(
+                whatsapp_provider="meta",
+                meta_validate_signature=True,
+                meta_app_secret="",
+            )
+        )
+
+        self.assertFalse(service.validate_meta_signature(b"{}", "sha256=abc"))
+
     def test_meta_text_send_does_not_retry_when_access_token_expired(self):
         service = WhatsAppService(settings=Settings())
 
@@ -1073,6 +1464,29 @@ class ReceiptPipelineTests(unittest.TestCase):
             container.sheets.conversation["context_json"]["trip_closure"],
             {"status": "pending"},
         )
+
+    def test_handle_media_message_auto_saves_when_review_is_perfect(self):
+        container = FakeContainerPerfectOCR()
+
+        with patch("app.main.logger.exception"), patch("app.main.logger.info"):
+            reply = _handle_media_message(
+                container,
+                "+56933333333",
+                {
+                    "MediaUrl0": "https://example.com/receipt.jpg",
+                    "MediaContentType0": "image/jpeg",
+                    "InboundMessageId": "wamid.auto",
+                },
+            )
+
+        self.assertIn("Guardé tu gasto: Starbucks", reply)
+        self.assertIn("Si algo está mal, escribe 'corregir'", reply)
+        self.assertEqual(container.sheets.conversation["state"], "WAIT_RECEIPT")
+        self.assertEqual(container.sheets.conversation["current_step"], "")
+        self.assertEqual(len(container.sheets.expenses), 1)
+        self.assertEqual(container.sheets.expenses[0]["expense_id"], "EXP-AUTO-1")
+        self.assertEqual(container.sheets.expenses[0]["source_message_id"], "wamid.auto")
+        self.assertNotIn("active_receipt_message_id", container.sheets.conversation["context_json"])
 
     def test_handle_media_message_rejects_non_document_images(self):
         container = FakeContainerNoDocument()

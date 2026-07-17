@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import html
 import json
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -15,6 +17,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.api import backoffice_router
 from app.config import settings
+from app.logging_config import configure_logging, request_id_context
 from services.consolidated_document_service import ConsolidatedDocumentService
 from services.conversation_service import (
     CATEGORY_OPTIONS,
@@ -35,7 +38,7 @@ from services.scheduler_service import SchedulerService
 from services.sheets_service import SheetsService, normalize_cost_centers
 from services.storage_service import GCSStorageService
 from services.expense_case_service import ExpenseCaseService
-from services.statuses import ExpenseStatus, RendicionStatus
+from services.statuses import ExpenseStatus, RendicionStatus, SettlementDirection, SettlementStatus, normalize_state
 from services.whatsapp_service import (
     MetaAccessTokenExpiredError,
     TwilioDailyLimitExceededError,
@@ -44,6 +47,8 @@ from services.whatsapp_service import (
 from utils.helpers import make_id, normalize_whatsapp_phone, utc_now_iso
 
 logger = logging.getLogger(__name__)
+
+configure_logging(level=settings.log_level, log_format=settings.log_format)
 
 
 HUMAN_ASSISTANCE_PHRASES = frozenset([
@@ -108,6 +113,21 @@ def _set_human_assistance_flag(
         )
 
 
+def _require_scheduler_token(x_scheduler_token: str | None) -> None:
+    configured_token = (settings.scheduler_endpoint_token or "").strip()
+    provided_token = str(x_scheduler_token or "").strip()
+    if not configured_token:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Scheduler token is not configured",
+        )
+    if not hmac.compare_digest(provided_token, configured_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized scheduler token",
+        )
+
+
 STICKY_CONTEXT_KEYS = (
     "message_log",
     "scheduler",
@@ -121,7 +141,6 @@ STICKY_CONTEXT_KEYS = (
 ACTIVE_RECEIPT_STATES = {"PROCESSING", "NEEDS_INFO", "CONFIRM_SUMMARY"}
 MAX_PROCESSED_MESSAGE_IDS = 50
 RECEIPT_BATCH_NOTICE_DELAY_SECONDS = 2
-MAX_MESSAGE_LOG_ITEMS = 500
 NO_DOCUMENT_IDENTIFIED_REPLY = (
     "No se identificaron boletas/documentos en esa imagen. "
     "Envíame una boleta, factura, ticket o comprobante para procesarlo."
@@ -145,7 +164,13 @@ class ServiceContainer:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title=settings.app_name, debug=settings.debug)
+    app = FastAPI(
+        title=settings.app_name,
+        debug=settings.debug,
+        docs_url="/docs" if settings.debug else None,
+        redoc_url="/redoc" if settings.debug else None,
+        openapi_url="/openapi.json" if settings.debug else None,
+    )
     backoffice_origins = [
         origin.strip()
         for origin in (
@@ -155,11 +180,12 @@ def create_app() -> FastAPI:
         ).split(",")
         if origin.strip()
     ]
-    default_backoffice_origins = (
+    default_backoffice_origins = [
         "https://viaticos-backoffice.vercel.app",
         "https://expenseops-backoffice.vercel.app",
-        "http://localhost:3000",
-    )
+    ]
+    if settings.debug:
+        default_backoffice_origins.append("http://localhost:3000")
     for origin in default_backoffice_origins:
         if origin not in backoffice_origins:
             backoffice_origins.append(origin)
@@ -170,6 +196,25 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def request_id_middleware(request: Request, call_next):
+        request_id = str(request.headers.get("x-request-id") or uuid.uuid4().hex)
+        token = request_id_context.set(request_id)
+        start_time = time.perf_counter()
+        try:
+            response = await call_next(request)
+        finally:
+            duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+            logger.info(
+                "HTTP request completed method=%s path=%s duration_ms=%s",
+                request.method,
+                request.url.path,
+                duration_ms,
+            )
+            request_id_context.reset(token)
+        response.headers["X-Request-ID"] = request_id
+        return response
 
     sheets_service = SheetsService(settings=settings)
     backoffice_auth_service = BackofficeAuthService(
@@ -219,33 +264,6 @@ def create_app() -> FastAPI:
     async def health() -> dict[str, Any]:
         return {
             "status": "ok",
-            "app": settings.app_name,
-            "whatsapp_provider": settings.whatsapp_provider,
-            "sheets_enabled": container.sheets.enabled,
-            "category_llm_flag": settings.expense_category_llm_enabled,
-            "chat_assistant_flag": settings.chat_assistant_enabled,
-            "openai_api_key_present": bool(settings.openai_api_key),
-            "category_llm_enabled": llm_service.category_classification_enabled,
-            "chat_assistant_enabled": llm_service.chat_assistant_enabled,
-            "openai_model": settings.openai_model if llm_service.category_classification_enabled else None,
-            "scheduler_window_minutes": settings.scheduler_reminder_window_minutes,
-            "scheduler_morning_hour_local": settings.scheduler_morning_hour_local,
-            "scheduler_evening_hour_local": settings.scheduler_evening_hour_local,
-            "gcs_storage_enabled": container.storage.enabled,
-            "gcs_bucket_name": settings.gcs_bucket_name if container.storage.enabled else None,
-            "document_ai_enabled": container.ocr.document_ai_enabled,
-            "document_ai_location": settings.document_ai_location if container.ocr.document_ai_enabled else None,
-            "document_ai_processor_id": (
-                settings.document_ai_processor_id if container.ocr.document_ai_enabled else None
-            ),
-            "docusign_enabled": settings.docusign_enabled,
-            "docusign_ready": container.docusign.enabled,
-            "docusign_account_id": (
-                settings.docusign_account_id if container.docusign.enabled else None
-            ),
-            "env": settings.app_env,
-            "deploy_commit": settings.deploy_commit,
-            "deploy_time": settings.deploy_time,
         }
 
     @app.get("/webhook")
@@ -360,21 +378,27 @@ def create_app() -> FastAPI:
             default=settings.docusign_return_url,
             description="Redirect URI usado en la autorizacion",
         ),
+        x_scheduler_token: Optional[str] = Header(default=None, alias="X-Scheduler-Token"),
     ) -> dict[str, Any]:
+        _require_scheduler_token(x_scheduler_token)
         try:
             token_response = container.docusign.exchange_authorization_code(
                 code=code,
                 redirect_uri=redirect_uri,
             )
         except DocusignError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            logger.warning("DocuSign OAuth exchange failed: %s", exc)
+            raise HTTPException(
+                status_code=502,
+                detail="No se pudo intercambiar el código OAuth de DocuSign.",
+            ) from exc
 
         access_token = str(token_response.get("access_token", "") or "").strip()
         refresh_token = str(token_response.get("refresh_token", "") or "").strip()
         return {
             "ok": bool(access_token),
-            "access_token": access_token or None,
-            "refresh_token": refresh_token or None,
+            "access_token_present": bool(access_token),
+            "refresh_token_present": bool(refresh_token),
             "token_type": token_response.get("token_type"),
             "expires_in": token_response.get("expires_in"),
             "scope": token_response.get("scope"),
@@ -385,9 +409,7 @@ def create_app() -> FastAPI:
         dry_run: bool = False,
         x_scheduler_token: Optional[str] = Header(default=None, alias="X-Scheduler-Token"),
     ) -> dict[str, Any]:
-        configured_token = (settings.scheduler_endpoint_token or "").strip()
-        if configured_token and x_scheduler_token != configured_token:
-            raise HTTPException(status_code=401, detail="Unauthorized scheduler token")
+        _require_scheduler_token(x_scheduler_token)
         return container.scheduler.run_submission_reminders(dry_run=dry_run)
 
     @app.post("/jobs/documents/consolidated/generate")
@@ -399,9 +421,7 @@ def create_app() -> FastAPI:
         ),
         x_scheduler_token: Optional[str] = Header(default=None, alias="X-Scheduler-Token"),
     ) -> dict[str, Any]:
-        configured_token = (settings.scheduler_endpoint_token or "").strip()
-        if configured_token and x_scheduler_token != configured_token:
-            raise HTTPException(status_code=401, detail="Unauthorized scheduler token")
+        _require_scheduler_token(x_scheduler_token)
         try:
             return container.consolidated_document.generate_for_case(
                 phone=phone,
@@ -409,9 +429,17 @@ def create_app() -> FastAPI:
                 include_signed_url=include_signed_url,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            logger.info("Invalid consolidated document request phone=%s case_id=%s: %s", phone, case_id, exc)
+            raise HTTPException(
+                status_code=400,
+                detail="No se pudo generar el documento con los datos enviados.",
+            ) from exc
         except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            logger.warning("Consolidated document service unavailable phone=%s case_id=%s: %s", phone, case_id, exc)
+            raise HTTPException(
+                status_code=503,
+                detail="El servicio de documentos no está disponible temporalmente.",
+            ) from exc
         except Exception as exc:  # pragma: no cover - runtime dependency/errors
             logger.exception(
                 "Consolidated document generation failed due to upstream dependency phone=%s case_id=%s",
@@ -434,9 +462,7 @@ def create_app() -> FastAPI:
         ),
         x_scheduler_token: Optional[str] = Header(default=None, alias="X-Scheduler-Token"),
     ) -> dict[str, Any]:
-        configured_token = (settings.scheduler_endpoint_token or "").strip()
-        if configured_token and x_scheduler_token != configured_token:
-            raise HTTPException(status_code=401, detail="Unauthorized scheduler token")
+        _require_scheduler_token(x_scheduler_token)
         if not container.storage.enabled:
             raise HTTPException(status_code=503, detail="Storage privado no habilitado")
         if not container.docusign.enabled:
@@ -522,7 +548,11 @@ def create_app() -> FastAPI:
                         "signature_error": str(exc),
                     },
                 )
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            logger.warning("DocuSign signature start failed document_id=%s: %s", document_id, exc)
+            raise HTTPException(
+                status_code=502,
+                detail="No se pudo iniciar la firma con DocuSign.",
+            ) from exc
 
     @app.get("/r/sign/{document_id}")
     async def redirect_short_signing_url(document_id: str) -> RedirectResponse:
@@ -687,10 +717,14 @@ def create_app() -> FastAPI:
 
     # ── Test simulation endpoint (debug only) ──────────────────────
     @app.post("/test/simulate")
-    async def test_simulate(request: Request) -> dict[str, Any]:
+    async def test_simulate(
+        request: Request,
+        x_scheduler_token: Optional[str] = Header(default=None, alias="X-Scheduler-Token"),
+    ) -> dict[str, Any]:
         """Synchronous test endpoint for conversation simulation. Only in debug mode."""
         if not settings.debug:
             raise HTTPException(status_code=404, detail="Not found")
+        _require_scheduler_token(x_scheduler_token)
 
         payload = await request.json()
         phone = normalize_whatsapp_phone(payload.get("phone", ""))
@@ -728,10 +762,14 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/test/reset")
-    async def test_reset(request: Request) -> dict[str, Any]:
+    async def test_reset(
+        request: Request,
+        x_scheduler_token: Optional[str] = Header(default=None, alias="X-Scheduler-Token"),
+    ) -> dict[str, Any]:
         """Reset conversation state for testing. Only in debug mode."""
         if not settings.debug:
             raise HTTPException(status_code=404, detail="Not found")
+        _require_scheduler_token(x_scheduler_token)
 
         payload = await request.json()
         phone = normalize_whatsapp_phone(payload.get("phone", ""))
@@ -863,6 +901,19 @@ def _handle_media_message(container: ServiceContainer, phone: str, payload: dict
     ocr_data["receipt_storage_provider"] = storage_result.get("receipt_storage_provider", "")
     ocr_data["receipt_object_key"] = storage_result.get("receipt_object_key", "")
 
+    settlement_proof_reply = _maybe_handle_settlement_payment_proof(
+        container=container,
+        phone=phone,
+        payload=payload,
+        media_url=media_url,
+        media_content_type=media_content_type,
+        ocr_data=ocr_data,
+        storage_result=storage_result,
+        inbound_message_id=inbound_message_id,
+    )
+    if settlement_proof_reply:
+        return settlement_proof_reply
+
     if not bool(ocr_data.get("is_document")):
         container.sheets.update_conversation(
             phone,
@@ -882,6 +933,15 @@ def _handle_media_message(container: ServiceContainer, phone: str, payload: dict
         if ocr_warning:
             reply = f"{ocr_warning}\n\n{reply}"
         return reply
+
+    active_cases = _list_active_cases_for_phone(container, phone)
+    if len(active_cases) > 1:
+        return _prompt_for_expense_case_selection(
+            container=container,
+            phone=phone,
+            ocr_data=ocr_data,
+            active_cases=active_cases,
+        )
 
     case_lookup_started_at = time.perf_counter()
     expense_case_service = getattr(container, "expense_case", None) or getattr(container, "travel", None)
@@ -943,6 +1003,34 @@ def _handle_media_message(container: ServiceContainer, phone: str, payload: dict
         _summarize_receipt_payload(transition.get("context_json", {}).get("draft_expense", {})),
     )
 
+    if not ocr_warning and _should_auto_confirm_receipt(container, phone, transition):
+        latest_context = _get_latest_context(container, phone)
+        draft = dict(transition.get("context_json", {}).get("draft_expense", {}) or {})
+        source_message_id = _get_active_receipt_message_id(latest_context)
+        if source_message_id:
+            draft["source_message_id"] = source_message_id
+        saved = container.expense.save_confirmed_expense(phone, draft)
+        container.sheets.update_conversation(
+            phone,
+            {
+                "state": "WAIT_RECEIPT",
+                "current_step": "",
+                "context_json": _clear_active_receipt_message_id(
+                    _merge_context_preserving_sticky(
+                        latest_context,
+                        container.conversation.default_context(),
+                    )
+                ),
+            },
+        )
+        logger.info(
+            "Receipt auto-confirmed phone=%s expense_id=%s review_score=%s",
+            phone,
+            saved.get("expense_id"),
+            saved.get("review_score"),
+        )
+        return _build_auto_confirmed_receipt_message(saved)
+
     container.sheets.update_conversation(
         phone,
         {
@@ -969,6 +1057,251 @@ def _handle_media_message(container: ServiceContainer, phone: str, payload: dict
     return reply
 
 
+def _list_active_cases_for_phone(container: ServiceContainer, phone: str) -> list[dict[str, Any]]:
+    normalized_phone = normalize_whatsapp_phone(phone)
+    if not normalized_phone:
+        return []
+
+    list_by_phone = getattr(container.sheets, "list_active_expense_cases_by_phone", None)
+    if callable(list_by_phone):
+        return list_by_phone(normalized_phone)
+
+    try:
+        cases = container.sheets.list_expense_cases()
+    except Exception:
+        return []
+
+    active_cases: list[dict[str, Any]] = []
+    for expense_case in cases:
+        case_phone = normalize_whatsapp_phone(
+            expense_case.get("employee_phone", expense_case.get("phone", ""))
+        )
+        if case_phone != normalized_phone:
+            continue
+        if normalize_state(expense_case.get("status")) != "active":
+            continue
+        active_cases.append(expense_case)
+    return active_cases
+
+
+def _prompt_for_expense_case_selection(
+    *,
+    container: ServiceContainer,
+    phone: str,
+    ocr_data: dict[str, Any],
+    active_cases: list[dict[str, Any]],
+) -> str:
+    options = [_case_selection_option(item, index) for index, item in enumerate(active_cases, start=1)]
+    context = _merge_context_preserving_sticky(
+        _get_latest_context(container, phone),
+        {
+            "draft_expense": {},
+            "missing_fields": [],
+            "last_question": "case_selection",
+            "pending_case_selection": {
+                "draft_expense": dict(ocr_data),
+                "options": options,
+            },
+        },
+    )
+    container.sheets.update_conversation(
+        phone,
+        {
+            "state": "NEEDS_INFO",
+            "current_step": "case_selection",
+            "context_json": context,
+        },
+    )
+    lines = [
+        "Tienes más de una rendición activa. ¿A cuál asocio este documento?",
+        *[
+            f"{option['index']}. {option['label']}"
+            for option in options
+        ],
+        "Responde con el número o el ID de la rendición.",
+    ]
+    return "\n".join(lines)
+
+
+def _case_selection_option(expense_case: dict[str, Any], index: int) -> dict[str, str]:
+    case_id = str(expense_case.get("case_id", expense_case.get("trip_id", "")) or "").strip()
+    label = str(expense_case.get("context_label", expense_case.get("destination", "")) or "").strip()
+    if label and case_id:
+        display = f"{label} ({case_id})"
+    else:
+        display = label or case_id or f"Rendición {index}"
+    return {
+        "index": str(index),
+        "case_id": case_id,
+        "label": display,
+    }
+
+
+def _maybe_handle_settlement_payment_proof(
+    *,
+    container: ServiceContainer,
+    phone: str,
+    payload: dict[str, Any],
+    media_url: str,
+    media_content_type: Any,
+    ocr_data: dict[str, Any],
+    storage_result: dict[str, str],
+    inbound_message_id: str,
+) -> str | None:
+    expense_case = _find_case_waiting_for_employee_payment_proof(container, phone)
+    if not expense_case:
+        return None
+
+    now = utc_now_iso()
+    case_id = str(expense_case.get("case_id", expense_case.get("trip_id", "")) or "").strip()
+    document_id = make_id("PAYPROOF")
+    filename = str(payload.get("MediaFilename0") or payload.get("filename") or "").strip()
+    expected_amount = expense_case.get("settlement_amount_clp", "")
+
+    document = {
+        "document_id": document_id,
+        "phone": phone,
+        "case_id": case_id,
+        "document_type": "settlement_payment_proof",
+        "storage_provider": storage_result.get("receipt_storage_provider", ""),
+        "object_key": storage_result.get("receipt_object_key", ""),
+        "media_url": media_url,
+        "media_content_type": str(media_content_type or ""),
+        "filename": filename,
+        "status": SettlementStatus.PAYMENT_PROOF_UNDER_REVIEW,
+        "review_status": SettlementStatus.PAYMENT_PROOF_UNDER_REVIEW,
+        "review_reason": "manual_validation_required",
+        "expected_amount_clp": expected_amount,
+        "ocr_json": json.dumps(ocr_data, ensure_ascii=False),
+        "created_at": now,
+        "updated_at": now,
+    }
+    if inbound_message_id:
+        document["source_message_id"] = inbound_message_id
+
+    container.sheets.create_expense_case_document(document)
+    container.sheets.update_expense_case(
+        case_id,
+        {
+            "settlement_status": SettlementStatus.PAYMENT_PROOF_UNDER_REVIEW,
+            "settlement_payment_proof_document_id": document_id,
+            "updated_at": now,
+        },
+    )
+    container.sheets.update_conversation(
+        phone,
+        {
+            "state": "WAIT_RECEIPT",
+            "current_step": "",
+            "context_json": _clear_active_receipt_message_id(
+                _merge_context_preserving_sticky(
+                    _get_latest_context(container, phone),
+                    container.conversation.default_context(),
+                )
+            ),
+        },
+    )
+    logger.info(
+        "Settlement payment proof captured phone=%s case_id=%s document_id=%s",
+        phone,
+        case_id,
+        document_id,
+    )
+    return (
+        "Recibí el comprobante de depósito de la liquidación. "
+        "Lo dejé en revisión financiera; te avisaremos cuando quede confirmado."
+    )
+
+
+def _find_case_waiting_for_employee_payment_proof(
+    container: ServiceContainer,
+    phone: str,
+) -> dict[str, Any] | None:
+    normalized_phone = normalize_whatsapp_phone(phone)
+    if not normalized_phone:
+        return None
+
+    try:
+        cases = container.sheets.list_expense_cases()
+    except Exception:
+        cases = []
+
+    candidates: list[dict[str, Any]] = []
+    for expense_case in cases:
+        case_phone = normalize_whatsapp_phone(
+            expense_case.get("employee_phone", expense_case.get("phone", ""))
+        )
+        if case_phone != normalized_phone:
+            continue
+        if normalize_state(expense_case.get("status")) != "active":
+            continue
+        if normalize_state(expense_case.get("rendicion_status")) != RendicionStatus.APPROVED:
+            continue
+        if normalize_state(expense_case.get("settlement_direction")) != SettlementDirection.EMPLOYEE_OWES_COMPANY:
+            continue
+        settlement_status = normalize_state(expense_case.get("settlement_status"))
+        if settlement_status not in {
+            "",
+            SettlementStatus.PENDING,
+            SettlementStatus.PENDING_EMPLOYEE_PAYMENT_PROOF,
+            SettlementStatus.PAYMENT_PROOF_REJECTED,
+        }:
+            continue
+        candidates.append(expense_case)
+
+    if not candidates:
+        return None
+    return sorted(
+        candidates,
+        key=lambda item: str(item.get("settlement_calculated_at", item.get("updated_at", "")) or ""),
+        reverse=True,
+    )[0]
+
+
+def _should_auto_confirm_receipt(
+    container: ServiceContainer,
+    phone: str,
+    transition: dict[str, Any],
+) -> bool:
+    if transition.get("state") != "CONFIRM_SUMMARY":
+        return False
+    if transition.get("current_step") != "confirm_summary":
+        return False
+    draft = transition.get("context_json", {}).get("draft_expense", {})
+    if not isinstance(draft, dict):
+        return False
+    if container.expense.find_missing_required_fields(draft):
+        return False
+    try:
+        review = container.expense.compute_draft_review(phone, draft)
+    except Exception:
+        logger.exception("Could not compute auto-confirm review phone=%s", phone)
+        return False
+    score = review.get("review_score", 0)
+    flags = review.get("review_flags") or []
+    try:
+        numeric_score = float(score)
+    except (TypeError, ValueError):
+        numeric_score = 0.0
+    return numeric_score >= 90 and not flags
+
+
+def _build_auto_confirmed_receipt_message(saved_expense: dict[str, Any]) -> str:
+    merchant = str(saved_expense.get("merchant", "") or "").strip() or "gasto"
+    currency = str(saved_expense.get("currency", "") or "").strip() or "CLP"
+    total = saved_expense.get("total", "")
+    amount_text = str(total or "").strip()
+    if isinstance(total, (int, float)):
+        if float(total).is_integer():
+            amount_text = f"{int(total):,}".replace(",", ".")
+        else:
+            amount_text = f"{float(total):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return (
+        f"Guardé tu gasto: {merchant} {amount_text} {currency}. "
+        "Si algo está mal, escribe 'corregir'."
+    )
+
+
 def _handle_text_message(container: ServiceContainer, phone: str, body: str) -> str | list[str]:
     conversation = container.sheets.get_conversation(phone)
     is_new_conversation = not conversation
@@ -981,6 +1314,10 @@ def _handle_text_message(container: ServiceContainer, phone: str, body: str) -> 
                 "context_json": container.conversation.default_context(),
             },
         )
+
+    case_selection_reply = _handle_case_selection_response(container, phone, body, conversation)
+    if case_selection_reply:
+        return case_selection_reply
 
     closure_reply = container.scheduler.handle_submission_closure_user_response(
         phone=phone,
@@ -1096,6 +1433,79 @@ def _handle_text_message(container: ServiceContainer, phone: str, body: str) -> 
     ):
         reply = _build_initial_wait_receipt_reply(container, phone)
     return reply
+
+
+def _handle_case_selection_response(
+    container: ServiceContainer,
+    phone: str,
+    body: str,
+    conversation: dict[str, Any],
+) -> str | None:
+    if str(conversation.get("current_step", "") or "") != "case_selection":
+        return None
+    context = conversation.get("context_json", {})
+    pending = context.get("pending_case_selection") if isinstance(context, dict) else None
+    if not isinstance(pending, dict):
+        return None
+    options = pending.get("options")
+    if not isinstance(options, list):
+        return None
+
+    selected = _match_case_selection_option(body, options)
+    if not selected:
+        return (
+            "No pude identificar esa rendición. "
+            "Responde con el número de la lista o con el ID de la rendición."
+        )
+
+    case_id = str(selected.get("case_id", "") or "").strip()
+    expense_case = container.sheets.get_expense_case_by_id(case_id) if case_id else None
+    if not expense_case:
+        return "No encontré esa rendición activa. Un operador deberá revisarla."
+
+    draft = dict(pending.get("draft_expense", {}) or {})
+    draft["case_id"] = case_id
+    draft["trip_id"] = case_id
+    transition = container.conversation.process_ocr_result(phone, draft, expense_case)
+    transition_context = transition.get("context_json", {})
+    if isinstance(transition_context, dict):
+        transition_draft = dict(transition_context.get("draft_expense", {}) or {})
+        transition_draft["case_id"] = case_id
+        transition_draft["trip_id"] = case_id
+        transition_context = {**transition_context, "draft_expense": transition_draft}
+    updated_context = _merge_context_preserving_sticky(
+        context,
+        {
+            **transition_context,
+            "pending_case_selection": {},
+        },
+    )
+    updated_context.pop("pending_case_selection", None)
+    container.sheets.update_conversation(
+        phone,
+        {
+            "state": transition.get("state", "CONFIRM_SUMMARY"),
+            "current_step": transition.get("current_step", "confirm_summary"),
+            "context_json": updated_context,
+        },
+    )
+    label = str(selected.get("label", "") or "").strip()
+    prefix = f"Perfecto, asociaré este documento a {label}.\n\n" if label else ""
+    return prefix + transition.get("reply", "Recibí tu comprobante. Estoy procesándolo.")
+
+
+def _match_case_selection_option(body: str, options: list[Any]) -> dict[str, Any] | None:
+    normalized = str(body or "").strip().lower()
+    if not normalized:
+        return None
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        index = str(option.get("index", "") or "").strip().lower()
+        case_id = str(option.get("case_id", "") or "").strip().lower()
+        if normalized in {index, case_id}:
+            return option
+    return None
 
 
 def _build_initial_wait_receipt_reply(container: ServiceContainer, phone: str) -> str:
@@ -1425,6 +1835,8 @@ def _extract_media_entries(payload: dict[str, Any]) -> list[dict[str, str]]:
                 "media_id": "",
                 "media_url": media_url,
                 "media_content_type": media_content_type,
+                "filename": str(payload.get(f"MediaFilename{index}") or "").strip(),
+                "message_type": "document" if media_content_type.lower().startswith("application/pdf") else "image",
                 "message_id": inbound_message_id,
                 "queued_at": queued_at,
             }
@@ -1823,7 +2235,7 @@ def _append_message_log(
     }
     if entry.get("message_id"):
         normalized_entry["message_id"] = str(entry.get("message_id")).strip()
-    for key in ("media_url", "media_content_type", "image_url", "document_url"):
+    for key in ("media_url", "media_content_type", "image_url", "document_url", "filename"):
         value = str(entry.get(key) or "").strip()
         if value:
             normalized_entry[key] = value
@@ -1835,7 +2247,7 @@ def _append_message_log(
                 continue
             normalized_attachment = {
                 key: str(attachment.get(key) or "").strip()
-                for key in ("media_url", "media_content_type", "image_url", "document_url")
+                for key in ("media_url", "media_content_type", "image_url", "document_url", "filename")
                 if str(attachment.get(key) or "").strip()
             }
             if normalized_attachment:
@@ -1843,7 +2255,6 @@ def _append_message_log(
         if normalized_attachments:
             normalized_entry["attachments"] = normalized_attachments
     message_log.append(normalized_entry)
-    message_log = message_log[-MAX_MESSAGE_LOG_ITEMS:]
     updated_context = _merge_context_preserving_sticky(
         context,
         {**context, "message_log": message_log},
@@ -1891,9 +2302,43 @@ def _log_inbound_media_message(
     count = len(media_entries)
     if count <= 0 and not str(caption or "").strip():
         return
-    label = "Envio un comprobante adjunto." if count == 1 else f"Envio {count} comprobantes adjuntos."
+    has_pdf = any(
+        str(item.get("media_content_type") or "").strip().lower() in {"application/pdf", "image/pdf"}
+        or str(item.get("filename") or "").strip().lower().endswith(".pdf")
+        for item in media_entries
+        if isinstance(item, dict)
+    )
+    single_label = "Envio un PDF adjunto." if has_pdf and count == 1 else "Envio un comprobante adjunto."
+    label = single_label if count == 1 else f"Envio {count} comprobantes adjuntos."
     cleaned_caption = str(caption or "").strip()
     text = label if not cleaned_caption else f"{label}\n{cleaned_caption}"
+    first_media_url = str(media_entries[0].get("media_url") or "").strip() if media_entries else ""
+    first_media_type = str(media_entries[0].get("media_content_type") or "").strip() if media_entries else ""
+    first_filename = str(media_entries[0].get("filename") or "").strip() if media_entries else ""
+    first_is_pdf = first_media_type.lower() in {"application/pdf", "image/pdf"} or first_filename.lower().endswith(".pdf")
+    first_media_payload = {
+        "media_url": "" if first_is_pdf else first_media_url,
+        "document_url": first_media_url if first_is_pdf else "",
+        "media_content_type": first_media_type,
+        "filename": first_filename,
+    }
+    normalized_attachments = []
+    for entry in media_entries:
+        if not isinstance(entry, dict):
+            continue
+        media_url = str(entry.get("media_url") or "").strip()
+        media_type = str(entry.get("media_content_type") or "").strip()
+        filename = str(entry.get("filename") or "").strip()
+        is_pdf = media_type.lower() in {"application/pdf", "image/pdf"} or filename.lower().endswith(".pdf")
+        normalized_attachments.append(
+            {
+                **entry,
+                "media_url": "" if is_pdf else media_url,
+                "document_url": media_url if is_pdf else str(entry.get("document_url") or "").strip(),
+                "media_content_type": media_type,
+                "filename": filename,
+            }
+        )
     _append_message_log(
         container,
         phone,
@@ -1902,9 +2347,8 @@ def _log_inbound_media_message(
             "type": "media",
             "text": text,
             "message_id": message_id,
-            "media_url": str(media_entries[0].get("media_url") or "").strip() if media_entries else "",
-            "media_content_type": str(media_entries[0].get("media_content_type") or "").strip() if media_entries else "",
-            "attachments": media_entries,
+            **first_media_payload,
+            "attachments": normalized_attachments,
         },
     )
 
@@ -2109,6 +2553,8 @@ def _get_pending_receipts(context: dict[str, Any] | None) -> list[dict[str, str]
                 "media_id": media_id,
                 "media_url": media_url,
                 "media_content_type": media_content_type,
+                "filename": str(item.get("filename") or "").strip(),
+                "message_type": str(item.get("message_type") or "").strip(),
                 "message_id": str(item.get("message_id") or "").strip(),
                 "queued_at": queued_at,
             }
@@ -2138,6 +2584,8 @@ def _stamp_media_entries(
                 "media_id": media_id,
                 "media_url": media_url,
                 "media_content_type": str(item.get("media_content_type") or "").strip(),
+                "filename": str(item.get("filename") or "").strip(),
+                "message_type": str(item.get("message_type") or "").strip(),
                 "message_id": str(item.get("message_id") or "").strip() or fallback_message_id,
                 "queued_at": str(item.get("queued_at") or "").strip() or queued_at,
             }

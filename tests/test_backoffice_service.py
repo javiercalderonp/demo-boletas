@@ -72,6 +72,21 @@ class FakeSheetsService:
 
 
 class BackofficeCaseTransitionTests(unittest.TestCase):
+    def test_compute_rendicion_balance_counts_approved_and_pending_separately(self):
+        balance = BackofficeService._compute_rendicion_balance(
+            100000,
+            [
+                {"status": "approved", "total_clp": 30000},
+                {"status": "pending_approval", "total_clp": 12000},
+                {"status": "pending_review", "total_clp": "8000"},
+                {"status": "rejected", "total_clp": 5000},
+            ],
+        )
+
+        self.assertEqual(balance["monto_rendido_aprobado"], 30000)
+        self.assertEqual(balance["monto_pendiente_revision"], 20000)
+        self.assertEqual(balance["saldo_restante"], 70000)
+
     def test_create_case_blocks_when_employee_already_has_active_case(self):
         sheets = FakeSheetsService(
             case_row={
@@ -117,6 +132,24 @@ class BackofficeCaseTransitionTests(unittest.TestCase):
 
         self.assertEqual(created["case_id"], "CASE-2")
         self.assertEqual(len(sheets.created_case_payloads), 1)
+
+    def test_create_case_preserves_daily_reminders_preference(self):
+        sheets = FakeSheetsService(case_row=None, expenses=[])
+        service = BackofficeService(sheets_service=sheets)
+
+        service.create_case(
+            {
+                "case_id": "CASE-2",
+                "employee_phone": "+56911111111",
+                "company_id": "acme",
+                "context_label": "abril",
+                "status": "active",
+                "daily_reminders_enabled": False,
+            }
+        )
+
+        self.assertEqual(len(sheets.created_case_payloads), 1)
+        self.assertIs(sheets.created_case_payloads[0]["daily_reminders_enabled"], False)
 
     def test_company_scoped_user_only_lists_their_cases_and_companies(self):
         sheets = FakeSheetsService(
@@ -213,7 +246,7 @@ class BackofficeCaseTransitionTests(unittest.TestCase):
         updated = service.sync_case_settlement("CASE-1")
 
         self.assertEqual(updated["settlement_direction"], "company_owes_employee")
-        self.assertEqual(updated["settlement_status"], "settlement_pending")
+        self.assertEqual(updated["settlement_status"], "pending_company_payment")
         self.assertEqual(updated["settlement_amount_clp"], 6000.0)
         self.assertEqual(updated["settlement_net_clp"], -6000.0)
 
@@ -230,7 +263,7 @@ class BackofficeCaseTransitionTests(unittest.TestCase):
         updated = service.sync_case_settlement("CASE-1")
 
         self.assertEqual(updated["settlement_direction"], "employee_owes_company")
-        self.assertEqual(updated["settlement_status"], "settlement_pending")
+        self.assertEqual(updated["settlement_status"], "pending_employee_payment_proof")
         self.assertEqual(updated["settlement_amount_clp"], 6000.0)
         self.assertEqual(updated["settlement_net_clp"], 6000.0)
 

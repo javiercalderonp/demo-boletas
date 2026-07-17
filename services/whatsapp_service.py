@@ -361,6 +361,8 @@ class WhatsAppService:
                                     "media_content_type": str(
                                         media_obj.get("mime_type") or ""
                                     ).strip(),
+                                    "filename": str(media_obj.get("filename") or "").strip(),
+                                    "message_type": message_type,
                                     "message_id": str(message.get("id") or "").strip(),
                                 }
                             )

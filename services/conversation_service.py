@@ -24,6 +24,55 @@ FIELD_PROMPTS = {
     "country": "¿En qué país fue el gasto?\n1. Chile\n2. Peru\n3. China\n4. Otro (escribir texto)",
 }
 
+FIELD_PROMPTS_BY_LANGUAGE = {
+    "en": {
+        "document_type": "I could not confidently tell whether this is a receipt, invoice, or professional fee receipt. Which one is it?",
+        "merchant": "What is the merchant?",
+        "date": "What is the date? (YYYY-MM-DD)",
+        "total": "What is the total amount? (number only)",
+        "currency": "What is the currency?\n1. CLP\n2. USD\n3. PEN\n4. CNY\n5. EUR",
+        "category": "What is the category?\n1. Meals\n2. Transport\n3. Lodging\n4. Other",
+        "country": "In which country was the expense?\n1. Chile\n2. Peru\n3. China\n4. Other (write it)",
+    },
+    "pt": {
+        "document_type": "Não consegui identificar com segurança se este documento é um recibo, fatura ou recibo de honorários. Qual é?",
+        "merchant": "Qual é o estabelecimento?",
+        "date": "Qual é a data? (formato YYYY-MM-DD)",
+        "total": "Qual é o total da despesa? (apenas número)",
+        "currency": "Qual é a moeda?\n1. CLP\n2. USD\n3. PEN\n4. CNY\n5. EUR",
+        "category": "Qual é a categoria?\n1. Meals\n2. Transport\n3. Lodging\n4. Other",
+        "country": "Em qual país foi a despesa?\n1. Chile\n2. Peru\n3. China\n4. Outro (escreva)",
+    },
+}
+
+REPLIES_BY_LANGUAGE = {
+    "cancelled": {
+        "es": "Flujo cancelado y reiniciado. Envíame un comprobante para comenzar de nuevo.",
+        "en": "Flow cancelled and reset. Send me a receipt or invoice to start again.",
+        "pt": "Fluxo cancelado e reiniciado. Envie um comprovante para começar de novo.",
+    },
+    "greeting": {
+        "es": "¡Hola! Soy el asistente de rendición de gastos. Envíame una foto de tu boleta, factura o comprobante para registrarlo.",
+        "en": "Hi! I am the expense reporting assistant. Send me a photo of your receipt or invoice and I will register it.",
+        "pt": "Olá! Sou o assistente de prestação de contas. Envie uma foto do recibo, fatura ou comprovante para eu registrar.",
+    },
+    "help": {
+        "es": "Puedo ayudarte con información de tu rendición activa o registrar gastos. Envíame una foto de tu boleta o comprobante cuando quieras.",
+        "en": "I can help with your active expense report or register expenses. Send me a photo of a receipt or invoice whenever you are ready.",
+        "pt": "Posso ajudar com sua prestação de contas ativa ou registrar despesas. Envie uma foto de um recibo ou comprovante quando quiser.",
+    },
+    "send_receipt": {
+        "es": "Envíame una foto de la boleta, factura o comprobante para procesar el gasto.",
+        "en": "Send me a photo of the receipt, invoice, or proof of payment to process the expense.",
+        "pt": "Envie uma foto do recibo, fatura ou comprovante para processar a despesa.",
+    },
+    "processing": {
+        "es": "Estoy procesando tu documento. Espera un momento o envía otra foto si quieres reintentar.",
+        "en": "I am processing your document. Please wait a moment, or send another photo if you want to try again.",
+        "pt": "Estou processando seu documento. Aguarde um momento ou envie outra foto se quiser tentar novamente.",
+    },
+}
+
 DOCUMENT_TYPE_OPTIONS = {"1": "receipt", "2": "invoice", "3": "professional_fee_receipt"}
 DOCUMENT_TYPE_LABELS = {
     "receipt": "boleta",
@@ -81,6 +130,7 @@ class ConversationService:
             "missing_fields": [],
             "last_question": None,
             "message_log": [],
+            "language": "es",
             "scheduler": {"sent_reminders": {}},
             "submission_closure": {},
             "trip_closure": {},
@@ -108,6 +158,7 @@ class ConversationService:
         normalized_context["draft_expense"] = context.get("draft_expense", {})
         normalized_context["missing_fields"] = context.get("missing_fields", [])
         normalized_context["last_question"] = context.get("last_question")
+        normalized_context["language"] = self._normalize_language(context.get("language"))
         message_log = context.get("message_log")
         if not isinstance(message_log, list):
             message_log = []
@@ -220,13 +271,15 @@ class ConversationService:
         context = conversation["context_json"]
         message = (text or "").strip()
         normalized = message.lower()
+        language = self._detect_language(message, context.get("language"))
+        context["language"] = language
 
         if normalized in {"cancelar", "cancel", "salir", "reiniciar", "reset"}:
             return {
                 "state": WAIT_RECEIPT,
                 "current_step": "",
-                "context_json": self.default_context(),
-                "reply": "Flujo cancelado y reiniciado. Envíame un comprobante para comenzar de nuevo.",
+                "context_json": {**self.default_context(), "language": language},
+                "reply": self._reply("cancelled", language),
                 "action": "cancel",
             }
 
@@ -265,7 +318,7 @@ class ConversationService:
                     "state": WAIT_RECEIPT,
                     "current_step": "",
                     "context_json": context,
-                    "reply": "¡Hola! Soy el asistente de rendición de gastos. Envíame una foto de tu boleta, factura o comprobante para registrarlo.",
+                    "reply": self._reply("greeting", language),
                     "action": "noop",
                 }
             if self._looks_like_question(message) or self._looks_like_rendicion_request(message):
@@ -273,7 +326,7 @@ class ConversationService:
                     "state": WAIT_RECEIPT,
                     "current_step": "",
                     "context_json": context,
-                    "reply": "Puedo ayudarte con información de tu rendición activa o registrar gastos. Envíame una foto de tu boleta o comprobante cuando quieras.",
+                    "reply": self._reply("help", language),
                     "action": "noop",
                 }
 
@@ -281,7 +334,7 @@ class ConversationService:
                 "state": WAIT_RECEIPT,
                 "current_step": "",
                 "context_json": context,
-                "reply": "Envíame una foto de la boleta, factura o comprobante para procesar el gasto.",
+                "reply": self._reply("send_receipt", language),
                 "action": "noop",
             }
 
@@ -290,7 +343,7 @@ class ConversationService:
                 "state": PROCESSING,
                 "current_step": "",
                 "context_json": context,
-                "reply": "Estoy procesando tu documento. Espera un momento o envía otra foto si quieres reintentar.",
+                "reply": self._reply("processing", language),
                 "action": "noop",
             }
 
@@ -316,6 +369,7 @@ class ConversationService:
         draft = dict(context.get("draft_expense", {}))
         missing = list(context.get("missing_fields", []))
         current_field = missing[0] if missing else context.get("last_question")
+        language = self._normalize_language(context.get("language"))
 
         if not current_field:
             missing = self.expense_service.find_missing_required_fields(draft)
@@ -341,6 +395,7 @@ class ConversationService:
                         "draft_expense": draft,
                         "missing_fields": missing,
                         "last_question": "document_type",
+                        "language": language,
                     },
                     "reply": "No entendí. Por favor indica si es boleta (1), factura (2) o boleta de honorarios (3).",
                     "action": "noop",
@@ -359,8 +414,9 @@ class ConversationService:
                         "draft_expense": draft,
                         "missing_fields": missing,
                         "last_question": next_field,
+                        "language": language,
                     },
-                    "reply": f"Perfecto, registrado como {doc_label}.\n{self.prompt_for_field(next_field)}",
+                    "reply": f"Perfecto, registrado como {doc_label}.\n{self.prompt_for_field(next_field, language=language)}",
                     "action": "noop",
                 }
             return self._to_confirm_summary(draft)
@@ -373,6 +429,7 @@ class ConversationService:
                     "draft_expense": draft,
                     "missing_fields": missing,
                     "last_question": current_field,
+                    "language": language,
                 },
                 "reply": "Escribe el país del gasto.",
                 "action": "noop",
@@ -382,10 +439,10 @@ class ConversationService:
             if answer:
                 reply = (
                     f"{answer}\n\n"
-                    f"Para continuar con este gasto:\n{self.prompt_for_field(current_field)}"
+                    f"Para continuar con este gasto:\n{self.prompt_for_field(current_field, language=language)}"
                 )
             else:
-                reply = f"No pude entender esa respuesta.\n{self.prompt_for_field(current_field)}"
+                reply = f"No pude entender esa respuesta.\n{self.prompt_for_field(current_field, language=language)}"
             return {
                 "state": NEEDS_INFO,
                 "current_step": current_field,
@@ -393,6 +450,7 @@ class ConversationService:
                     "draft_expense": draft,
                     "missing_fields": missing,
                     "last_question": current_field,
+                    "language": language,
                 },
                 "reply": reply,
                 "action": "noop",
@@ -415,8 +473,9 @@ class ConversationService:
                     "draft_expense": draft,
                     "missing_fields": missing,
                     "last_question": next_field,
+                    "language": language,
                 },
-                "reply": self.prompt_for_field(next_field),
+                "reply": self.prompt_for_field(next_field, language=language),
                 "action": "noop",
             }
 
@@ -513,7 +572,39 @@ class ConversationService:
                 "action": "save_expense",
             }
 
-        if normalized in {"1", "confirmar", "confirmo", "ok", "si", "sí"}:
+        if normalized.strip(" .,!?:;*\"'") in {
+            "1",
+            "confirmar",
+            "confirmo",
+            "ok",
+            "okay",
+            "si",
+            "sí",
+            "s",
+            "dale",
+            "listo",
+            "va",
+            "perfecto",
+            "de acuerdo",
+            "👍",
+            "👍🏻",
+            "👍🏼",
+            "👍🏽",
+            "👍🏾",
+            "👍🏿",
+        }:
+            if not self._get_draft_cost_centers(draft):
+                return {
+                    "state": DONE,
+                    "current_step": "",
+                    "context_json": {
+                        "draft_expense": draft,
+                        "missing_fields": [],
+                        "last_question": None,
+                    },
+                    "reply": "Confirmado. Guardando gasto...",
+                    "action": "save_expense",
+                }
             return {
                 "state": CONFIRM_SUMMARY,
                 "current_step": "cost_center",
@@ -640,7 +731,8 @@ class ConversationService:
 
     def _is_greeting(self, normalized: str) -> bool:
         greetings = ("hola", "buenas", "buenos dias", "buenos días", "buen dia", "buen día",
-                     "buenas tardes", "buenas noches", "hi", "hello", "hey", "saludos")
+                     "buenas tardes", "buenas noches", "hi", "hello", "hey", "saludos",
+                     "olá", "ola", "oi", "bom dia", "boa tarde", "boa noite")
         stripped = normalized.strip("!?., ")
         return any(stripped == g or normalized.startswith(g + " ") or normalized.startswith(g + "!")
                    or normalized.startswith(g + ",") or normalized.startswith(g + "?")
@@ -703,8 +795,62 @@ class ConversationService:
         )
         return normalized.startswith(question_starts)
 
-    def prompt_for_field(self, field_name: str) -> str:
+    def prompt_for_field(self, field_name: str, *, language: str = "es") -> str:
+        lang = self._normalize_language(language)
+        localized_prompts = FIELD_PROMPTS_BY_LANGUAGE.get(lang, {})
+        if field_name in localized_prompts:
+            return localized_prompts[field_name]
+        if lang == "en":
+            return f"The field {field_name} is missing. Please provide it."
+        if lang == "pt":
+            return f"Falta o campo {field_name}. Informe esse dado."
         return FIELD_PROMPTS.get(field_name, f"Falta el campo {field_name}. Indícalo.")
+
+    def _reply(self, key: str, language: str) -> str:
+        replies = REPLIES_BY_LANGUAGE.get(key, {})
+        return replies.get(self._normalize_language(language)) or replies.get("es", "")
+
+    def _normalize_language(self, language: Any) -> str:
+        lang = str(language or "es").strip().lower()
+        if lang.startswith("en"):
+            return "en"
+        if lang.startswith("pt"):
+            return "pt"
+        return "es"
+
+    def _detect_language(self, message: str, current_language: Any = None) -> str:
+        text = f" {str(message or '').strip().lower()} "
+        english_markers = (
+            " hello ",
+            " hi ",
+            " thanks ",
+            " thank you ",
+            " receipt ",
+            " invoice ",
+            " expense ",
+            " report ",
+            " help ",
+            " what ",
+            " how ",
+        )
+        portuguese_markers = (
+            " olá ",
+            " ola ",
+            " obrigado ",
+            " obrigada ",
+            " recibo ",
+            " fatura ",
+            " despesa ",
+            " comprovante ",
+            " prestação ",
+            " prestacao ",
+            " ajuda ",
+        )
+        if any(marker in text for marker in english_markers):
+            return "en"
+        if any(marker in text for marker in portuguese_markers):
+            return "pt"
+        return self._normalize_language(current_language)
 
     def _parse_document_type_value(self, message: str) -> str | None:
         """Parse user response for document type (boleta/factura)."""

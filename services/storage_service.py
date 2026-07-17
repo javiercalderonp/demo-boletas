@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
+import os
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -38,8 +40,32 @@ class GCSStorageService:
     def __post_init__(self) -> None:
         self._bucket = None
         self._client = None
+        credentials_path = str(self.settings.google_application_credentials or "").strip()
+        if (
+            credentials_path
+            and not Path(credentials_path).exists()
+            and str(getattr(self.settings, "app_env", "dev") or "dev").strip().lower() != "prod"
+        ):
+            logger.warning(
+                "Google credentials file not found in non-production environment; disabling GCS path=%s",
+                credentials_path,
+            )
+            self.settings.gcs_bucket_name = ""
+            self.settings.google_application_credentials = ""
+            os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
         if self.enabled:
-            self._connect()
+            try:
+                self._connect()
+            except Exception:
+                if str(getattr(self.settings, "app_env", "dev") or "dev").strip().lower() == "prod":
+                    raise
+                logger.warning(
+                    "GCS connection failed in non-production environment; disabling storage",
+                    exc_info=True,
+                )
+                self.settings.gcs_bucket_name = ""
+                self._bucket = None
+                self._client = None
 
     @property
     def enabled(self) -> bool:

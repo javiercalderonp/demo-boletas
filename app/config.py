@@ -41,6 +41,8 @@ class Settings:
     app_env: str = os.getenv("APP_ENV", "dev")
     debug: bool = _as_bool(os.getenv("DEBUG"), default=True)
     public_base_url: str = os.getenv("PUBLIC_BASE_URL", "")
+    log_level: str = os.getenv("LOG_LEVEL", "INFO")
+    log_format: str = os.getenv("LOG_FORMAT", "json" if os.getenv("APP_ENV", "dev") == "prod" else "text")
 
     whatsapp_provider: str = os.getenv("WHATSAPP_PROVIDER", "meta").strip().lower()
 
@@ -57,7 +59,7 @@ class Settings:
     meta_verify_token: str = os.getenv("META_VERIFY_TOKEN", "")
     meta_app_secret: str = os.getenv("META_APP_SECRET", "")
     meta_validate_signature: bool = _as_bool(
-        os.getenv("META_VALIDATE_SIGNATURE"), default=False
+        os.getenv("META_VALIDATE_SIGNATURE"), default=True
     )
     meta_graph_version: str = os.getenv("META_GRAPH_VERSION", "v22.0")
 
@@ -74,6 +76,10 @@ class Settings:
     )
     google_sheets_read_cooldown_seconds: float = float(
         os.getenv("GOOGLE_SHEETS_READ_COOLDOWN_SECONDS", "60") or "60"
+    )
+    persistence_backend: str = os.getenv("PERSISTENCE_BACKEND", "").strip().lower()
+    sqlite_database_path: str = os.getenv(
+        "SQLITE_DATABASE_PATH", "./data/expense_agent.sqlite3"
     )
     gcs_bucket_name: str = os.getenv("GCS_BUCKET_NAME", "")
     gcs_receipts_prefix: str = os.getenv("GCS_RECEIPTS_PREFIX", "receipts/")
@@ -123,13 +129,19 @@ class Settings:
     scheduler_reminder_window_minutes: int = int(
         os.getenv("SCHEDULER_REMINDER_WINDOW_MINUTES", "10") or "10"
     )
+    scheduler_needs_info_timeout_hours: int = int(
+        os.getenv("SCHEDULER_NEEDS_INFO_TIMEOUT_HOURS", "6") or "6"
+    )
+    scheduler_needs_info_reminder_before_hours: int = int(
+        os.getenv("SCHEDULER_NEEDS_INFO_REMINDER_BEFORE_HOURS", "2") or "2"
+    )
     scheduler_morning_hour_local: int = int(
         os.getenv("SCHEDULER_MORNING_HOUR_LOCAL", "9") or "9"
     )
     scheduler_evening_hour_local: int = int(
         os.getenv("SCHEDULER_EVENING_HOUR_LOCAL", "20") or "20"
     )
-    backoffice_auth_secret: str = os.getenv("BACKOFFICE_AUTH_SECRET", "change-me")
+    backoffice_auth_secret: str = os.getenv("BACKOFFICE_AUTH_SECRET", "")
     backoffice_token_ttl_seconds: int = int(
         os.getenv("BACKOFFICE_TOKEN_TTL_SECONDS", "28800") or "28800"
     )
@@ -142,7 +154,13 @@ class Settings:
 
     @property
     def google_sheets_enabled(self) -> bool:
+        if self.persistence_backend == "sqlite":
+            return False
         return bool(self.google_sheets_spreadsheet_id)
+
+    @property
+    def sqlite_persistence_enabled(self) -> bool:
+        return self.persistence_backend == "sqlite"
 
     @property
     def gcs_storage_enabled(self) -> bool:

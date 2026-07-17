@@ -6,10 +6,10 @@ Ultima actualizacion: 2026-05-05
 
 `demo-boletas` es un MVP para rendicion de gastos por WhatsApp. El sistema recibe boletas, facturas, boletas de honorarios y comprobantes, extrae datos con OCR, completa informacion faltante conversando con el usuario, registra la rendicion en Google Sheets, permite revision desde un backoffice web y genera un PDF consolidado para aprobacion/firma.
 
-La arquitectura actual esta separada en dos aplicaciones:
+La arquitectura objetivo esta separada en dos aplicaciones:
 
 - un backend FastAPI desplegado en Google Cloud Run
-- un backoffice Next.js desplegado en Vercel
+- un backoffice Next.js desplegable en Cloud Run o Vercel
 
 Los datos operacionales viven en Google Sheets. Los archivos binarios, como boletas originales y reportes consolidados, viven en Google Cloud Storage. OCR usa Google Document AI. WhatsApp usa Meta Cloud API en el ambiente actual. La firma electronica usa DocuSign demo.
 
@@ -18,8 +18,8 @@ Los datos operacionales viven en Google Sheets. Los archivos binarios, como bole
 | Componente | Donde esta hosteado actualmente | Evidencia | Notas |
 | --- | --- | --- | --- |
 | Backend API | Google Cloud Run, servicio `viaticos-backend`, region `us-central1` | [deploy.sh](/Users/javiercalderon/demo-boletas/deploy.sh) y health live | URL actual: `https://viaticos-backend-337678027134.us-central1.run.app`. |
-| Backoffice web | Vercel | [deploy.sh](/Users/javiercalderon/demo-boletas/deploy.sh), [backoffice/lib/api.ts](/Users/javiercalderon/demo-boletas/backoffice/lib/api.ts) y verificacion HTTP | Aliases actuales: `https://expenseops-backoffice.vercel.app` y `https://viaticos-backoffice.vercel.app`. |
-| API usada por backoffice | Cloud Run | [backoffice/lib/api.ts](/Users/javiercalderon/demo-boletas/backoffice/lib/api.ts) | Default productivo: `https://viaticos-backend-337678027134.us-central1.run.app/api`. |
+| Backoffice web | Cloud Run o Vercel | [backoffice/Dockerfile](/Users/javiercalderon/demo-boletas/backoffice/Dockerfile), [deploy.sh](/Users/javiercalderon/demo-boletas/deploy.sh), [backoffice/lib/api.ts](/Users/javiercalderon/demo-boletas/backoffice/lib/api.ts) | Para Cloud Run usar `NEXT_PUBLIC_API_BASE_URL`. Aliases Vercel existentes: `https://expenseops-backoffice.vercel.app` y `https://viaticos-backoffice.vercel.app`. |
+| API usada por backoffice | Cloud Run | [backoffice/lib/api.ts](/Users/javiercalderon/demo-boletas/backoffice/lib/api.ts) | En producción se configura explícitamente con `NEXT_PUBLIC_API_BASE_URL`; no hay fallback productivo hardcodeado. |
 | Base de datos operacional | Google Sheets | [services/sheets_service.py](/Users/javiercalderon/demo-boletas/services/sheets_service.py), [.env local enmascarado] | Spreadsheet configurado: `1vFTnwfm-3HR_bfg8EUHnV4R-rnIZxM1m0uJGLr855Ts`. |
 | Storage de boletas y reportes | Google Cloud Storage | [services/storage_service.py](/Users/javiercalderon/demo-boletas/services/storage_service.py), health live | Bucket actual: `viaticos-receipts-bucket`. |
 | OCR | Google Document AI | [services/ocr_service.py](/Users/javiercalderon/demo-boletas/services/ocr_service.py), health live | Proyecto `biaticos-488419`, location `us`, processor `c1b3f4b54d4934cf`. |
@@ -69,7 +69,7 @@ Cloud Run: viaticos-backend
         +-- envelope de firma
         +-- callback de firma
 
-Backoffice Next.js en Vercel
+Backoffice Next.js en Cloud Run o Vercel
   |
   | HTTPS + Bearer token
   v
@@ -154,15 +154,12 @@ Stack:
 
 Deploy:
 
+- Cloud Run mediante [backoffice/Dockerfile](/Users/javiercalderon/demo-boletas/backoffice/Dockerfile)
 - Vercel produccion via `npx vercel deploy --prebuilt --prod`
 - alias adicional `expenseops-backoffice.vercel.app`
 - alias tambien observado funcionando: `viaticos-backoffice.vercel.app`
 
-El cliente API esta en [backoffice/lib/api.ts](/Users/javiercalderon/demo-boletas/backoffice/lib/api.ts). En produccion usa por defecto:
-
-```text
-https://viaticos-backend-337678027134.us-central1.run.app/api
-```
+El cliente API esta en [backoffice/lib/api.ts](/Users/javiercalderon/demo-boletas/backoffice/lib/api.ts). En produccion requiere `NEXT_PUBLIC_API_BASE_URL`.
 
 En local usa:
 
@@ -201,7 +198,7 @@ Autenticacion del backoffice:
 
 ## Modelo de datos
 
-La fuente de verdad operacional es Google Sheets. El servicio mantiene compatibilidad con nombres legacy como `Trips` y `TripDocuments`, pero el modelo preferido actual es:
+La fuente de verdad operacional puede ser SQLite persistente o Google Sheets. El backend conserva `SheetsService` como interfaz unica de lectura/escritura: con `PERSISTENCE_BACKEND=sqlite` guarda filas JSON en `SQLITE_DATABASE_PATH`, y con `GOOGLE_SHEETS_SPREADSHEET_ID` opera contra Google Sheets. El servicio mantiene compatibilidad con nombres legacy como `Trips` y `TripDocuments`, pero el modelo preferido actual es:
 
 - `empresas`
 - `Employees`
@@ -464,7 +461,7 @@ Logs front:
 
 ## Limitaciones actuales
 
-- Google Sheets funciona como base de datos: es practico para MVP, pero no ideal para alta concurrencia, integridad transaccional o reporting complejo.
+- SQLite persistente elimina las cuotas de Google Sheets para operacion local/demo; para alta concurrencia multi-instancia conviene migrar el mismo contrato a Postgres.
 - El backend corre con `--workers 1`, por lo que escala principalmente con instancias de Cloud Run, no con multiples workers por contenedor.
 - Parte del lenguaje legacy de `Trips`/`TripDocuments` sigue presente por compatibilidad.
 - El ambiente reporta `APP_ENV=dev` aun estando desplegado en URLs productivas.

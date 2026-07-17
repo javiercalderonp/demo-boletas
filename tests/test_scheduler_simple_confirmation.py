@@ -132,7 +132,13 @@ class FakeSheetsService:
                 "total_clp": 110300,
             }
         ]
-        self.conversation = {"state": "WAIT_RECEIPT", "context_json": {}}
+        self.conversation = {
+            "phone": "+56911111111",
+            "state": "WAIT_RECEIPT",
+            "current_step": "",
+            "context_json": {},
+            "updated_at": "2026-04-16T10:00:00+00:00",
+        }
         self.employee_row = {
             "phone": "+56911111111",
             "first_name": "Javier",
@@ -190,9 +196,31 @@ class FakeSheetsService:
     def list_expenses(self):
         return [dict(item) for item in self.expenses]
 
+    def create_expense(self, expense_data):
+        self.expenses.append(dict(expense_data))
+        return dict(expense_data)
+
     def get_conversation(self, phone):
         if phone == self.case_row["phone"]:
             return dict(self.conversation)
+        return None
+
+    def list_conversations(self):
+        return [dict(self.conversation)]
+
+    def update_conversation(self, phone, payload):
+        self.conversation = {
+            "phone": phone,
+            "state": payload.get("state", self.conversation.get("state", "WAIT_RECEIPT")),
+            "current_step": payload.get("current_step", self.conversation.get("current_step", "")),
+            "context_json": payload.get("context_json", self.conversation.get("context_json", {})),
+            "updated_at": payload.get("updated_at", self.conversation.get("updated_at", "")),
+        }
+        return dict(self.conversation)
+
+    def get_active_expense_case_by_phone(self, phone):
+        if phone == self.case_row["phone"] and self.case_row.get("status") == "active":
+            return dict(self.case_row)
         return None
 
     def get_employee_by_phone(self, phone):
@@ -281,6 +309,10 @@ class SchedulerSimpleConfirmationTests(unittest.TestCase):
             "company_owes_employee",
         )
         self.assertEqual(
+            service.sheets_service.case_row["settlement_status"],
+            "pending_company_payment",
+        )
+        self.assertEqual(
             service.sheets_service.case_row["settlement_amount_clp"],
             10300.0,
         )
@@ -304,6 +336,10 @@ class SchedulerSimpleConfirmationTests(unittest.TestCase):
         self.assertEqual(
             service.sheets_service.case_row["settlement_direction"],
             "employee_owes_company",
+        )
+        self.assertEqual(
+            service.sheets_service.case_row["settlement_status"],
+            "pending_employee_payment_proof",
         )
         self.assertEqual(
             service.sheets_service.case_row["settlement_amount_clp"],
@@ -349,6 +385,18 @@ class SchedulerSimpleConfirmationTests(unittest.TestCase):
             "declined",
         )
 
+    def test_simple_confirmation_accepts_quick_yes_variant(self):
+        service = self.build_service()
+
+        reply = service.handle_simple_document_confirmation_user_response(
+            phone="+56911111111",
+            message="perfecto",
+        )
+
+        self.assertIsInstance(reply, list)
+        self.assertEqual(service.sheets_service.case_row["user_confirmation_status"], "confirmed_simple")
+        self.assertEqual(service.sheets_service.document_row["signature_status"], "completed")
+
     def test_submission_reminder_skips_closed_rendicion_cases(self):
         service = self.build_service()
         service.sheets_service.case_row["rendicion_status"] = "closed"
@@ -361,6 +409,152 @@ class SchedulerSimpleConfirmationTests(unittest.TestCase):
         reminder_items = [item for item in report["items"] if item.get("item_type") == "reminder"]
         self.assertEqual(len(reminder_items), 1)
         self.assertEqual(reminder_items[0]["outcome"], "skipped_non_open_case")
+
+    def test_submission_reminder_skips_cases_with_daily_reminders_disabled(self):
+        service = self.build_service()
+        service.sheets_service.case_row["rendicion_status"] = "open"
+        service.sheets_service.case_row["daily_reminders_enabled"] = False
+
+        report = service.run_submission_reminders(
+            dry_run=True,
+            now_utc=datetime(2026, 4, 17, 12, 5, tzinfo=timezone.utc),
+        )
+
+        reminder_items = [item for item in report["items"] if item.get("item_type") == "reminder"]
+        self.assertEqual(len(reminder_items), 1)
+        self.assertEqual(reminder_items[0]["outcome"], "skipped_daily_reminders_disabled")
+        self.assertEqual(service.whatsapp_service.sent_messages, [])
+
+    def test_evening_submission_reminder_sends_daily_summary(self):
+        service = self.build_service()
+        service.sheets_service.case_row["rendicion_status"] = "open"
+        service.sheets_service.case_row["context_label"] = "Viña del Mar"
+        service.sheets_service.case_row["fondos_entregados"] = 100000
+        service.sheets_service.expenses = [
+            {
+                "expense_id": "EXP-1",
+                "phone": "+56911111111",
+                "case_id": "CASE-1",
+                "date": "2026-04-17",
+                "status": "approved",
+                "total_clp": 30000,
+            },
+            {
+                "expense_id": "EXP-2",
+                "phone": "+56911111111",
+                "case_id": "CASE-1",
+                "date": "2026-04-17",
+                "status": "pending_review",
+                "total_clp": 12000,
+            },
+            {
+                "expense_id": "EXP-3",
+                "phone": "+56911111111",
+                "case_id": "CASE-1",
+                "date": "2026-04-16",
+                "status": "approved",
+                "total_clp": 5000,
+            },
+        ]
+
+        report = service.run_submission_reminders(
+            dry_run=False,
+            now_utc=datetime(2026, 4, 18, 0, 5, tzinfo=timezone.utc),
+        )
+
+        reminder_items = [item for item in report["items"] if item.get("item_type") == "reminder"]
+        self.assertEqual(reminder_items[0]["outcome"], "sent")
+        self.assertEqual(reminder_items[0]["slot"], "evening_2000")
+        message = service.whatsapp_service.sent_messages[-1]["message"]
+        self.assertIn("Cierre del día (Viña del Mar)", message)
+        self.assertIn("Documentos registrados hoy: 2", message)
+        self.assertIn("Fondos entregados: $100.000 CLP", message)
+        self.assertIn("Rendido aprobado: $35.000 CLP", message)
+        self.assertIn("Pendiente de revisión: $12.000 CLP", message)
+        self.assertIn("Saldo restante: $65.000 CLP", message)
+
+    def test_needs_info_reminder_is_sent_before_timeout(self):
+        service = self.build_service()
+        service.sheets_service.conversation = {
+            "phone": "+56911111111",
+            "state": "NEEDS_INFO",
+            "current_step": "currency",
+            "context_json": {
+                "draft_expense": {
+                    "case_id": "CASE-1",
+                    "merchant": "Hotel",
+                    "total": 12000,
+                },
+                "missing_fields": ["currency"],
+                "last_question": "currency",
+            },
+            "updated_at": "2026-04-17T08:00:00+00:00",
+        }
+
+        report = service.run_submission_reminders(
+            dry_run=False,
+            now_utc=datetime(2026, 4, 17, 12, 30, tzinfo=timezone.utc),
+        )
+
+        needs_info_items = [
+            item for item in report["items"] if item.get("item_type") == "needs_info_timeout"
+        ]
+        self.assertEqual(needs_info_items[-1]["outcome"], "sent_needs_info_reminder")
+        self.assertEqual(report["needs_info_reminder_sent_count"], 1)
+        self.assertIn(
+            "Tienes un gasto pendiente de completar",
+            service.whatsapp_service.sent_messages[-1]["message"],
+        )
+        self.assertEqual(service.sheets_service.conversation["state"], "NEEDS_INFO")
+        self.assertIn(
+            "reminder_sent_at_utc",
+            service.sheets_service.conversation["context_json"]["needs_info_timeout"],
+        )
+
+    def test_needs_info_timeout_saves_draft_for_review_and_resets_conversation(self):
+        service = self.build_service()
+        service.sheets_service.expenses = []
+        service.sheets_service.conversation = {
+            "phone": "+56911111111",
+            "state": "NEEDS_INFO",
+            "current_step": "currency",
+            "context_json": {
+                "draft_expense": {
+                    "case_id": "CASE-1",
+                    "merchant": "Hotel",
+                    "date": "2026-04-17",
+                    "total": 12000,
+                    "source_message_id": "wamid.1",
+                },
+                "missing_fields": ["currency"],
+                "last_question": "currency",
+                "message_log": [{"id": "msg-1", "speaker": "person", "text": "foto"}],
+            },
+            "updated_at": "2026-04-17T08:00:00+00:00",
+        }
+
+        report = service.run_submission_reminders(
+            dry_run=False,
+            now_utc=datetime(2026, 4, 17, 14, 5, tzinfo=timezone.utc),
+        )
+
+        needs_info_items = [
+            item for item in report["items"] if item.get("item_type") == "needs_info_timeout"
+        ]
+        self.assertEqual(needs_info_items[-1]["outcome"], "needs_info_timeout")
+        self.assertEqual(report["needs_info_timeout_count"], 1)
+        self.assertEqual(service.sheets_service.conversation["state"], "WAIT_RECEIPT")
+        self.assertEqual(service.sheets_service.conversation["current_step"], "")
+        self.assertEqual(len(service.sheets_service.expenses), 1)
+        saved = service.sheets_service.expenses[0]
+        self.assertEqual(saved["status"], "pending_review")
+        self.assertEqual(saved["review_status"], "needs_info_timeout")
+        self.assertEqual(saved["review_reason"], "needs_info_timeout:currency")
+        self.assertEqual(saved["case_id"], "CASE-1")
+        self.assertIn(
+            "pendiente de revisión",
+            service.whatsapp_service.sent_messages[-1]["message"],
+        )
 
     def test_submission_start_intro_uses_employee_name_in_greeting(self):
         service = self.build_service()

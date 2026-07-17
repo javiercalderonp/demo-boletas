@@ -1,8 +1,6 @@
 import { emitApiMutation } from "@/lib/api-events";
 
 const DEFAULT_LOCAL_API_BASE_URL = "http://localhost:8000/api";
-const DEFAULT_PRODUCTION_API_BASE_URL =
-  "https://viaticos-backend-337678027134.us-central1.run.app/api";
 const BACKOFFICE_TOKEN_STORAGE_KEY = "backoffice_token";
 const BACKOFFICE_LOGIN_EMAIL_STORAGE_KEY = "backoffice_login_email";
 
@@ -50,7 +48,7 @@ function resolveApiBaseUrl(): string {
       return DEFAULT_LOCAL_API_BASE_URL;
     }
 
-    return DEFAULT_PRODUCTION_API_BASE_URL;
+    throw new Error("NEXT_PUBLIC_API_BASE_URL must be configured outside local development");
   }
 
   return DEFAULT_LOCAL_API_BASE_URL;

@@ -1,17 +1,41 @@
+import asyncio
+import os
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
+
+os.environ["GOOGLE_SHEETS_SPREADSHEET_ID"] = ""
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 
+import app.main as main_app
 from app.api.backoffice import (
+    LOGIN_RATE_LIMIT_MAX_ATTEMPTS,
+    _check_login_rate_limit,
+    _clear_login_rate_limit,
+    _login_rate_limit_attempts,
+    _record_failed_login,
     _build_new_case_conversation_state,
     case_action,
     create_case,
     delete_case as delete_case_endpoint,
+    generate_case_consolidated_document,
+    list_audit_log,
+    refresh_auth_token,
     require_super_admin,
+    send_conversation_message,
     send_conversation_template_message,
 )
-from app.schemas.backoffice import CasePayload, SendTemplatePayload, StatusActionPayload
+from app.main import create_app
+from app.schemas.backoffice import (
+    CasePayload,
+    EmployeePayload,
+    SendMessagePayload,
+    SendTemplatePayload,
+    SetupPasswordPayload,
+    StatusActionPayload,
+)
 
 SUPER_ADMIN_USER = {"role": "super_admin", "scope_type": "global", "active": True}
 
@@ -104,6 +128,10 @@ class FakeBackofficeActions:
         self.calls.append(("ensure_case_ready_for_settlement_resolution", case_id))
         return None
 
+    def ensure_case_ready_for_document_confirmation(self, case_id):
+        self.calls.append(("ensure_case_ready_for_document_confirmation", case_id))
+        return {"all_documents_resolved": True}
+
     def get_case_detail(self, case_id, user=None):
         if self.case_row.get("case_id") != case_id:
             return None
@@ -149,12 +177,61 @@ class FakeBackofficeDelete:
         return {"case": deleted, "deleted_expenses": 2}
 
 
+class FakeBackofficeExpenses:
+    def __init__(self):
+        self.expense = {
+            "expense_id": "EXP-1",
+            "case_id": "CASE-1",
+            "phone": "+56911111111",
+            "source_message_id": "wamid.original",
+            "merchant": "Cafe Central",
+            "currency": "CLP",
+            "total": 4500,
+            "status": "pending_review",
+            "review_status": "pending_review",
+        }
+
+    def get_expense_detail(self, expense_id, user=None):
+        if expense_id != self.expense["expense_id"]:
+            return None
+        return {"expense": dict(self.expense)}
+
+    def update_expense(self, expense_id, payload):
+        if expense_id != self.expense["expense_id"]:
+            return None
+        self.expense = {**self.expense, **payload}
+        return dict(self.expense)
+
+    def get_case_detail(self, case_id, user=None):
+        return {"case": {"case_id": case_id, "saldo_restante": 0}}
+
+
+class FakeAuditSheets:
+    def __init__(self):
+        self.audit_rows = []
+
+    def append_audit_log(self, **payload):
+        self.audit_rows.append(payload)
+        return payload
+
+    def list_audit_log(self):
+        return list(self.audit_rows)
+
+
+class FakeBackofficeAuth:
+    def create_access_token(self, user):
+        return f"token-for-{user['email']}"
+
+
 class FakeScheduler:
     def _resolve_case_timezone(self, expense_case):
         return "America/Santiago"
 
     def _build_submission_start_intro_messages(self, expense_case):
         return ["Hola, ya puedes enviar tu boleta."]
+
+    def _deliver_submission_closure_package(self, *, phone, case_id):
+        return "Revisa y confirma tu rendición."
 
     def _submission_start_intro_key(self, case_id, local_date):
         return f"{case_id}:{local_date}"
@@ -209,6 +286,167 @@ class FailingWhatsApp:
 
 
 class BackofficeApiTests(unittest.TestCase):
+    def _create_app_with_fake_services(self):
+        class FakeService:
+            enabled = False
+            document_ai_enabled = False
+            category_classification_enabled = False
+            chat_assistant_enabled = False
+            provider = "meta"
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def ensure_default_admin(self):
+                pass
+
+        with (
+            patch("app.main.SheetsService", FakeService),
+            patch("app.main.BackofficeAuthService", FakeService),
+            patch("app.main.BackofficeService", FakeService),
+            patch("app.main.ExpenseCaseService", FakeService),
+            patch("app.main.GCSStorageService", FakeService),
+            patch("app.main.ConsolidatedDocumentService", FakeService),
+            patch("app.main.DocusignService", FakeService),
+            patch("app.main.OCRService", FakeService),
+            patch("app.main.ExpenseService", FakeService),
+            patch("app.main.LLMService", FakeService),
+            patch("app.main.ConversationService", FakeService),
+            patch("app.main.WhatsAppService", FakeService),
+            patch("app.main.SchedulerService", FakeService),
+            patch("services.review_score_service.ReviewScoreService", FakeService),
+        ):
+            return create_app()
+
+    def _fake_request(self, host="203.0.113.9"):
+        return SimpleNamespace(headers={}, client=SimpleNamespace(host=host))
+
+    def test_health_exposes_minimal_public_payload(self):
+        app = self._create_app_with_fake_services()
+        route = next(route for route in app.routes if getattr(route, "path", None) == "/health")
+
+        response = asyncio.run(route.endpoint())
+
+        self.assertEqual(response, {"status": "ok"})
+
+    def test_backoffice_payloads_validate_phone_e164(self):
+        self.assertEqual(EmployeePayload(phone="+56911111111").phone, "+56911111111")
+        self.assertEqual(
+            CasePayload(employee_phone="+56911111111", company_id="COMP-1").employee_phone,
+            "+56911111111",
+        )
+
+        with self.assertRaises(ValidationError):
+            EmployeePayload(phone="56911111111")
+        with self.assertRaises(ValidationError):
+            CasePayload(employee_phone="56911111111", company_id="COMP-1")
+
+    def test_setup_password_payload_requires_strong_password(self):
+        self.assertEqual(
+            SetupPasswordPayload(email="user@example.com", password="Strongpass1!").password,
+            "Strongpass1!",
+        )
+        with self.assertRaises(ValidationError):
+            SetupPasswordPayload(email="user@example.com", password="weakpass")
+
+    def test_refresh_auth_token_returns_new_login_response(self):
+        container = SimpleNamespace(backoffice_auth=FakeBackofficeAuth())
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(services=container)))
+        user = {
+            "id": "usr_1",
+            "email": "operator@example.com",
+            "role": "company_admin",
+            "active": True,
+        }
+
+        response = refresh_auth_token(request, user)
+
+        self.assertEqual(response.access_token, "token-for-operator@example.com")
+        self.assertEqual(response.user["email"], "operator@example.com")
+
+    def test_production_app_disables_docs_and_localhost_cors(self):
+        original_debug = main_app.settings.debug
+        main_app.settings.debug = False
+        try:
+            app = self._create_app_with_fake_services()
+        finally:
+            main_app.settings.debug = original_debug
+
+        paths = {getattr(route, "path", None) for route in app.routes}
+        self.assertNotIn("/docs", paths)
+        self.assertNotIn("/redoc", paths)
+        self.assertNotIn("/openapi.json", paths)
+
+        cors_middleware = next(
+            middleware for middleware in app.user_middleware if middleware.cls.__name__ == "CORSMiddleware"
+        )
+        self.assertNotIn("http://localhost:3000", cors_middleware.kwargs["allow_origins"])
+
+    def test_debug_app_allows_localhost_cors(self):
+        original_debug = main_app.settings.debug
+        main_app.settings.debug = True
+        try:
+            app = self._create_app_with_fake_services()
+        finally:
+            main_app.settings.debug = original_debug
+
+        cors_middleware = next(
+            middleware for middleware in app.user_middleware if middleware.cls.__name__ == "CORSMiddleware"
+        )
+        self.assertIn("http://localhost:3000", cors_middleware.kwargs["allow_origins"])
+
+    def test_login_rate_limit_blocks_after_repeated_failures_and_clears_on_success(self):
+        request = self._fake_request()
+        email = "admin@example.com"
+        _login_rate_limit_attempts.clear()
+
+        try:
+            for _ in range(LOGIN_RATE_LIMIT_MAX_ATTEMPTS):
+                _record_failed_login(request, email)
+
+            with self.assertRaises(HTTPException) as ctx:
+                _check_login_rate_limit(request, email)
+
+            self.assertEqual(ctx.exception.status_code, 429)
+
+            _clear_login_rate_limit(request, email)
+            _check_login_rate_limit(request, email)
+        finally:
+            _login_rate_limit_attempts.clear()
+
+    def test_internal_scheduler_token_fails_closed_when_not_configured(self):
+        original_token = main_app.settings.scheduler_endpoint_token
+        main_app.settings.scheduler_endpoint_token = ""
+        try:
+            with self.assertRaises(HTTPException) as ctx:
+                main_app._require_scheduler_token("anything")
+        finally:
+            main_app.settings.scheduler_endpoint_token = original_token
+
+        self.assertEqual(ctx.exception.status_code, 503)
+
+    def test_internal_scheduler_token_rejects_missing_or_invalid_token(self):
+        original_token = main_app.settings.scheduler_endpoint_token
+        main_app.settings.scheduler_endpoint_token = "expected-token"
+        try:
+            with self.assertRaises(HTTPException) as missing_ctx:
+                main_app._require_scheduler_token(None)
+            with self.assertRaises(HTTPException) as invalid_ctx:
+                main_app._require_scheduler_token("wrong-token")
+        finally:
+            main_app.settings.scheduler_endpoint_token = original_token
+
+        self.assertEqual(missing_ctx.exception.status_code, 401)
+        self.assertEqual(invalid_ctx.exception.status_code, 401)
+
+    def test_internal_scheduler_token_accepts_configured_token(self):
+        original_token = main_app.settings.scheduler_endpoint_token
+        main_app.settings.scheduler_endpoint_token = "expected-token"
+        try:
+            main_app._require_scheduler_token("expected-token")
+        finally:
+            main_app.settings.scheduler_endpoint_token = original_token
+
     def test_require_super_admin_rejects_non_super_admin(self):
         with self.assertRaises(HTTPException) as ctx:
             require_super_admin({"role": "company_admin", "scope_type": "company", "active": True})
@@ -270,6 +508,78 @@ class BackofficeApiTests(unittest.TestCase):
         self.assertEqual(message_log[-1]["text"], "Plantilla WhatsApp enviada: hello_world (en_US)")
         self.assertEqual(message_log[-1]["provider_message_id"], "wamid.template")
 
+    def test_send_conversation_message_preserves_full_message_log(self):
+        class ConversationSheets:
+            def __init__(self):
+                self.conversation = {
+                    "phone": "+56911111111",
+                    "state": "WAIT_RECEIPT",
+                    "current_step": "",
+                    "context_json": {
+                        "message_log": [
+                            {
+                                "id": f"msg-{index}",
+                                "speaker": "person",
+                                "type": "text",
+                                "text": str(index),
+                            }
+                            for index in range(550)
+                        ]
+                    },
+                }
+                self.audit_rows = []
+
+            def get_conversation(self, phone):
+                return {
+                    **self.conversation,
+                    "context_json": dict(self.conversation["context_json"]),
+                }
+
+            def update_conversation(self, phone, payload):
+                self.conversation = {
+                    "phone": phone,
+                    "state": payload.get("state", ""),
+                    "current_step": payload.get("current_step", ""),
+                    "context_json": payload.get("context_json", {}),
+                }
+                return dict(self.conversation)
+
+            def get_active_expense_case_by_phone(self, phone):
+                return None
+
+            def append_audit_log(self, **payload):
+                self.audit_rows.append(payload)
+                return payload
+
+        class ConversationBackoffice:
+            def __init__(self, sheets):
+                self.sheets = sheets
+
+            def get_conversation_detail(self, phone, user=None):
+                return {"conversation": self.sheets.get_conversation(phone)}
+
+        sheets = ConversationSheets()
+        container = SimpleNamespace(
+            backoffice=ConversationBackoffice(sheets),
+            whatsapp=FakeWhatsApp(),
+            sheets=sheets,
+            conversation=FakeConversationService(),
+        )
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(services=container)))
+
+        result = send_conversation_message(
+            "+56911111111",
+            SendMessagePayload(message="Respuesta operador"),
+            request,
+            {"email": "operator@example.com", "name": "Operador", "role": "company_admin"},
+        )
+
+        message_log = sheets.conversation["context_json"]["message_log"]
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(message_log), 551)
+        self.assertEqual(message_log[0]["id"], "msg-0")
+        self.assertEqual(message_log[-1]["text"], "Respuesta operador")
+
     def test_resolve_settlement_closes_case_automatically(self):
         container = SimpleNamespace(
             backoffice=FakeBackofficeActions(),
@@ -302,6 +612,34 @@ class BackofficeApiTests(unittest.TestCase):
             ],
         )
 
+    def test_request_user_confirmation_delivers_closure_package_and_logs_audit(self):
+        sheets = FakeAuditSheets()
+        whatsapp = FakeWhatsApp()
+        backoffice = FakeBackofficeActions()
+        container = SimpleNamespace(
+            backoffice=backoffice,
+            scheduler=FakeScheduler(),
+            whatsapp=whatsapp,
+            sheets=sheets,
+        )
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(services=container)))
+
+        result = case_action(
+            "CASE-1",
+            StatusActionPayload(action="request_user_confirmation"),
+            request,
+            SUPER_ADMIN_USER,
+        )
+
+        self.assertEqual(result["rendicion_status"], "pending_user_confirmation")
+        self.assertEqual(result["user_confirmation_status"], "pending")
+        self.assertIn(("ensure_case_ready_for_document_confirmation", "CASE-1"), backoffice.calls)
+        self.assertEqual(
+            whatsapp.sent,
+            [("+56911111111", "Revisa y confirma tu rendición.", None)],
+        )
+        self.assertEqual(sheets.audit_rows[0]["action"], "case.request_user_confirmation")
+
     def test_create_case_returns_409_when_employee_already_has_active_case(self):
         class ConflictBackoffice:
             def create_case(self, payload):
@@ -327,6 +665,166 @@ class BackofficeApiTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.status_code, 409)
         self.assertIn("ya tiene un caso activo", str(ctx.exception.detail))
+
+    def test_expense_action_writes_audit_log(self):
+        from app.api.backoffice import expense_action
+
+        sheets = FakeAuditSheets()
+        container = SimpleNamespace(
+            backoffice=FakeBackofficeExpenses(),
+            whatsapp=FakeWhatsApp(),
+            sheets=sheets,
+        )
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(services=container)))
+        user = {"email": "operator@example.com", "role": "company_admin"}
+
+        result = expense_action(
+            "EXP-1",
+            StatusActionPayload(action="approve"),
+            request,
+            user,
+        )
+
+        self.assertEqual(result["status"], "approved")
+        self.assertEqual(len(sheets.audit_rows), 1)
+        self.assertEqual(sheets.audit_rows[0]["action"], "expense.approve")
+        self.assertEqual(sheets.audit_rows[0]["resource_type"], "expense")
+        self.assertEqual(sheets.audit_rows[0]["resource_id"], "EXP-1")
+
+    def test_audit_log_endpoint_filters_by_company_scope(self):
+        sheets = FakeAuditSheets()
+        sheets.audit_rows = [
+            {
+                "audit_id": "audit-1",
+                "timestamp": "2026-01-02T12:00:00Z",
+                "user_email": "global@example.com",
+                "user_role": "super_admin",
+                "action": "case.create",
+                "resource_type": "case",
+                "resource_id": "CASE-1",
+                "company_id": "COMP-1",
+                "details": '{"source":"test"}',
+            },
+            {
+                "audit_id": "audit-2",
+                "timestamp": "2026-01-02T12:01:00Z",
+                "user_email": "global@example.com",
+                "user_role": "super_admin",
+                "action": "case.create",
+                "resource_type": "case",
+                "resource_id": "CASE-2",
+                "company_id": "COMP-2",
+                "details": "{}",
+            },
+        ]
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(services=SimpleNamespace(sheets=sheets))))
+        user = {
+            "email": "admin@example.com",
+            "role": "company_admin",
+            "scope_type": "company",
+            "company_ids": ["COMP-1"],
+        }
+
+        response = list_audit_log(request, None, None, None, 200, user)
+
+        self.assertEqual([item["audit_id"] for item in response["items"]], ["audit-1"])
+        self.assertEqual(response["items"][0]["details"], {"source": "test"})
+
+    def test_generate_case_consolidated_document_from_backoffice(self):
+        class ConsolidatedBackoffice:
+            def get_case_detail(self, case_id, user=None):
+                return {
+                    "case": {
+                        "case_id": case_id,
+                        "employee_phone": "+56911111111",
+                        "company_id": "COMP-1",
+                    },
+                    "employee": {"phone": "+56911111111"},
+                    "expenses": [],
+                }
+
+        class ConsolidatedDocument:
+            def __init__(self):
+                self.calls = []
+
+            def generate_for_case(self, *, phone, case_id, include_signed_url=True):
+                self.calls.append((phone, case_id, include_signed_url))
+                return {
+                    "document_id": "DOC-1",
+                    "case_id": case_id,
+                    "phone": phone,
+                    "signed_url": "https://example.com/rendicion.pdf",
+                }
+
+        sheets = FakeAuditSheets()
+        consolidated_document = ConsolidatedDocument()
+        container = SimpleNamespace(
+            backoffice=ConsolidatedBackoffice(),
+            consolidated_document=consolidated_document,
+            sheets=sheets,
+        )
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(services=container)))
+
+        result = generate_case_consolidated_document(
+            "CASE-1",
+            request,
+            {"email": "admin@example.com", "role": "company_admin"},
+        )
+
+        self.assertEqual(result["signed_url"], "https://example.com/rendicion.pdf")
+        self.assertEqual(consolidated_document.calls, [("+56911111111", "CASE-1", True)])
+        self.assertEqual(sheets.audit_rows[0]["action"], "case.generate_consolidated_document")
+        self.assertEqual(sheets.audit_rows[0]["resource_id"], "CASE-1")
+
+    def test_expense_observe_notifies_with_requested_evidence(self):
+        from app.api.backoffice import expense_action
+
+        sheets = FakeAuditSheets()
+        whatsapp = FakeWhatsApp()
+        container = SimpleNamespace(
+            backoffice=FakeBackofficeExpenses(),
+            whatsapp=whatsapp,
+            sheets=sheets,
+        )
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(services=container)))
+
+        result = expense_action(
+            "EXP-1",
+            StatusActionPayload(action="observe", reason="foto más nítida"),
+            request,
+            {"email": "operator@example.com", "role": "company_admin"},
+        )
+
+        self.assertEqual(result["status"], "observed")
+        self.assertEqual(result["review_status"], "observed")
+        self.assertEqual(result["review_reason"], "foto más nítida")
+        self.assertEqual(whatsapp.sent[0][0], "+56911111111")
+        self.assertIn("quedó observado", whatsapp.sent[0][1])
+        self.assertIn("foto más nítida", whatsapp.sent[0][1])
+        self.assertEqual(whatsapp.sent[0][2], "wamid.original")
+        self.assertEqual(sheets.audit_rows[0]["action"], "expense.observe")
+
+    def test_expense_manual_review_notifies_user(self):
+        from app.api.backoffice import expense_action
+
+        whatsapp = FakeWhatsApp()
+        container = SimpleNamespace(
+            backoffice=FakeBackofficeExpenses(),
+            whatsapp=whatsapp,
+            sheets=FakeAuditSheets(),
+        )
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(services=container)))
+
+        result = expense_action(
+            "EXP-1",
+            StatusActionPayload(action="manual_review"),
+            request,
+            {"email": "operator@example.com", "role": "company_admin"},
+        )
+
+        self.assertEqual(result["status"], "needs_manual_review")
+        self.assertEqual(result["review_status"], "needs_manual_review")
+        self.assertIn("revisión manual", whatsapp.sent[0][1])
 
     def test_build_new_case_conversation_state_clears_receipt_runtime_context(self):
         container = SimpleNamespace(conversation=FakeConversationService())

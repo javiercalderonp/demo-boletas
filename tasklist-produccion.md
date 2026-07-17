@@ -8,40 +8,32 @@
 
 ### Seguridad
 
-- [ ] **Habilitar validación de firma Meta (WhatsApp)**
-  - `META_VALIDATE_SIGNATURE=false` en `.env` Y `default=False` en `config.py` — cualquiera puede hacer POST a `/webhook` haciéndose pasar por Meta.
-  - En Cloud Run: setear `META_VALIDATE_SIGNATURE=true` y configurar `META_APP_SECRET` (el App Secret del panel de Meta Developers).
+- [x] **Habilitar validación de firma Meta (WhatsApp)**
+  - `META_VALIDATE_SIGNATURE=true` en `.env` local y `default=True` en `config.py`.
+  - Se agregaron tests para firma `sha256=` válida, firma inválida/faltante y falta de `META_APP_SECRET`.
+  - Pendiente operativo: confirmar en Cloud Run `META_VALIDATE_SIGNATURE=true` y `META_APP_SECRET` con el App Secret real de Meta Developers.
   - Archivo: `services/whatsapp_service.py:validate_meta_signature`, `app/config.py:59`
 
 - [ ] **Setear `BACKOFFICE_AUTH_SECRET` con un valor seguro**
-  - No está en el `.env` local. El default en `config.py` es `"change-me"`.
-  - Todos los tokens JWT del backoffice se firman con ese secreto. Si alguien lo conoce, puede forjar tokens de cualquier usuario.
-  - Generar con `python -c "import secrets; print(secrets.token_hex(32))"` y subir a Secret Manager.
-  - Archivo: `app/config.py:132`, `services/backoffice_auth_service.py:139`
+  - El código ya falla cerrado si `BACKOFFICE_AUTH_SECRET` falta, mide menos de 32 caracteres o usa valores inseguros conocidos.
+  - Pendiente operativo: generar con `python3 -c "import secrets; print(secrets.token_hex(32))"` y subir a Secret Manager/Cloud Run.
+  - Archivo: `app/config.py:132`, `services/backoffice_auth_service.py:_auth_secret`
 
-- [ ] **Eliminar credenciales de admin por defecto (`admin@example.com` / `admin123`)**
-  - Si no hay usuarios en la hoja y `BACKOFFICE_DEFAULT_ADMIN_EMAIL` no está seteado, el sistema crea automáticamente un admin con password `admin123`.
-  - En producción esto es una puerta trasera. Asegurarse de que `BACKOFFICE_DEFAULT_ADMIN_EMAIL` y `BACKOFFICE_DEFAULT_ADMIN_PASSWORD` estén seteados con valores seguros en Cloud Run, o modificar `ensure_default_admin()` para no crear el fallback en `APP_ENV=prod`.
-  - Archivo: `services/backoffice_auth_service.py:38-41`
+- [x] **Eliminar credenciales de admin por defecto (`admin@example.com` / `admin123`)**
+  - `ensure_default_admin()` ya no crea ningún usuario si no se configuran credenciales explícitas.
+  - Si se configura solo email o solo password, falla con `RuntimeError` para evitar estados ambiguos.
+  - Pendiente operativo: confirmar que `BACKOFFICE_DEFAULT_ADMIN_EMAIL` y `BACKOFFICE_DEFAULT_ADMIN_PASSWORD` estén seteados con valores seguros en Cloud Run si se quiere bootstrap automático.
+  - Archivo: `services/backoffice_auth_service.py:ensure_default_admin`, `tests/test_backoffice_auth_service.py`
 
 - [ ] **Setear `DEBUG=false` y `APP_ENV=prod` en Cloud Run**
-  - Con `DEBUG=true`, FastAPI retorna stack traces completos en errores 500 al cliente (línea 683 de `main.py`). Además los endpoints `/test/simulate` y `/test/reset` se exponen públicamente.
+  - Con `DEBUG=true`, FastAPI puede retornar detalles técnicos de errores al cliente. Los endpoints `/test/simulate` y `/test/reset` siguen siendo solo debug y ahora además requieren `X-Scheduler-Token`.
   - Verificar en Cloud Run env vars que `APP_ENV=prod` y `DEBUG=false` estén seteados correctamente.
   - Archivo: `app/main.py:683`, `app/config.py:22`
 
-- [ ] **Deshabilitar Swagger UI / ReDoc / OpenAPI en producción**
-  - FastAPI expone `/docs`, `/redoc` y `/openapi.json` por defecto. En producción esto documenta todos los endpoints, schemas y parámetros a cualquier visitante.
-  - Cambiar `create_app()` para deshabilitar en prod:
-    ```python
-    app = FastAPI(
-        title=settings.app_name,
-        debug=settings.debug,
-        docs_url="/docs" if settings.debug else None,
-        redoc_url="/redoc" if settings.debug else None,
-        openapi_url="/openapi.json" if settings.debug else None,
-    )
-    ```
-  - Archivo: `app/main.py:148`
+- [x] **Deshabilitar Swagger UI / ReDoc / OpenAPI en producción**
+  - `create_app()` solo expone `/docs`, `/redoc` y `/openapi.json` cuando `settings.debug` es `True`.
+  - Cubierto por test que verifica que las rutas no existan con `DEBUG=false`.
+  - Archivo: `app/main.py:create_app`, `tests/test_backoffice_api.py`
 
 ---
 
@@ -49,27 +41,29 @@
 
 ### Seguridad
 
-- [ ] **Agregar rate limiting al endpoint de login**
-  - `/api/auth/login` no tiene ningún límite de intentos. Un atacante puede hacer fuerza bruta sin restricciones.
-  - Agregar `slowapi` o similar al proyecto, o implementar un contador en memoria/Redis por IP+email.
-  - Archivo: `app/api/backoffice.py:417`
+- [x] **Agregar rate limiting al endpoint de login**
+  - `/api/auth/login` ahora aplica un contador en memoria por IP+email.
+  - Bloquea temporalmente después de 5 intentos fallidos en 5 minutos y limpia el contador con login exitoso.
+  - Cubierto por tests.
+  - Archivo: `app/api/backoffice.py`, `tests/test_backoffice_api.py`
 
-- [ ] **Proteger endpoints `/jobs/*` cuando no hay `SCHEDULER_ENDPOINT_TOKEN`**
-  - Los endpoints `/jobs/reminders/run`, `/jobs/documents/consolidated/generate` y `/jobs/documents/signature/start` usan el patrón:
-    ```python
-    if configured_token and x_scheduler_token != configured_token:
-    ```
-  - Si el token no está configurado, cualquiera puede llamar estos endpoints sin autenticación. Cambiar a: si no hay token configurado en `APP_ENV=prod`, rechazar la request.
-  - Archivo: `app/main.py:388`, `app/main.py:402`, `app/main.py:437`
+- [x] **Proteger endpoints internos con `SCHEDULER_ENDPOINT_TOKEN`**
+  - `app/main.py` centraliza la validación en `_require_scheduler_token()` y usa `hmac.compare_digest`.
+  - Los endpoints `/jobs/reminders/run`, `/jobs/documents/consolidated/generate`, `/jobs/documents/signature/start` y `/jobs/docusign/oauth/exchange` rechazan llamadas sin token configurado o con token inválido.
+  - `/jobs/docusign/oauth/exchange` ya no retorna `access_token` ni `refresh_token` en la respuesta.
+  - Los endpoints debug `/test/simulate` y `/test/reset` también requieren `X-Scheduler-Token`.
+  - Los scripts `scripts/run_scheduler_job.sh` y `scripts/install_scheduler_cron.sh` fallan localmente si falta `SCHEDULER_ENDPOINT_TOKEN`.
 
-- [ ] **Eliminar `http://localhost:3000` del CORS en producción**
-  - El código siempre agrega `http://localhost:3000` a los orígenes permitidos incluso en producción. Aunque CORS es solo enforcement de browser, es una práctica incorrecta.
-  - Hacer que los orígenes locales solo se agreguen si `settings.debug` es True.
-  - Archivo: `app/main.py:158-165`
+- [x] **Eliminar `http://localhost:3000` del CORS en producción**
+  - Los orígenes locales solo se agregan si `settings.debug` es `True`.
+  - Cubierto por tests para modo debug y producción.
+  - Archivo: `app/main.py:create_app`, `tests/test_backoffice_api.py`
 
-- [ ] **No exponer información interna en errores de excepción**
+- [x] **No exponer información interna en errores de excepción**
   - Varios endpoints hacen `raise HTTPException(status_code=400, detail=str(exc))` que expone mensajes internos de Python al cliente. Revisar y reemplazar con mensajes genéricos en prod.
-  - Archivo: `app/main.py:412`, `app/main.py:521`, y otros
+  - Se reemplazaron los casos de `detail=str(exc)` por mensajes controlados y logs internos. Los conflictos de negocio `ValueError` del backoffice conservan mensajes de validación esperados por la UI.
+  - Verificado con `rg -n "detail=str\\(" app`.
+  - Archivo: `app/main.py`, `app/api/backoffice.py`
 
 ### Configuración
 
@@ -78,9 +72,10 @@
   - Archivo: `app/config.py:88`, `.env:52`
 
 - [ ] **Configurar `NEXT_PUBLIC_API_BASE_URL` en Vercel en lugar de hardcodear la URL**
-  - La URL de producción del backend está hardcodeada en `lib/api.ts:4`. Si cambia el servicio de Cloud Run, hay que redesplegar el frontend.
-  - Setear `NEXT_PUBLIC_API_BASE_URL` como environment variable en Vercel apuntando al backend.
-  - Archivo: `backoffice/lib/api.ts:4`
+  - El hardcode de la URL productiva fue eliminado de `backoffice/lib/api.ts`.
+  - En entornos no locales, el frontend ahora exige `NEXT_PUBLIC_API_BASE_URL`.
+  - Pendiente operativo: setear `NEXT_PUBLIC_API_BASE_URL` en Vercel/Cloud Run apuntando al backend.
+  - Archivo: `backoffice/lib/api.ts`
 
 ---
 
@@ -88,26 +83,32 @@
 
 ### Observabilidad
 
-- [ ] **Configurar logging estructurado y nivel de log en producción**
-  - El backend usa `logger.warning()` para eventos normales de negocio (recepción de webhooks, procesamiento de boletas) lo cual satura el nivel WARNING. Revisar y usar `logger.info()` donde corresponde.
-  - Considerar agregar un log handler estructurado (JSON) para facilitar búsquedas en Cloud Logging.
-  - Archivo: `app/main.py:763`, `app/main.py:776`, etc.
+- [x] **Configurar logging estructurado y nivel de log en producción**
+  - Se agregó `LOG_LEVEL` y `LOG_FORMAT` a configuración.
+  - En `APP_ENV=prod`, el formato por defecto es JSON para facilitar búsquedas en Cloud Logging.
+  - Los logs incluyen `request_id` cuando hay contexto HTTP.
+  - Archivo: `app/config.py`, `app/logging_config.py`, `app/main.py`
 
-- [ ] **Implementar audit log para acciones del backoffice**
-  - No hay registro de quién aprobó, rechazó o modificó un gasto o rendición. En producción esto es necesario para trazabilidad y cumplimiento.
-  - Considerar agregar una hoja "AuditLog" en Sheets con: timestamp, user_email, action, resource_type, resource_id, details.
+- [x] **Implementar audit log para acciones del backoffice**
+  - Se agregó hoja `AuditLog` con `timestamp`, `user_email`, `action`, `resource_type`, `resource_id`, `company_id` y `details`.
+  - Las acciones de usuarios, empleados, rendiciones, gastos y conversaciones registran auditoría después de completarse.
+  - Cubierto por tests de API y `SheetsService`.
+  - Archivo: `services/sheets_service.py`, `app/api/backoffice.py`, `tests/test_backoffice_api.py`, `tests/test_sheets_service.py`
 
 - [ ] **Agregar alertas de error crítico**
   - Configurar alertas en Cloud Monitoring o un servicio externo (Sentry, etc.) para errores 500 y para fallos de integración críticos (Meta token expirado, Sheets inaccesible).
 
 ### Seguridad
 
-- [ ] **Fortalecer requisitos de contraseña**
-  - El único requisito es `min_length=8`. Para producción agregar validación de al menos una mayúscula, un número y un carácter especial.
-  - Archivo: `app/schemas/backoffice.py:26`, `services/backoffice_auth_service.py:hash_password`
+- [x] **Fortalecer requisitos de contraseña**
+  - El setup de contraseña exige mínimo 8 caracteres, una mayúscula, un número y un carácter especial.
+  - La contraseña del admin bootstrap vía env vars también pasa por la misma validación.
+  - Cubierto por tests.
+  - Archivo: `app/schemas/backoffice.py`, `services/backoffice_auth_service.py`, `tests/test_backoffice_auth_service.py`
 
-- [ ] **Rotar / eliminar el archivo JSON de service account del directorio del proyecto**
-  - `viaticos-488419-1073823ba21a.json` existe en la raíz del proyecto con la clave privada. Está en `.gitignore` y nunca fue commiteado, pero es un riesgo si alguien tiene acceso al filesystem. Moverlo a un directorio fuera del proyecto o eliminarlo si ya no es necesario (Cloud Run usa ADC).
+- [x] **Rotar / eliminar el archivo JSON de service account del directorio del proyecto**
+  - Se eliminó `viaticos-488419-1073823ba21a.json` de la raíz del proyecto.
+  - Cloud Run debe usar ADC/service account asociada al servicio; si esa key estuvo expuesta fuera de este equipo, rotarla también en GCP IAM.
 
 - [ ] **Habilitar validación de firma Twilio si se usa**
   - `TWILIO_VALIDATE_SIGNATURE=false` en `.env`. Si se usa el proveedor Twilio en producción, habilitarlo.
@@ -115,13 +116,14 @@
 
 ### Estabilidad
 
-- [ ] **Evaluar límites de Google Sheets como base de datos en producción**
-  - La API de Google Sheets tiene cuota de 300 requests por minuto por proyecto. Con uso concurrente (varios usuarios en backoffice + webhooks de WhatsApp) se puede alcanzar fácilmente.
-  - El servicio tiene cacheo y cooldown implementados (`GOOGLE_SHEETS_READ_COOLDOWN_SECONDS`), pero evaluar si la carga esperada cabe dentro de los límites.
-  - Considerar migrar a una base de datos real (Cloud SQL, Firestore) si el volumen lo justifica.
+- [x] **Evaluar límites de Google Sheets como base de datos en producción**
+  - Se implementó backend SQLite persistente opcional con `PERSISTENCE_BACKEND=sqlite` y `SQLITE_DATABASE_PATH`.
+  - El backend ya no depende operativamente de cuotas/rate limits de Google Sheets para demo/local.
+  - Google Sheets queda como compatibilidad; Postgres/Cloud SQL queda como siguiente paso para alta concurrencia multi-instancia.
 
-- [ ] **Definir política de retención y backup de datos en Sheets**
-  - No hay backup automático de los datos en Google Sheets. Configurar exportación periódica o habilitar "Version history" en la hoja.
+- [x] **Definir política de retención y backup de datos en Sheets**
+  - Para el backend SQLite, usar `scripts/backup_sqlite.py` y copiar el backup timestamped a storage privado o al sistema de backups del ambiente.
+  - Si se mantiene Google Sheets como compatibilidad, usar Version History/export periódico del spreadsheet.
 
 - [ ] **Validar manejo de tokens Meta expirados en producción**
   - El servicio captura `MetaAccessTokenExpiredError` pero no tiene un flujo automático de refresh del token de Meta. Cuando expire, las respuestas al usuario fallarán silenciosamente. Configurar alerta o proceso de renovación.
@@ -131,38 +133,48 @@
 
 ## 🔵 Menor — Mejoras de calidad
 
-- [ ] **Reemplazar implementación JWT custom por una librería estándar**
-  - El sistema usa una implementación propia de tokens firmados (no es JWT estándar). Funciona correctamente, pero el uso de `PyJWT` o `python-jose` facilita la auditoría y el mantenimiento.
-  - Archivo: `services/backoffice_auth_service.py:create_access_token`, `verify_access_token`
+- [x] **Reemplazar implementación JWT custom por una librería estándar**
+  - Los tokens nuevos usan `PyJWT` con HS256, `iat`, `exp` y `typ=access`.
+  - Se mantiene compatibilidad temporal con tokens legacy de 2 segmentos para no cortar sesiones activas durante despliegue.
+  - Cubierto por tests de emisión, expiración y fallback legacy.
+  - Archivo: `services/backoffice_auth_service.py`, `requirements.txt`, `tests/test_backoffice_auth_service.py`
 
-- [ ] **Agregar request ID / correlation ID en logs**
-  - Los logs no tienen un ID de request que permita correlacionar todas las operaciones de un mismo webhook/petición. Agregar middleware que genere un UUID por request y lo incluya en todos los logs.
+- [x] **Agregar request ID / correlation ID en logs**
+  - Se agregó middleware HTTP que toma `X-Request-ID` si viene, o genera uno nuevo.
+  - El ID se agrega a los logs mediante `contextvars` y se devuelve en el header `X-Request-ID`.
+  - Archivo: `app/main.py`, `app/logging_config.py`
 
-- [ ] **Revisar TTL de tokens de backoffice**
-  - El token tiene TTL de 8 horas (`BACKOFFICE_TOKEN_TTL_SECONDS=28800`) y no hay refresh token. Cuando expira, el usuario es deslogueado abruptamente. Considerar implementar refresh token o extender la sesión en cada request activo.
-  - Archivo: `app/config.py:133`
+- [x] **Revisar TTL de tokens de backoffice**
+  - Se agregó `POST /api/auth/refresh` para emitir un token nuevo si el token actual sigue válido.
+  - El frontend refresca el token al restaurar sesión y cada 30 minutos mientras el usuario está activo.
+  - Cubierto por tests de API y build de frontend.
+  - Archivo: `app/api/backoffice.py`, `backoffice/components/auth-provider.tsx`, `tests/test_backoffice_api.py`
 
-- [ ] **Agregar validación de formato E.164 en endpoints que reciben `phone`**
-  - Los endpoints de backoffice aceptan `phone` como string sin validar que sea un número en formato E.164. Un valor inválido puede causar comportamientos inesperados en Sheets.
-  - Archivo: `app/schemas/backoffice.py:EmployeePayload`, `app/api/backoffice.py`
+- [x] **Agregar validación de formato E.164 en endpoints que reciben `phone`**
+  - `EmployeePayload.phone` y `CasePayload.employee_phone` validan formato E.164 estricto.
+  - Cubierto por tests de payload.
+  - Archivo: `app/schemas/backoffice.py`, `tests/test_backoffice_api.py`
 
-- [ ] **Agregar `Content-Security-Policy` y headers de seguridad al frontend**
-  - El backoffice no configura headers de seguridad HTTP (CSP, X-Frame-Options, etc.). Configurarlos en `next.config.js`.
+- [x] **Agregar `Content-Security-Policy` y headers de seguridad al frontend**
+  - `next.config.ts` ahora agrega CSP, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy` y `Permissions-Policy`.
+  - Archivo: `backoffice/next.config.ts`
 
 ---
 
 ## ✅ Confirmado OK
 
-- **Firma de Meta webhook**: el código de `_handle_meta_webhook` sí valida la firma antes de procesar (línea 1236 de `main.py`). El problema es que la validación **está deshabilitada** por configuración (`META_VALIDATE_SIGNATURE=false`).
+- **Firma de Meta webhook**: el código de `_handle_meta_webhook` valida la firma antes de procesar (línea 1236 de `main.py`) y la configuración local quedó activada (`META_VALIDATE_SIGNATURE=true`, default `True`).
 - **Hashing de contraseñas**: usa `pbkdf2_hmac` con 120,000 iteraciones y salt aleatorio. Correcto.
 - **Comparación de tokens/hashes**: usa `hmac.compare_digest` para evitar timing attacks. Correcto.
 - **Escaping HTML**: el callback de DocuSign y los XML de Twilio hacen `html.escape()` correctamente.
 - **Credenciales de SA nunca commiteadas**: el archivo `.json` de service account está en `.gitignore` y no aparece en el historial de git.
 - **Deduplicación de mensajes WhatsApp**: implementada con `processed_message_ids` por conversación (máx 50 IDs).
-- **Token del scheduler**: si está configurado, se valida correctamente. El problema es el comportamiento cuando **no** está configurado.
+- **Token del scheduler**: los endpoints internos ahora fallan cerrados cuando `SCHEDULER_ENDPOINT_TOKEN` no está configurado y rechazan tokens ausentes/incorrectos.
+- **OAuth DocuSign interno**: `/jobs/docusign/oauth/exchange` requiere `X-Scheduler-Token` y no expone tokens OAuth completos en la respuesta.
+- **Health público**: `/health` responde solo `{ "status": "ok" }`, sin detalles operacionales sensibles.
 - **BACKOFFICE_DEFAULT_ADMIN_PASSWORD**: está seteado en el `.env` (no usa el fallback `admin123` en local). Verificar que esté seteado en Cloud Run.
 - **Redirección de firma DocuSign**: usa 307 (temporary redirect) correctamente, no 301.
-- **Archivos de test en producción**: los endpoints `/test/simulate` y `/test/reset` ya validan `if not settings.debug` antes de ejecutar.
+- **Archivos de test en producción**: los endpoints `/test/simulate` y `/test/reset` validan `if not settings.debug` antes de ejecutar y requieren `X-Scheduler-Token`.
 
 ---
 
@@ -171,7 +183,7 @@
 - [ ] Confirmar que en Cloud Run estén seteados: `META_VALIDATE_SIGNATURE=true`, `META_APP_SECRET`, `BACKOFFICE_AUTH_SECRET`, `DEBUG=false`, `APP_ENV=prod`
 - [ ] Confirmar que `BACKOFFICE_DEFAULT_ADMIN_EMAIL` y `BACKOFFICE_DEFAULT_ADMIN_PASSWORD` estén en Secret Manager (no usar el fallback `admin123`)
 - [ ] Probar el flujo completo de login en el backoffice de producción
-- [ ] Verificar que el webhook de Meta responde 200 con firma válida y 403 con firma inválida
+- [ ] Verificar en Cloud Run que el webhook de Meta responde 200 con firma válida y 403 con firma inválida
 - [ ] Confirmar que los endpoints de scheduler requieren token
 - [ ] Verificar que `/docs`, `/redoc` y `/openapi.json` retornan 404 en producción
 - [ ] Verificar que el DocuSign apunte a producción (no al sandbox `demo.docusign.net`)

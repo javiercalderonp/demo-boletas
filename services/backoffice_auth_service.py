@@ -10,10 +10,16 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import jwt
+
 from app.config import Settings
+from app.schemas.backoffice import validate_strong_password
 from services.backoffice_permissions import GLOBAL_SCOPE, SUPER_ADMIN_ROLE, serialize_access
 from services.sheets_service import SheetsService
 from utils.helpers import make_id, utc_now_iso
+
+
+_INSECURE_AUTH_SECRETS = {"change-me", "changeme", "secret", "password", "admin", "test"}
 
 
 def _b64url_encode(data: bytes) -> str:
@@ -30,18 +36,27 @@ class BackofficeAuthService:
     settings: Settings
     sheets_service: SheetsService
 
+    def _auth_secret(self) -> str:
+        secret = str(self.settings.backoffice_auth_secret or "").strip()
+        if not secret:
+            raise RuntimeError("BACKOFFICE_AUTH_SECRET is required")
+        if secret.lower() in _INSECURE_AUTH_SECRETS or len(secret) < 32:
+            raise RuntimeError("BACKOFFICE_AUTH_SECRET must be a strong secret")
+        return secret
+
     def ensure_default_admin(self) -> None:
         email = os.getenv("BACKOFFICE_DEFAULT_ADMIN_EMAIL", "").strip().lower()
         password = os.getenv("BACKOFFICE_DEFAULT_ADMIN_PASSWORD", "").strip()
         name = os.getenv("BACKOFFICE_DEFAULT_ADMIN_NAME", "Admin").strip() or "Admin"
 
-        if not email and not self.sheets_service.list_users():
-            email = "admin@example.com"
-            password = "admin123"
-            name = "Demo Admin"
-
-        if not email or not password:
+        if not email and not password:
             return
+        if not email or not password:
+            raise RuntimeError(
+                "BACKOFFICE_DEFAULT_ADMIN_EMAIL and BACKOFFICE_DEFAULT_ADMIN_PASSWORD "
+                "must be configured together"
+            )
+        validate_strong_password(password)
         existing = self.sheets_service.get_user_by_email(email)
         if existing:
             return
@@ -107,6 +122,7 @@ class BackofficeAuthService:
         return user
 
     def setup_password(self, email: str, password: str, *, name: str = "") -> dict[str, Any] | None:
+        validate_strong_password(password)
         user = self.can_setup_password(email)
         if not user:
             return None
@@ -123,33 +139,48 @@ class BackofficeAuthService:
         return self.sheets_service.upsert_user(str(user.get("id", "")), payload)
 
     def create_access_token(self, user: dict[str, Any]) -> str:
-        expires_at = datetime.now(timezone.utc) + timedelta(
-            seconds=self.settings.backoffice_token_ttl_seconds
-        )
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(seconds=self.settings.backoffice_token_ttl_seconds)
         payload = {
+            "typ": "access",
             "sub": str(user.get("id", "")),
             "email": str(user.get("email", "")),
             "name": str(user.get("name", "")),
             "role": str(user.get("role", "operator") or "operator"),
             **serialize_access(user),
+            "iat": int(now.timestamp()),
             "exp": int(expires_at.timestamp()),
         }
-        body = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
-        signature = hmac.new(
-            self.settings.backoffice_auth_secret.encode("utf-8"),
-            body.encode("utf-8"),
-            hashlib.sha256,
-        ).digest()
-        return f"{body}.{_b64url_encode(signature)}"
+        return jwt.encode(payload, self._auth_secret(), algorithm="HS256")
 
     def verify_access_token(self, token: str) -> dict[str, Any] | None:
+        payload = self._decode_access_token_payload(token)
+        if not payload:
+            return None
+        user = self.sheets_service.get_user_by_email(str(payload.get("email", "")))
+        if not user or not user.get("active"):
+            return None
+        return user
+
+    def _decode_access_token_payload(self, token: str) -> dict[str, Any] | None:
+        try:
+            payload = jwt.decode(str(token or ""), self._auth_secret(), algorithms=["HS256"])
+            if payload.get("typ") and payload.get("typ") != "access":
+                return None
+            return payload
+        except jwt.ExpiredSignatureError:
+            return None
+        except jwt.InvalidTokenError:
+            return self._decode_legacy_access_token_payload(token)
+
+    def _decode_legacy_access_token_payload(self, token: str) -> dict[str, Any] | None:
         try:
             body, provided_signature = str(token or "").split(".", 1)
         except ValueError:
             return None
         expected_signature = _b64url_encode(
             hmac.new(
-                self.settings.backoffice_auth_secret.encode("utf-8"),
+                self._auth_secret().encode("utf-8"),
                 body.encode("utf-8"),
                 hashlib.sha256,
             ).digest()
@@ -162,7 +193,4 @@ class BackofficeAuthService:
             return None
         if int(payload.get("exp", 0) or 0) < int(datetime.now(timezone.utc).timestamp()):
             return None
-        user = self.sheets_service.get_user_by_email(str(payload.get("email", "")))
-        if not user or not user.get("active"):
-            return None
-        return user
+        return payload

@@ -1,8 +1,32 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+_E164_RE = re.compile(r"^\+[1-9]\d{7,14}$")
+
+
+def validate_strong_password(value: str) -> str:
+    password = str(value or "")
+    if len(password) < 8:
+        raise ValueError("La contraseña debe tener al menos 8 caracteres")
+    if not re.search(r"[A-Z]", password):
+        raise ValueError("La contraseña debe incluir al menos una mayúscula")
+    if not re.search(r"\d", password):
+        raise ValueError("La contraseña debe incluir al menos un número")
+    if not re.search(r"[^A-Za-z0-9]", password):
+        raise ValueError("La contraseña debe incluir al menos un carácter especial")
+    return password
+
+
+def validate_e164_phone(value: str) -> str:
+    phone = str(value or "").strip()
+    if not _E164_RE.fullmatch(phone):
+        raise ValueError("El teléfono debe estar en formato E.164, por ejemplo +56912345678")
+    return phone
 
 
 class LoginRequest(BaseModel):
@@ -24,6 +48,11 @@ class SetupPasswordPayload(BaseModel):
     email: str
     name: str = ""
     password: str = Field(min_length=8)
+
+    @field_validator("password")
+    @classmethod
+    def password_is_strong(cls, value: str) -> str:
+        return validate_strong_password(value)
 
 
 class BackofficeUserPayload(BaseModel):
@@ -52,6 +81,11 @@ class EmployeePayload(BaseModel):
     active: bool = True
     last_activity_at: str = ""
 
+    @field_validator("phone")
+    @classmethod
+    def phone_is_e164(cls, value: str) -> str:
+        return validate_e164_phone(value)
+
 
 class CasePayload(BaseModel):
     case_id: Optional[str] = None
@@ -60,6 +94,7 @@ class CasePayload(BaseModel):
     company_id: str = ""
     employee_phone: str
     closure_method: str = "docusign"
+    daily_reminders_enabled: bool = True
     status: str = "active"
     fondos_entregados: Optional[Union[float, str]] = None
     fondos_por_centro: Optional[dict[str, float]] = None
@@ -67,6 +102,11 @@ class CasePayload(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     notes: str = ""
+
+    @field_validator("employee_phone")
+    @classmethod
+    def employee_phone_is_e164(cls, value: str) -> str:
+        return validate_e164_phone(value)
 
 
 class ExpensePayload(BaseModel):
@@ -99,7 +139,7 @@ class DashboardResponse(BaseModel):
 
 class StatusActionPayload(BaseModel):
     action: Literal[
-        "approve", "reject", "close", "reopen", "deactivate", "activate", "resolve",
+        "approve", "reject", "observe", "manual_review", "close", "reopen", "deactivate", "activate", "resolve",
         "request_user_confirmation", "resolve_settlement", "close_rendicion",
     ]
     reason: Optional[str] = Field(default=None, max_length=500)

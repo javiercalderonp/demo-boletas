@@ -30,8 +30,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     setToken(savedToken);
-    apiRequest<BackofficeUser>("/auth/me", { token: savedToken })
-      .then((nextUser) => setUser(nextUser))
+    apiRequest<{ access_token: string; user: BackofficeUser }>("/auth/refresh", {
+      method: "POST",
+      token: savedToken,
+    })
+      .then((data) => {
+        setStoredToken(data.access_token);
+        setToken(data.access_token);
+        setUser(data.user);
+      })
       .catch(() => {
         setStoredToken(null);
         setToken(null);
@@ -39,6 +46,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       })
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (!token) {
+      return;
+    }
+    const refresh = async () => {
+      try {
+        const data = await apiRequest<{ access_token: string; user: BackofficeUser }>(
+          "/auth/refresh",
+          {
+            method: "POST",
+            token,
+          },
+        );
+        setStoredToken(data.access_token);
+        setToken(data.access_token);
+        setUser(data.user);
+      } catch {
+        setStoredToken(null);
+        setToken(null);
+        setUser(null);
+      }
+    };
+    const interval = window.setInterval(refresh, 30 * 60 * 1000);
+    return () => window.clearInterval(interval);
+  }, [token]);
 
   const value = useMemo<AuthContextValue>(
     () => ({

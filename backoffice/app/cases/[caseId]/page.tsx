@@ -13,6 +13,7 @@ import {
   ChevronUp,
   ClipboardCheck,
   Clock,
+  Download,
   Eye,
   FileText,
   FolderOpen,
@@ -325,6 +326,7 @@ export default function CaseDetailPage() {
   const [saving, setSaving] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [actionLoading, setActionLoading] = useState("");
+  const [documentLoading, setDocumentLoading] = useState(false);
   const [expenseActionLoading, setExpenseActionLoading] = useState("");
   const [bulkActionLoading, setBulkActionLoading] = useState(false);
   const [selectedExpenses, setSelectedExpenses] = useState<Set<string>>(new Set());
@@ -379,6 +381,26 @@ export default function CaseDetailPage() {
       else setActionError(message);
     } finally {
       setActionLoading("");
+    }
+  }
+
+  async function generateConsolidatedDocument() {
+    if (!token || !caseId) return;
+    setDocumentLoading(true);
+    setActionError("");
+    try {
+      const document = await apiRequest<{ signed_url?: string }>(
+        `/cases/${caseId}/consolidated-document`,
+        { method: "POST", token },
+      );
+      if (!document.signed_url) {
+        throw new Error("El documento se generó, pero no se recibió URL de descarga.");
+      }
+      window.open(document.signed_url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "No se pudo generar el PDF consolidado.");
+    } finally {
+      setDocumentLoading(false);
     }
   }
 
@@ -632,8 +654,14 @@ export default function CaseDetailPage() {
             )}
 
             {/* ── Actions ── */}
-            {(rendStatus === "open" || rendStatus === "pending_user_confirmation" || rendStatus === "approved") && (
+            {(rendStatus === "open" || rendStatus === "pending_user_confirmation" || rendStatus === "approved" || expenses.length > 0) && (
               <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+                {expenses.length > 0 && (
+                  <button className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-gray-300 px-4 py-3 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 disabled:opacity-50 sm:w-auto sm:py-2.5" onClick={generateConsolidatedDocument} disabled={documentLoading} type="button">
+                    <Download className="h-4 w-4" />
+                    {documentLoading ? "Generando..." : "Descargar PDF consolidado"}
+                  </button>
+                )}
                 {rendStatus === "open" && (
                   <button className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-primary-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-primary-700 disabled:opacity-50 sm:w-auto sm:py-2.5" onClick={() => runAction("request_user_confirmation")} disabled={actionLoading === "request_user_confirmation"} type="button">
                     <Send className="h-4 w-4" />

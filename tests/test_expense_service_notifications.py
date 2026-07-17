@@ -21,7 +21,7 @@ class FakeSheetsService:
 
     def get_expense_case_by_id(self, case_id):
         if case_id == self.case["case_id"]:
-            return dict(self.case)
+            return {**self.case, "phone": "+56911111111"}
         return None
 
 
@@ -45,6 +45,28 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
 
         self.assertEqual(saved["source_message_id"], "wamid.123")
         self.assertEqual(sheets.saved_expense["source_message_id"], "wamid.123")
+
+    def test_save_confirmed_expense_uses_selected_case_id_from_draft(self):
+        sheets = FakeSheetsService()
+        sheets.case = {"case_id": "CASE-2", "fondos_entregados": 10000}
+        service = ExpenseService(sheets_service=sheets)
+
+        saved = service.save_confirmed_expense(
+            "+56911111111",
+            {
+                "case_id": "CASE-2",
+                "merchant": "Hotel",
+                "date": "2026-04-16",
+                "currency": "CLP",
+                "total": 20000,
+                "category": "Lodging",
+                "country": "Chile",
+            },
+        )
+
+        self.assertEqual(saved["case_id"], "CASE-2")
+        self.assertEqual(saved["trip_id"], "CASE-2")
+        self.assertEqual(sheets.saved_expense["case_lookup_status"], "active_case_linked")
 
     def test_build_summary_message_does_not_warn_about_missing_invoice_number(self):
         service = ExpenseService(sheets_service=FakeSheetsService())

@@ -196,7 +196,10 @@ class ExpenseService:
         expense_case = self.sheets_service.get_expense_case_by_id(normalized_case_id)
         if not expense_case:
             return None
-        if normalize_whatsapp_phone(expense_case.get("phone", "")) != normalize_whatsapp_phone(phone):
+        case_phone = normalize_whatsapp_phone(
+            expense_case.get("employee_phone", expense_case.get("phone", ""))
+        )
+        if case_phone != normalize_whatsapp_phone(phone):
             return None
         return expense_case
 
@@ -1412,12 +1415,33 @@ class ExpenseService:
         expense_row["primary_review_reason"] = review["primary_review_reason"]
         return expense_row
 
+    def compute_draft_review(self, phone: str, draft_expense: dict[str, Any]) -> dict[str, Any]:
+        draft_case_id = str(draft_expense.get("case_id", draft_expense.get("trip_id", "")) or "").strip()
+        expense_case = (
+            self.find_case_by_id_for_phone(phone, draft_case_id)
+            if draft_case_id
+            else self.get_active_case_for_phone(phone)
+        )
+        case_id = str((expense_case or {}).get("case_id", "") or "").strip()
+        existing_expenses = (
+            self.sheets_service.list_expenses_by_phone_case(phone, case_id) if case_id else []
+        )
+        return self._get_review_score_service().compute_review(
+            draft_expense,
+            existing_expenses=existing_expenses,
+        )
+
     def save_confirmed_expense(self, phone: str, draft_expense: dict[str, Any]) -> dict[str, Any]:
         total = parse_float(draft_expense.get("total"))
         if total is None:
             raise ValueError("El total no es valido")
 
-        expense_case = self.get_active_case_for_phone(phone)
+        draft_case_id = str(draft_expense.get("case_id", draft_expense.get("trip_id", "")) or "").strip()
+        expense_case = (
+            self.find_case_by_id_for_phone(phone, draft_case_id)
+            if draft_case_id
+            else self.get_active_case_for_phone(phone)
+        )
         if not expense_case:
             return self.create_expense_for_review(
                 phone=phone,

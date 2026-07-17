@@ -114,6 +114,62 @@ class ConsolidatedDocumentServiceTests(unittest.TestCase):
         self.assertEqual(report_data["detail_rows"][0]["cost_center"], "Operaciones")
         self.assertEqual(report_data["detail_rows"][1]["cost_center"], "Sin centro de costo")
 
+    def test_report_data_includes_final_balance_from_case_snapshot(self):
+        service = self._build_service(Mock())
+
+        report_data = service._build_report_data(
+            expense_case={
+                "fondos_entregados": 100000,
+                "monto_rendido_aprobado": 125000,
+                "saldo_restante": -25000,
+                "settlement_direction": "company_owes_employee",
+                "settlement_status": "settlement_pending",
+                "settlement_amount_clp": 25000,
+                "settlement_net_clp": -25000,
+                "settlement_calculated_at": "2026-04-20T12:00:00Z",
+            },
+            expenses=[],
+        )
+
+        final_balance = report_data["final_balance"]
+
+        self.assertEqual(final_balance["fondos_entregados_clp"], 100000)
+        self.assertEqual(final_balance["monto_rendido_aprobado_clp"], 125000)
+        self.assertEqual(final_balance["saldo_restante_clp"], -25000)
+        self.assertEqual(final_balance["settlement_direction"], "company_owes_employee")
+        self.assertEqual(final_balance["settlement_status"], "settlement_pending")
+        self.assertEqual(final_balance["settlement_amount_clp"], 25000)
+        self.assertEqual(final_balance["settlement_net_clp"], -25000)
+
+    def test_report_data_infers_final_balance_when_case_snapshot_is_missing(self):
+        service = self._build_service(Mock())
+
+        report_data = service._build_report_data(
+            expense_case={"fondos_entregados": 50000},
+            expenses=[
+                {
+                    "expense_id": "EXP-1",
+                    "currency": "CLP",
+                    "total": 30000,
+                    "total_clp": 30000,
+                },
+                {
+                    "expense_id": "EXP-2",
+                    "currency": "CLP",
+                    "total": 12000,
+                    "total_clp": 12000,
+                },
+            ],
+        )
+
+        final_balance = report_data["final_balance"]
+
+        self.assertEqual(final_balance["fondos_entregados_clp"], 50000)
+        self.assertEqual(final_balance["monto_rendido_aprobado_clp"], 42000)
+        self.assertEqual(final_balance["saldo_restante_clp"], 8000)
+        self.assertEqual(final_balance["settlement_direction"], "employee_owes_company")
+        self.assertEqual(final_balance["settlement_amount_clp"], 8000)
+
 
 if __name__ == "__main__":
     unittest.main()

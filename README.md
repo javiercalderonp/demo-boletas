@@ -1,6 +1,6 @@
 # Expense Submission AI Agent (MVP v1)
 
-MVP para automatizar la rendición de boletas, facturas y comprobantes vía WhatsApp, con captura de documentos, OCR, validación conversacional y almacenamiento estructurado en Google Sheets.
+MVP para automatizar la rendición de boletas, facturas y comprobantes vía WhatsApp, con captura de documentos, OCR, validación conversacional y almacenamiento estructurado en SQLite o Google Sheets.
 
 ## Objetivo
 
@@ -9,7 +9,7 @@ Construir un agente de rendición de gastos por WhatsApp que:
 - Reciba imágenes de boletas, facturas o comprobantes.
 - Extraiga información con OCR.
 - Converse con el usuario cuando falten datos.
-- Registre gastos estructurados en Google Sheets.
+- Registre gastos estructurados en una base SQLite persistente o en Google Sheets.
 - Mantenga seguimiento de documentos pendientes.
 - Genere un documento consolidado para aprobación o firma posterior.
 
@@ -69,9 +69,14 @@ services/
   llm_service.py
 ```
 
-## Google Sheets
+## Persistencia
 
-Hojas principales:
+El backend usa `SheetsService` como interfaz de persistencia. Puede operar en dos modos:
+
+- SQLite persistente: configurar `PERSISTENCE_BACKEND=sqlite` y `SQLITE_DATABASE_PATH=./data/expense_agent.sqlite3`.
+- Google Sheets: configurar `GOOGLE_SHEETS_SPREADSHEET_ID` y credenciales Google/ADC.
+
+Colecciones principales:
 
 - `Employees`
 - `ExpenseCases`
@@ -89,12 +94,15 @@ Notas:
 
 - El servicio de Sheets mantiene compatibilidad con hojas legacy (`Trips`, `TripDocuments`) cuando ya existen.
 - También conserva aliases como `trip_id` para no romper integraciones del MVP.
+- En modo SQLite las filas se guardan como JSON por colección, manteniendo la misma API del backend y evitando cuotas/rate limits de Google Sheets.
+- Backup SQLite: ejecutar `python3 scripts/backup_sqlite.py --source ./data/expense_agent.sqlite3 --backup-dir ./backups` y copiar el resultado a storage privado o al sistema de backups del ambiente.
 
 ## Scripts útiles
 
 - `scripts/seed_sheets.py`: crea headers y datos demo usando el modelo nuevo.
 - `scripts/reset_test_state.py`: recrea un caso activo de prueba y limpia la conversación.
 - `scripts/install_scheduler_cron.sh`: instala el job de recordatorios.
+- `scripts/backup_sqlite.py`: crea una copia timestamped de la base SQLite.
 
 ## Verificación
 

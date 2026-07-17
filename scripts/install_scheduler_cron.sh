@@ -19,6 +19,11 @@ SCHEDULER_ENDPOINT_TOKEN="${SCHEDULER_ENDPOINT_TOKEN:-}"
 SCHEDULER_TIMEOUT_SECONDS="${SCHEDULER_TIMEOUT_SECONDS:-20}"
 SCHEDULER_DRY_RUN="${SCHEDULER_DRY_RUN:-false}"
 
+if [[ -z "$SCHEDULER_ENDPOINT_TOKEN" ]]; then
+  echo "SCHEDULER_ENDPOINT_TOKEN is required to install internal scheduler cron." >&2
+  exit 1
+fi
+
 url="$SCHEDULER_URL"
 if [[ "$SCHEDULER_DRY_RUN" == "true" ]]; then
   separator="?"
@@ -34,11 +39,9 @@ curl_args=(
   --show-error
   --fail
   --max-time "$SCHEDULER_TIMEOUT_SECONDS"
+  -H "X-Scheduler-Token: $SCHEDULER_ENDPOINT_TOKEN"
   -X POST "$url"
 )
-if [[ -n "$SCHEDULER_ENDPOINT_TOKEN" ]]; then
-  curl_args+=(-H "X-Scheduler-Token: $SCHEDULER_ENDPOINT_TOKEN")
-fi
 
 mkdir -p "$(dirname "$CRON_LOG_FILE")"
 

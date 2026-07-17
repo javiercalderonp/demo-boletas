@@ -14,6 +14,7 @@ import {
   LogOut,
   Menu,
   UserCog,
+  ClipboardList,
 } from "lucide-react";
 
 import { useAuth } from "@/components/auth-provider";
@@ -26,6 +27,7 @@ const navigation = [
   { href: "/expenses", label: "Gastos", icon: Receipt },
   { href: "/conversations", label: "Conversaciones", icon: MessageSquare },
   { href: "/users", label: "Usuarios", icon: UserCog },
+  { href: "/audit", label: "Auditoría", icon: ClipboardList },
 ];
 
 const deployCommit = process.env.NEXT_PUBLIC_DEPLOY_COMMIT || "local";

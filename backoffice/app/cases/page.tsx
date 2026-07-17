@@ -36,7 +36,8 @@ const emptyForm = {
   context_label: "",
   cost_centers: [] as string[],
   company_id: "",
-  closure_method: "docusign",
+  closure_method: "simple",
+  daily_reminders_enabled: true,
   status: "active",
   fondos_entregados: "",
   notes: "",
@@ -619,6 +620,7 @@ export default function CasesPage() {
       cost_centers: item.cost_centers || [],
       company_id: item.company_id || item.employee?.company_id || "",
       closure_method: item.closure_method || "docusign",
+      daily_reminders_enabled: item.daily_reminders_enabled ?? true,
       status: item.status || "active",
       fondos_entregados:
         item.fondos_entregados == null ? "" : String(item.fondos_entregados),
@@ -655,7 +657,11 @@ export default function CasesPage() {
 
   function renderCaseMenu(item: CaseItem, align: "left" | "right" = "left") {
     return (
-      <details className="relative shrink-0">
+      <details
+        className="relative shrink-0"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
         <summary
           aria-label={`Acciones para ${item.context_label || item.case_id}`}
           className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-full transition hover:bg-gray-200 [&::-webkit-details-marker]:hidden"
@@ -669,7 +675,10 @@ export default function CasesPage() {
         >
           <button
             type="button"
-            onClick={() => openEditCase(item)}
+            onClick={(event) => {
+              event.stopPropagation();
+              openEditCase(item);
+            }}
             className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-gray-700 transition hover:bg-slate-50 hover:text-gray-900"
           >
             <Pencil className="h-4 w-4" />
@@ -677,7 +686,10 @@ export default function CasesPage() {
           </button>
           <button
             type="button"
-            onClick={() => setDeleteModal(item)}
+            onClick={(event) => {
+              event.stopPropagation();
+              setDeleteModal(item);
+            }}
             className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-red-600 transition hover:bg-red-50"
           >
             <Trash2 className="h-4 w-4" />
@@ -1101,6 +1113,27 @@ export default function CasesPage() {
                     ))}
                   </select>
                 </div>
+                <label className="flex items-start gap-3 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={form.daily_reminders_enabled}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        daily_reminders_enabled: event.target.checked,
+                      }))
+                    }
+                    className="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium text-gray-900">
+                      Enviar recordatorios diarios
+                    </span>
+                    <span className="mt-0.5 block text-xs leading-5 text-gray-500">
+                      El bot preguntará al inicio y cierre del día por documentos pendientes.
+                    </span>
+                  </span>
+                </label>
                 {createEmployeeOpen && (
                   <div>
                     <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-4">

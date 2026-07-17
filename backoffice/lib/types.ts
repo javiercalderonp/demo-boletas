@@ -12,6 +12,18 @@ export type BackofficeUser = {
   active: boolean;
 };
 
+export type AuditLogItem = {
+  audit_id: string;
+  timestamp?: string;
+  user_email?: string;
+  user_role?: string;
+  action?: string;
+  resource_type?: string;
+  resource_id?: string;
+  company_id?: string;
+  details?: Record<string, unknown>;
+};
+
 export type Employee = {
   phone: string;
   first_name?: string;
@@ -52,6 +64,7 @@ export type CaseItem = {
   employee_phone?: string;
   phone?: string;
   closure_method?: string;
+  daily_reminders_enabled?: boolean;
   status: string;
   human_assistance_requested?: boolean;
   human_assistance_message?: string;
@@ -135,11 +148,13 @@ export type ConversationMessage = {
   operator_name?: string;
   media_url?: string;
   media_content_type?: string;
+  filename?: string;
   image_url?: string;
   document_url?: string;
   attachments?: {
     media_url?: string;
     media_content_type?: string;
+    filename?: string;
     image_url?: string;
     document_url?: string;
   }[];

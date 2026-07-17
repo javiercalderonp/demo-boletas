@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import threading
+import time
 from datetime import datetime
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
@@ -40,17 +42,54 @@ from services.statuses import (
     RendicionStatus,
 )
 from services.sheets_service import normalize_cost_centers
-from utils.helpers import make_id, parse_float, utc_now_iso
+from utils.helpers import json_loads, make_id, parse_float, utc_now_iso
 
 
 router = APIRouter(prefix="/api", tags=["backoffice"])
 logger = logging.getLogger(__name__)
-MAX_MESSAGE_LOG_ITEMS = 500
 ADMIN_ROLES = {SUPER_ADMIN_ROLE, LEGACY_ADMIN_ROLE, COMPANY_ADMIN_ROLE}
+LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 5
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = 300
+_login_rate_limit_lock = threading.Lock()
+_login_rate_limit_attempts: dict[tuple[str, str], list[float]] = {}
+
+
+def _conflict_response(exc: ValueError, detail: str | None = None) -> HTTPException:
+    logger.info("Backoffice business rule conflict: %s", exc)
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail or str(exc))
 
 
 def _get_container(request: Request):
     return request.app.state.services
+
+
+def _audit_backoffice_action(
+    request: Request,
+    user: dict[str, Any],
+    *,
+    action: str,
+    resource_type: str,
+    resource_id: str,
+    company_id: Any = "",
+    details: dict[str, Any] | None = None,
+) -> None:
+    try:
+        _get_container(request).sheets.append_audit_log(
+            user_email=str(user.get("email", "") or ""),
+            user_role=str(user.get("role", "") or ""),
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            company_id=str(company_id or ""),
+            details=details or {},
+        )
+    except Exception:
+        logger.exception(
+            "Failed to append audit log action=%s resource_type=%s resource_id=%s",
+            action,
+            resource_type,
+            resource_id,
+        )
 
 
 def _extract_bearer_token(authorization: Optional[str]) -> str:
@@ -90,6 +129,57 @@ def _is_transient_dependency_error(exc: Exception) -> bool:
     return any(fragment in message for fragment in fragments)
 
 
+def _client_ip(request: Request) -> str:
+    forwarded_for = str(request.headers.get("x-forwarded-for", "") or "").strip()
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    client = getattr(request, "client", None)
+    return str(getattr(client, "host", "") or "unknown")
+
+
+def _login_rate_limit_key(request: Request, email: str) -> tuple[str, str]:
+    return (_client_ip(request), str(email or "").strip().lower())
+
+
+def _prune_login_attempts(now: float) -> None:
+    cutoff = now - LOGIN_RATE_LIMIT_WINDOW_SECONDS
+    expired_keys = [
+        key for key, attempts in _login_rate_limit_attempts.items() if not attempts or attempts[-1] < cutoff
+    ]
+    for key in expired_keys:
+        _login_rate_limit_attempts.pop(key, None)
+
+
+def _check_login_rate_limit(request: Request, email: str) -> None:
+    now = time.monotonic()
+    key = _login_rate_limit_key(request, email)
+    cutoff = now - LOGIN_RATE_LIMIT_WINDOW_SECONDS
+    with _login_rate_limit_lock:
+        _prune_login_attempts(now)
+        attempts = [attempt for attempt in _login_rate_limit_attempts.get(key, []) if attempt >= cutoff]
+        _login_rate_limit_attempts[key] = attempts
+        if len(attempts) >= LOGIN_RATE_LIMIT_MAX_ATTEMPTS:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Demasiados intentos de login. Intenta nuevamente en unos minutos.",
+            )
+
+
+def _record_failed_login(request: Request, email: str) -> None:
+    now = time.monotonic()
+    key = _login_rate_limit_key(request, email)
+    cutoff = now - LOGIN_RATE_LIMIT_WINDOW_SECONDS
+    with _login_rate_limit_lock:
+        attempts = [attempt for attempt in _login_rate_limit_attempts.get(key, []) if attempt >= cutoff]
+        attempts.append(now)
+        _login_rate_limit_attempts[key] = attempts
+
+
+def _clear_login_rate_limit(request: Request, email: str) -> None:
+    with _login_rate_limit_lock:
+        _login_rate_limit_attempts.pop(_login_rate_limit_key(request, email), None)
+
+
 def require_user(
     request: Request,
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
@@ -106,6 +196,12 @@ def require_user(
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Servicio de autenticación temporalmente no disponible. Intenta nuevamente.",
+            ) from exc
+        if isinstance(exc, RuntimeError):
+            logger.error("Backoffice auth is not securely configured: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Autenticación backoffice no configurada de forma segura.",
             ) from exc
         raise
     if not user:
@@ -146,6 +242,37 @@ def require_super_admin(user: dict[str, Any] = Depends(require_user)) -> dict[st
 
 def _safe_user_payload(user: dict[str, Any]) -> dict[str, Any]:
     return _safe_user(user)
+
+
+def _safe_audit_log_row(row: dict[str, Any]) -> dict[str, Any]:
+    details = row.get("details", {})
+    if isinstance(details, str):
+        details = json_loads(details, default={})
+    if not isinstance(details, dict):
+        details = {}
+    return {
+        "audit_id": row.get("audit_id", ""),
+        "timestamp": row.get("timestamp", ""),
+        "user_email": row.get("user_email", ""),
+        "user_role": row.get("user_role", ""),
+        "action": row.get("action", ""),
+        "resource_type": row.get("resource_type", ""),
+        "resource_id": row.get("resource_id", ""),
+        "company_id": row.get("company_id", ""),
+        "details": details,
+    }
+
+
+def _create_login_response(container: Any, user: dict[str, Any]) -> LoginResponse:
+    try:
+        token = container.backoffice_auth.create_access_token(user)
+    except RuntimeError as exc:
+        logger.error("Backoffice auth is not securely configured: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Autenticación backoffice no configurada de forma segura.",
+        ) from exc
+    return LoginResponse(access_token=token, user=_safe_user_payload(user))
 
 
 def _ensure_user_can_access_company(user: dict[str, Any], company_id: Any) -> None:
@@ -293,7 +420,7 @@ def _build_new_case_conversation_state(
     if isinstance(message_log, list):
         next_context["message_log"] = [
             item for item in message_log if isinstance(item, dict)
-        ][-MAX_MESSAGE_LOG_ITEMS:]
+        ]
 
     scheduler_context = current_context.get("scheduler")
     if isinstance(scheduler_context, dict):
@@ -331,6 +458,13 @@ def _build_expense_status_notification(expense: dict[str, Any], action: str) -> 
         if reason:
             msg += f". Motivo: {reason}"
         return msg + ". Si tienes dudas, contacta a soporte."
+    if action == "observe":
+        msg = f"Tu documento quedó observado: {merchant}"
+        if amount_str:
+            msg += f" por {amount_str}"
+        if reason:
+            msg += f". Necesitamos: {reason}"
+        return msg + ". Responde por este chat con el antecedente solicitado."
     msg = f"Tu documento quedó en revisión manual: {merchant}"
     if amount_str:
         msg += f" por {amount_str}"
@@ -384,7 +518,7 @@ def _log_outbound_bot_message(
             "created_at": created_at or utc_now_iso(),
         }
     )
-    context["message_log"] = message_log[-MAX_MESSAGE_LOG_ITEMS:]
+    context["message_log"] = message_log
     container.sheets.update_conversation(
         phone,
         {
@@ -478,6 +612,7 @@ def _build_case_intro_template_payload(container: Any, phone: str, expense_case:
 @router.post("/auth/login", response_model=LoginResponse)
 def login(payload: LoginRequest, request: Request) -> LoginResponse:
     container = _get_container(request)
+    _check_login_rate_limit(request, payload.email)
     try:
         user = container.backoffice_auth.authenticate(payload.email, payload.password)
     except Exception as exc:
@@ -489,9 +624,10 @@ def login(payload: LoginRequest, request: Request) -> LoginResponse:
             ) from exc
         raise
     if not user:
+        _record_failed_login(request, payload.email)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciales inválidas")
-    token = container.backoffice_auth.create_access_token(user)
-    return LoginResponse(access_token=token, user=_safe_user_payload(user))
+    _clear_login_rate_limit(request, payload.email)
+    return _create_login_response(container, user)
 
 
 @router.post("/auth/setup-password/request")
@@ -545,13 +681,20 @@ def setup_password(payload: SetupPasswordPayload, request: Request) -> LoginResp
             status_code=status.HTTP_409_CONFLICT,
             detail="No se puede crear clave para esta cuenta.",
         )
-    token = container.backoffice_auth.create_access_token(user)
-    return LoginResponse(access_token=token, user=_safe_user_payload(user))
+    return _create_login_response(container, user)
 
 
 @router.get("/auth/me")
 def me(user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
     return _safe_user_payload(user)
+
+
+@router.post("/auth/refresh", response_model=LoginResponse)
+def refresh_auth_token(
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> LoginResponse:
+    return _create_login_response(_get_container(request), user)
 
 
 @router.get("/users")
@@ -560,6 +703,45 @@ def list_backoffice_users(
     _: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     return {"items": [_safe_user_payload(user) for user in _get_container(request).sheets.list_users()]}
+
+
+@router.get("/audit-log")
+def list_audit_log(
+    request: Request,
+    action: str | None = Query(default=None),
+    resource_type: str | None = Query(default=None),
+    company_id: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=1000),
+    user: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    access = resolve_access(user)
+    action_filter = str(action or "").strip().lower()
+    resource_type_filter = str(resource_type or "").strip().lower()
+    company_filter = str(company_id or "").strip()
+
+    if company_filter:
+        _ensure_user_can_access_company(user, company_filter)
+
+    items: list[dict[str, Any]] = []
+    for raw_row in _get_container(request).sheets.list_audit_log():
+        row = _safe_audit_log_row(raw_row)
+        row_company_id = str(row.get("company_id", "") or "").strip()
+        if company_filter and row_company_id.lower() != company_filter.lower():
+            continue
+        if not access.is_global and row_company_id and not can_access_company(user, row_company_id):
+            continue
+        if action_filter and str(row.get("action", "") or "").strip().lower() != action_filter:
+            continue
+        if (
+            resource_type_filter
+            and str(row.get("resource_type", "") or "").strip().lower() != resource_type_filter
+        ):
+            continue
+        items.append(row)
+        if len(items) >= limit:
+            break
+
+    return {"items": items}
 
 
 @router.post("/users", status_code=status.HTTP_201_CREATED)
@@ -619,6 +801,20 @@ def create_backoffice_user(
             "updated_at": now,
         },
     )
+    _audit_backoffice_action(
+        request,
+        user,
+        action="user.create",
+        resource_type="backoffice_user",
+        resource_id=str(created.get("id", email) or email),
+        company_id=created.get("company_id", ""),
+        details={
+            "email": email,
+            "role": requested_role,
+            "scope_type": requested_scope,
+            "company_ids": company_ids,
+        },
+    )
     return _safe_user_payload(created)
 
 
@@ -653,7 +849,17 @@ def create_employee(
     user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
     _ensure_user_can_access_company(user, payload.company_id)
-    return _get_container(request).backoffice.create_employee(payload.model_dump())
+    employee = _get_container(request).backoffice.create_employee(payload.model_dump())
+    _audit_backoffice_action(
+        request,
+        user,
+        action="employee.create",
+        resource_type="employee",
+        resource_id=str(employee.get("phone", payload.phone) or ""),
+        company_id=employee.get("company_id", payload.company_id),
+        details={"active": employee.get("active", True)},
+    )
+    return employee
 
 
 @router.get("/employees/{phone}")
@@ -682,6 +888,14 @@ def update_employee(
     employee = _get_container(request).backoffice.update_employee(phone, payload.model_dump())
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
+    _audit_backoffice_action(
+        request,
+        user,
+        action="employee.update",
+        resource_type="employee",
+        resource_id=str(employee.get("phone", phone) or ""),
+        company_id=employee.get("company_id", payload.company_id),
+    )
     return employee
 
 
@@ -703,6 +917,15 @@ def employee_action(
     )
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
+    _audit_backoffice_action(
+        request,
+        user,
+        action=f"employee.{payload.action}",
+        resource_type="employee",
+        resource_id=str(employee.get("phone", phone) or ""),
+        company_id=employee.get("company_id", ""),
+        details={"active": employee.get("active")},
+    )
     return employee
 
 
@@ -722,6 +945,20 @@ def delete_employee(
     )
     if not result:
         raise HTTPException(status_code=404, detail="Employee not found")
+    deleted_employee = result.get("employee") or existing.get("employee") or {}
+    _audit_backoffice_action(
+        request,
+        user,
+        action="employee.delete",
+        resource_type="employee",
+        resource_id=str(deleted_employee.get("phone", phone) or ""),
+        company_id=deleted_employee.get("company_id", ""),
+        details={
+            "delete_cases": delete_cases,
+            "deleted_cases": result.get("deleted_cases"),
+            "deleted_expenses": result.get("deleted_expenses"),
+        },
+    )
     return result
 
 
@@ -750,7 +987,16 @@ def create_case(
     try:
         expense_case = container.backoffice.create_case(payload.model_dump())
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise _conflict_response(exc) from exc
+    _audit_backoffice_action(
+        request,
+        user,
+        action="case.create",
+        resource_type="case",
+        resource_id=str(expense_case.get("case_id", payload.case_id or "") or ""),
+        company_id=expense_case.get("company_id", payload.company_id),
+        details={"employee_phone": expense_case.get("employee_phone", payload.employee_phone)},
+    )
 
     phone = str(expense_case.get("employee_phone", expense_case.get("phone", "")) or "").strip()
     if phone:
@@ -803,7 +1049,7 @@ def create_case(
                     "provider_message_id": send_result.get("id") or send_result.get("sid"),
                 }
             )
-            context["message_log"] = message_log[-MAX_MESSAGE_LOG_ITEMS:]
+            context["message_log"] = message_log
             container.sheets.update_conversation(
                 phone,
                 {
@@ -859,6 +1105,63 @@ def get_case(
     if not detail:
         raise HTTPException(status_code=404, detail="Case not found")
     return detail
+
+
+@router.post("/cases/{case_id}/consolidated-document")
+def generate_case_consolidated_document(
+    case_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    container = _get_container(request)
+    detail = container.backoffice.get_case_detail(case_id, user)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Case not found")
+    expense_case = detail.get("case") or {}
+    phone = str(expense_case.get("employee_phone") or expense_case.get("phone") or "").strip()
+    if not phone:
+        employee = detail.get("employee") or {}
+        phone = str(employee.get("phone", "") or "").strip()
+    if not phone:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="La rendición no tiene teléfono asociado para generar el documento.",
+        )
+    try:
+        document = container.consolidated_document.generate_for_case(
+            phone=phone,
+            case_id=case_id,
+            include_signed_url=True,
+        )
+    except ValueError as exc:
+        logger.info("Invalid consolidated document request case_id=%s: %s", case_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No se pudo generar el documento con los datos de la rendición.",
+        ) from exc
+    except RuntimeError as exc:
+        logger.warning("Consolidated document service unavailable case_id=%s: %s", case_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="El servicio de documentos no está disponible temporalmente.",
+        ) from exc
+    except Exception as exc:
+        logger.exception("Failed to generate consolidated document case_id=%s", case_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo generar el documento consolidado. Intenta nuevamente.",
+        ) from exc
+
+    _audit_backoffice_action(
+        request,
+        user,
+        action="case.generate_consolidated_document",
+        resource_type="case",
+        resource_id=case_id,
+        company_id=expense_case.get("company_id", ""),
+        details={"document_id": document.get("document_id", "")},
+    )
+    return document
 
 
 def _build_case_context_for_ai(detail: dict[str, Any]) -> str:
@@ -994,6 +1297,14 @@ def update_case(
     )
     if not expense_case:
         raise HTTPException(status_code=404, detail="Case not found")
+    _audit_backoffice_action(
+        request,
+        user,
+        action="case.update",
+        resource_type="case",
+        resource_id=case_id,
+        company_id=expense_case.get("company_id", payload.company_id),
+    )
     return expense_case
 
 
@@ -1011,6 +1322,18 @@ def delete_case(
     if not result:
         raise HTTPException(status_code=404, detail="Case not found")
     deleted_case = result.get("case") or existing.get("case") or {}
+    _audit_backoffice_action(
+        request,
+        user,
+        action="case.delete",
+        resource_type="case",
+        resource_id=case_id,
+        company_id=deleted_case.get("company_id", ""),
+        details={
+            "deleted_expenses": result.get("deleted_expenses"),
+            "employee_phone": deleted_case.get("employee_phone", deleted_case.get("phone", "")),
+        },
+    )
     phone = str(
         deleted_case.get("employee_phone", deleted_case.get("phone", "")) or ""
     ).strip()
@@ -1053,6 +1376,14 @@ def case_action(
         )
         if not expense_case:
             raise HTTPException(status_code=404, detail="Case not found")
+        _audit_backoffice_action(
+            request,
+            user,
+            action=f"case.{payload.action}",
+            resource_type="case",
+            resource_id=case_id,
+            company_id=expense_case.get("company_id", ""),
+        )
         return expense_case
 
     # Rendición lifecycle actions
@@ -1060,7 +1391,10 @@ def case_action(
         try:
             container.backoffice.ensure_case_ready_for_document_confirmation(case_id)
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise _conflict_response(
+                exc,
+                "La rendición todavía no está lista para confirmación documental.",
+            ) from exc
         expense_case = container.backoffice.update_case(
             case_id,
             {
@@ -1070,6 +1404,14 @@ def case_action(
         )
         if not expense_case:
             raise HTTPException(status_code=404, detail="Case not found")
+        _audit_backoffice_action(
+            request,
+            user,
+            action="case.request_user_confirmation",
+            resource_type="case",
+            resource_id=case_id,
+            company_id=expense_case.get("company_id", ""),
+        )
         phone = expense_case.get("employee_phone", expense_case.get("phone", ""))
         if phone:
             try:
@@ -1091,15 +1433,35 @@ def case_action(
                 resolved_at=utc_now_iso(),
             )
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise _conflict_response(
+                exc,
+                "La liquidación financiera todavía no puede resolverse.",
+            ) from exc
         if not expense_case:
             raise HTTPException(status_code=404, detail="Case not found")
+        _audit_backoffice_action(
+            request,
+            user,
+            action="case.resolve_settlement",
+            resource_type="case",
+            resource_id=case_id,
+            company_id=expense_case.get("company_id", ""),
+            details={"settlement_status": expense_case.get("settlement_status")},
+        )
         expense_case = container.backoffice.update_case(
             case_id,
             {"rendicion_status": RendicionStatus.CLOSED, "status": CaseStatus.CLOSED},
         )
         if not expense_case:
             raise HTTPException(status_code=404, detail="Case not found")
+        _audit_backoffice_action(
+            request,
+            user,
+            action="case.close_rendicion",
+            resource_type="case",
+            resource_id=case_id,
+            company_id=expense_case.get("company_id", ""),
+        )
         phone = str(expense_case.get("employee_phone", expense_case.get("phone", "")) or "").strip()
         if phone:
             _safe_send_whatsapp_notification(
@@ -1115,7 +1477,10 @@ def case_action(
         try:
             container.backoffice.ensure_case_ready_for_close(case_id)
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise _conflict_response(
+                exc,
+                "La rendición todavía no cumple las condiciones de cierre.",
+            ) from exc
         expense_case = container.backoffice.update_case(
             case_id,
             {"rendicion_status": RendicionStatus.CLOSED, "status": CaseStatus.CLOSED},
@@ -1192,6 +1557,15 @@ def update_expense(
     expense = _get_container(request).backoffice.update_expense(expense_id, payload.model_dump())
     if not expense:
         raise HTTPException(status_code=404, detail="Expense not found")
+    _audit_backoffice_action(
+        request,
+        user,
+        action="expense.update",
+        resource_type="expense",
+        resource_id=expense_id,
+        company_id=expense.get("company_id", ""),
+        details={"case_id": expense.get("case_id", "")},
+    )
     return _attach_expense_receipt_urls(request, expense)
 
 
@@ -1208,22 +1582,44 @@ def expense_action(
     status_map = {
         "approve": ExpenseStatus.APPROVED,
         "reject": ExpenseStatus.REJECTED,
+        "observe": ExpenseStatus.OBSERVED,
+        "manual_review": ExpenseStatus.NEEDS_MANUAL_REVIEW,
     }
     if payload.action not in status_map:
         raise HTTPException(status_code=400, detail="Unsupported action")
     update_payload: dict[str, Any] = {"status": status_map[payload.action]}
-    if payload.action in ("approve", "reject"):
+    if payload.action in ("approve", "reject", "observe", "manual_review"):
         update_payload["review_status"] = status_map[payload.action]
-    if payload.action == "reject":
+    if payload.action in {"reject", "observe"}:
         reason = str(payload.reason or "").strip()
         if not reason:
-            raise HTTPException(status_code=400, detail="Debes indicar el motivo del rechazo.")
+            detail = (
+                "Debes indicar el antecedente solicitado."
+                if payload.action == "observe"
+                else "Debes indicar el motivo del rechazo."
+            )
+            raise HTTPException(status_code=400, detail=detail)
         update_payload["review_reason"] = reason
     elif payload.action == "approve":
         update_payload["review_reason"] = ""
+    elif payload.action == "manual_review":
+        update_payload["review_reason"] = str(payload.reason or "").strip()
     expense = container.backoffice.update_expense(expense_id, update_payload)
     if not expense:
         raise HTTPException(status_code=404, detail="Expense not found")
+    _audit_backoffice_action(
+        request,
+        user,
+        action=f"expense.{payload.action}",
+        resource_type="expense",
+        resource_id=expense_id,
+        company_id=expense.get("company_id", ""),
+        details={
+            "case_id": expense.get("case_id", ""),
+            "review_status": expense.get("review_status", expense.get("status", "")),
+            "reason": payload.reason or "",
+        },
+    )
 
     balance_warning: str | None = None
     phone = str(expense.get("phone", "") or "").strip()
@@ -1393,7 +1789,16 @@ def update_conversation(
 ) -> dict[str, Any]:
     if not _get_container(request).backoffice.get_conversation_detail(phone, user):
         raise HTTPException(status_code=404, detail="Conversation not found")
-    return _get_container(request).backoffice.update_conversation(phone, payload.model_dump())
+    conversation = _get_container(request).backoffice.update_conversation(phone, payload.model_dump())
+    _audit_backoffice_action(
+        request,
+        user,
+        action="conversation.update",
+        resource_type="conversation",
+        resource_id=phone,
+        details={"state": conversation.get("conversation", conversation).get("state", "") if isinstance(conversation, dict) else ""},
+    )
+    return conversation
 
 
 @router.post("/conversations/{phone}/messages")
@@ -1445,7 +1850,6 @@ def send_conversation_message(
         "operator_name": operator_name,
     }
     message_log.append(new_entry)
-    message_log = message_log[-MAX_MESSAGE_LOG_ITEMS:]
     context["message_log"] = message_log
 
     container.sheets.update_conversation(
@@ -1472,6 +1876,15 @@ def send_conversation_message(
             "Failed to clear human_assistance_requested for phone=%s",
             phone,
         )
+
+    _audit_backoffice_action(
+        request,
+        user,
+        action="conversation.send_message",
+        resource_type="conversation",
+        resource_id=phone,
+        details={"message_id": new_entry["id"]},
+    )
 
     return {
         "ok": True,
@@ -1541,7 +1954,7 @@ def send_conversation_template_message(
         "provider_message_id": send_result.get("id") or send_result.get("sid"),
     }
     message_log.append(new_entry)
-    context["message_log"] = message_log[-MAX_MESSAGE_LOG_ITEMS:]
+    context["message_log"] = message_log
 
     container.sheets.update_conversation(
         phone,
@@ -1557,6 +1970,19 @@ def send_conversation_template_message(
         conversation_detail = container.backoffice.get_conversation_detail(phone, user)
     except Exception:
         logger.exception("Failed to load conversation detail after template send phone=%s", phone)
+
+    _audit_backoffice_action(
+        request,
+        user,
+        action="conversation.send_template",
+        resource_type="conversation",
+        resource_id=phone,
+        details={
+            "message_id": new_entry["id"],
+            "template_name": template_name,
+            "language_code": language_code,
+        },
+    )
 
     return {
         "ok": True,
@@ -1577,4 +2003,13 @@ def conversation_action(
         raise HTTPException(status_code=400, detail="Unsupported action")
     if not _get_container(request).backoffice.get_conversation_detail(phone, user):
         raise HTTPException(status_code=404, detail="Conversation not found")
-    return _get_container(request).backoffice.update_conversation(phone, {"state": "DONE"})
+    conversation = _get_container(request).backoffice.update_conversation(phone, {"state": "DONE"})
+    _audit_backoffice_action(
+        request,
+        user,
+        action="conversation.resolve",
+        resource_type="conversation",
+        resource_id=phone,
+        details={"state": "DONE"},
+    )
+    return conversation

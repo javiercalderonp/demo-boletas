@@ -208,13 +208,63 @@ class ConsolidatedDocumentService:
             key=lambda item: str(item.get("cost_center", "")).lower(),
         )
         sorted_days = sorted(by_day.items(), key=lambda x: x[0])
+        final_balance = self._build_final_balance_summary(
+            expense_case=expense_case,
+            fallback_total_clp=total_clp,
+        )
         return {
             "expense_case": expense_case,
             "total_clp": total_clp,
+            "final_balance": final_balance,
             "by_category": sorted_categories,
             "by_cost_center": sorted_cost_centers,
             "by_day": sorted_days,
             "detail_rows": detail_rows,
+        }
+
+    def _build_final_balance_summary(
+        self,
+        *,
+        expense_case: dict[str, Any],
+        fallback_total_clp: float,
+    ) -> dict[str, Any]:
+        fondos_entregados = parse_float(expense_case.get("fondos_entregados")) or 0.0
+        monto_rendido_aprobado = parse_float(expense_case.get("monto_rendido_aprobado"))
+        if monto_rendido_aprobado is None:
+            monto_rendido_aprobado = fallback_total_clp
+        saldo_restante = parse_float(expense_case.get("saldo_restante"))
+        if saldo_restante is None:
+            saldo_restante = fondos_entregados - monto_rendido_aprobado
+
+        settlement_direction = str(expense_case.get("settlement_direction", "") or "").strip()
+        settlement_status = str(expense_case.get("settlement_status", "") or "").strip()
+        settlement_amount = parse_float(expense_case.get("settlement_amount_clp"))
+        if settlement_amount is None:
+            settlement_amount = abs(saldo_restante)
+        settlement_net = parse_float(expense_case.get("settlement_net_clp"))
+        if settlement_net is None:
+            settlement_net = -settlement_amount if settlement_direction == "company_owes_employee" else settlement_amount
+            if settlement_direction == "balanced":
+                settlement_net = 0.0
+
+        if not settlement_direction:
+            if saldo_restante < 0:
+                settlement_direction = "company_owes_employee"
+            elif saldo_restante > 0:
+                settlement_direction = "employee_owes_company"
+            else:
+                settlement_direction = "balanced"
+
+        return {
+            "fondos_entregados_clp": round(fondos_entregados, 2),
+            "monto_rendido_aprobado_clp": round(monto_rendido_aprobado, 2),
+            "saldo_restante_clp": round(saldo_restante, 2),
+            "settlement_direction": settlement_direction,
+            "settlement_status": settlement_status,
+            "settlement_amount_clp": round(settlement_amount, 2),
+            "settlement_net_clp": round(settlement_net, 2),
+            "settlement_calculated_at": str(expense_case.get("settlement_calculated_at", "") or "").strip(),
+            "settlement_resolved_at": str(expense_case.get("settlement_resolved_at", "") or "").strip(),
         }
 
     def _normalize_fondos_por_centro(self, value: Any) -> dict[str, float]:
@@ -336,6 +386,63 @@ class ConsolidatedDocumentService:
             )
         )
         story.append(trip_table)
+        story.append(Spacer(1, 10))
+
+        story.append(Paragraph("Balance final de rendicion (CLP)", styles["Heading3"]))
+        final_balance = report_data["final_balance"]
+        settlement_direction_labels = {
+            "balanced": "Saldo cuadrado",
+            "company_owes_employee": "Empresa debe reembolsar al trabajador",
+            "employee_owes_company": "Trabajador debe devolver a la empresa",
+        }
+        settlement_status_labels = {
+            "settlement_pending": "Liquidacion pendiente",
+            "pending_employee_payment_proof": "Pendiente comprobante de deposito",
+            "payment_proof_under_review": "Comprobante de deposito en revision",
+            "payment_proof_rejected": "Comprobante de deposito rechazado",
+            "pending_company_payment": "Pendiente pago de la empresa",
+            "company_payment_sent": "Pago de la empresa enviado",
+            "settled": "Liquidacion resuelta",
+        }
+        balance_rows = [
+            ["Fondos entregados", self._format_clp(final_balance["fondos_entregados_clp"])],
+            ["Monto rendido aprobado", self._format_clp(final_balance["monto_rendido_aprobado_clp"])],
+            ["Saldo restante", self._format_clp(final_balance["saldo_restante_clp"])],
+            [
+                "Resultado",
+                settlement_direction_labels.get(
+                    str(final_balance.get("settlement_direction") or ""),
+                    str(final_balance.get("settlement_direction") or "-"),
+                ),
+            ],
+            ["Monto liquidacion", self._format_clp(final_balance["settlement_amount_clp"])],
+            ["Neto liquidacion", self._format_clp(final_balance["settlement_net_clp"])],
+            [
+                "Estado liquidacion",
+                settlement_status_labels.get(
+                    str(final_balance.get("settlement_status") or ""),
+                    str(final_balance.get("settlement_status") or "-") or "-",
+                ),
+            ],
+        ]
+        if final_balance.get("settlement_resolved_at"):
+            balance_rows.append(["Liquidacion resuelta", str(final_balance["settlement_resolved_at"])])
+        elif final_balance.get("settlement_calculated_at"):
+            balance_rows.append(["Liquidacion calculada", str(final_balance["settlement_calculated_at"])])
+        balance_table = Table(balance_rows, colWidths=[70 * mm, 105 * mm])
+        balance_table.setStyle(
+            TableStyle(
+                [
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                    ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F3F7EE")),
+                    ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                    ("ALIGN", (1, 0), (1, 2), "RIGHT"),
+                    ("ALIGN", (1, 4), (1, 5), "RIGHT"),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ]
+            )
+        )
+        story.append(balance_table)
         story.append(Spacer(1, 10))
 
         story.append(Paragraph("Resumen por categoria (CLP)", styles["Heading3"]))

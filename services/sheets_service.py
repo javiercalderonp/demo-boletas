@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import logging
+import os
+import sqlite3
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from app.config import Settings
@@ -29,6 +32,7 @@ SHEET_NAMES = {
     "conversations": "Conversations",
     "expense_case_documents": "ExpenseCaseDocuments",
     "backoffice_users": "BackofficeUsers",
+    "audit_log": "AuditLog",
 }
 
 LEGACY_SHEET_NAMES = {
@@ -83,6 +87,7 @@ _TRIP_REQUIRED_HEADERS = [
     "context_label",
     "cost_centers",
     "closure_method",
+    "daily_reminders_enabled",
     "closure_status",
     "closure_prompted_at",
     "closure_deadline_at",
@@ -106,6 +111,8 @@ _TRIP_REQUIRED_HEADERS = [
     "settlement_net_clp",
     "settlement_calculated_at",
     "settlement_resolved_at",
+    "settlement_payment_proof_document_id",
+    "settlement_notes",
 ]
 _CONVERSATION_REQUIRED_HEADERS = [
     "phone",
@@ -137,6 +144,15 @@ _TRIP_DOCUMENT_HEADERS = [
     "signed_storage_provider",
     "signed_object_key",
     "signature_error",
+    "document_type",
+    "media_url",
+    "media_content_type",
+    "filename",
+    "source_message_id",
+    "review_status",
+    "review_reason",
+    "ocr_json",
+    "expected_amount_clp",
 ]
 _BACKOFFICE_USER_HEADERS = [
     "id",
@@ -162,6 +178,17 @@ _COMPANY_HEADERS = [
     "account_holder_rut",
     "finance_email",
     "active",
+]
+_AUDIT_LOG_HEADERS = [
+    "audit_id",
+    "timestamp",
+    "user_email",
+    "user_role",
+    "action",
+    "resource_type",
+    "resource_id",
+    "company_id",
+    "details",
 ]
 
 
@@ -235,6 +262,7 @@ class SheetsService:
         self._records_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
         self._headers_cache: dict[str, tuple[float, list[str]]] = {}
         self._read_cooldowns: dict[str, float] = {}
+        self._sqlite_conn: sqlite3.Connection | None = None
         self._memory_store: dict[str, list[dict[str, Any]]] = {
             "empresas": [],
             "Employees": [],
@@ -243,14 +271,63 @@ class SheetsService:
             "Conversations": [],
             "ExpenseCaseDocuments": [],
             "BackofficeUsers": [],
+            "AuditLog": [],
         }
-        if self.settings.google_sheets_enabled:
+        credentials_path = str(getattr(self.settings, "google_application_credentials", "") or "").strip()
+        if (
+            credentials_path
+            and not Path(credentials_path).exists()
+            and str(getattr(self.settings, "app_env", "dev") or "dev").strip().lower() != "prod"
+        ):
+            logger.warning(
+                "Google credentials file not found in non-production environment; using local store path=%s",
+                credentials_path,
+            )
+            self.settings.google_sheets_spreadsheet_id = ""
+            self.settings.google_application_credentials = ""
+            os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+        if getattr(self.settings, "sqlite_persistence_enabled", False):
+            self._connect_sqlite()
+        elif self.settings.google_sheets_enabled:
             self._connect()
             self._ensure_required_headers()
 
     @property
     def enabled(self) -> bool:
-        return self._spreadsheet is not None
+        return self._spreadsheet is not None or self._sqlite_conn is not None
+
+    @property
+    def sqlite_enabled(self) -> bool:
+        return self._sqlite_conn is not None
+
+    def _connect_sqlite(self) -> None:
+        database_path = str(getattr(self.settings, "sqlite_database_path", "") or "").strip()
+        if not database_path:
+            raise RuntimeError("SQLITE_DATABASE_PATH no configurado")
+        path = Path(database_path)
+        if path.parent and str(path.parent) not in ("", "."):
+            path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sheet_name TEXT NOT NULL,
+                row_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_app_records_sheet_name ON app_records(sheet_name, id)"
+        )
+        conn.commit()
+        self._sqlite_conn = conn
+        logger.info("SQLite persistence connected database_path=%s", path)
 
     def _connect(self) -> None:
         try:
@@ -335,6 +412,8 @@ class SheetsService:
     def _get_records(self, name: str) -> list[dict[str, Any]]:
         ws = self._worksheet(name)
         if ws is None:
+            if self._sqlite_conn is not None:
+                return self._sqlite_get_records(name)
             return list(self._memory_store.get(name, []))
         cached = self._records_cache.get(name)
         now = time.monotonic()
@@ -397,6 +476,11 @@ class SheetsService:
     def _get_headers(self, name: str) -> list[str]:
         ws = self._worksheet(name)
         if ws is None:
+            if self._sqlite_conn is not None:
+                rows = self._sqlite_get_records(name)
+                if rows:
+                    return list(rows[0].keys())
+                return self._required_headers_for_sheet(name)
             rows = self._memory_store.get(name, [])
             if not rows:
                 return []
@@ -519,6 +603,10 @@ class SheetsService:
     def _append_row(self, name: str, row_dict: dict[str, Any]) -> None:
         ws = self._worksheet(name)
         if ws is None:
+            if self._sqlite_conn is not None:
+                self._sqlite_insert_row(name, row_dict)
+                self._set_records_cache(name, self._sqlite_get_records(name))
+                return
             self._memory_store.setdefault(name, []).append(row_dict.copy())
             return
         headers = self._get_headers(name)
@@ -542,6 +630,7 @@ class SheetsService:
         self._ensure_sheet_headers(
             SHEET_NAMES["backoffice_users"], list(_BACKOFFICE_USER_HEADERS)
         )
+        self._ensure_sheet_headers(SHEET_NAMES["audit_log"], list(_AUDIT_LOG_HEADERS))
 
     def _ensure_expenses_headers(self) -> None:
         ws = self._worksheet(SHEET_NAMES["expenses"])
@@ -584,6 +673,10 @@ class SheetsService:
     ) -> None:
         ws = self._worksheet(name)
         if ws is None:
+            if self._sqlite_conn is not None:
+                self._sqlite_upsert_by_key(name, key_field, key_value, payload)
+                self._set_records_cache(name, self._sqlite_get_records(name))
+                return
             rows = self._memory_store.setdefault(name, [])
             for idx, row in enumerate(rows):
                 if self._keys_match(key_field, row.get(key_field), key_value):
@@ -618,6 +711,10 @@ class SheetsService:
     def _delete_by_key(self, name: str, key_field: str, key_value: Any) -> bool:
         ws = self._worksheet(name)
         if ws is None:
+            if self._sqlite_conn is not None:
+                deleted = self._sqlite_delete_by_key(name, key_field, key_value)
+                self._set_records_cache(name, self._sqlite_get_records(name))
+                return deleted
             rows = self._memory_store.setdefault(name, [])
             for index, row in enumerate(rows):
                 if self._keys_match(key_field, row.get(key_field), key_value):
@@ -643,6 +740,10 @@ class SheetsService:
     def _delete_many_by_predicate(self, name: str, predicate) -> int:
         ws = self._worksheet(name)
         if ws is None:
+            if self._sqlite_conn is not None:
+                deleted_count = self._sqlite_delete_many_by_predicate(name, predicate)
+                self._set_records_cache(name, self._sqlite_get_records(name))
+                return deleted_count
             rows = self._memory_store.setdefault(name, [])
             remaining_rows: list[dict[str, Any]] = []
             deleted_count = 0
@@ -668,6 +769,120 @@ class SheetsService:
             del records[row_number - 2]
         self._set_records_cache(name, records)
         return len(rows_to_delete)
+
+    def _sqlite_get_records(self, name: str) -> list[dict[str, Any]]:
+        if self._sqlite_conn is None:
+            return []
+        rows = self._sqlite_conn.execute(
+            "SELECT row_json FROM app_records WHERE sheet_name = ? ORDER BY id ASC",
+            (name,),
+        ).fetchall()
+        records: list[dict[str, Any]] = []
+        for row in rows:
+            parsed = json_loads(row["row_json"], default={})
+            if isinstance(parsed, dict):
+                records.append(parsed)
+        return records
+
+    def _sqlite_insert_row(self, name: str, row_dict: dict[str, Any]) -> None:
+        if self._sqlite_conn is None:
+            return
+        self._sqlite_conn.execute(
+            "INSERT INTO app_records (sheet_name, row_json) VALUES (?, ?)",
+            (name, json_dumps(dict(row_dict))),
+        )
+        self._sqlite_conn.commit()
+
+    def _sqlite_upsert_by_key(
+        self,
+        name: str,
+        key_field: str,
+        key_value: Any,
+        payload: dict[str, Any],
+    ) -> None:
+        if self._sqlite_conn is None:
+            return
+        rows = self._sqlite_conn.execute(
+            "SELECT id, row_json FROM app_records WHERE sheet_name = ? ORDER BY id ASC",
+            (name,),
+        ).fetchall()
+        matched_id: int | None = None
+        matched_payload: dict[str, Any] | None = None
+        for row in rows:
+            current = json_loads(row["row_json"], default={})
+            if not isinstance(current, dict):
+                continue
+            if self._keys_match(key_field, current.get(key_field), key_value):
+                matched_id = int(row["id"])
+                matched_payload = current
+        if matched_id is None:
+            self._sqlite_insert_row(name, payload)
+            return
+        updated = dict(matched_payload or {})
+        updated.update(payload)
+        self._sqlite_conn.execute(
+            "UPDATE app_records SET row_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (json_dumps(updated), matched_id),
+        )
+        self._sqlite_conn.commit()
+
+    def _sqlite_delete_by_key(self, name: str, key_field: str, key_value: Any) -> bool:
+        if self._sqlite_conn is None:
+            return False
+        rows = self._sqlite_conn.execute(
+            "SELECT id, row_json FROM app_records WHERE sheet_name = ? ORDER BY id ASC",
+            (name,),
+        ).fetchall()
+        for row in rows:
+            current = json_loads(row["row_json"], default={})
+            if not isinstance(current, dict):
+                continue
+            if not self._keys_match(key_field, current.get(key_field), key_value):
+                continue
+            self._sqlite_conn.execute("DELETE FROM app_records WHERE id = ?", (int(row["id"]),))
+            self._sqlite_conn.commit()
+            return True
+        return False
+
+    def _sqlite_delete_many_by_predicate(self, name: str, predicate) -> int:
+        if self._sqlite_conn is None:
+            return 0
+        rows = self._sqlite_conn.execute(
+            "SELECT id, row_json FROM app_records WHERE sheet_name = ? ORDER BY id ASC",
+            (name,),
+        ).fetchall()
+        ids_to_delete: list[int] = []
+        for row in rows:
+            current = json_loads(row["row_json"], default={})
+            if isinstance(current, dict) and predicate(current):
+                ids_to_delete.append(int(row["id"]))
+        if not ids_to_delete:
+            return 0
+        self._sqlite_conn.executemany(
+            "DELETE FROM app_records WHERE id = ?",
+            [(row_id,) for row_id in ids_to_delete],
+        )
+        self._sqlite_conn.commit()
+        return len(ids_to_delete)
+
+    def _required_headers_for_sheet(self, name: str) -> list[str]:
+        if name == SHEET_NAMES["companies"]:
+            return list(_COMPANY_HEADERS)
+        if name == SHEET_NAMES["employees"]:
+            return list(_EMPLOYEE_REQUIRED_HEADERS)
+        if name == SHEET_NAMES["expense_cases"]:
+            return list(_TRIP_REQUIRED_HEADERS)
+        if name == SHEET_NAMES["expenses"]:
+            return list(_EXPENSE_REQUIRED_HEADERS)
+        if name == SHEET_NAMES["conversations"]:
+            return list(_CONVERSATION_REQUIRED_HEADERS)
+        if name == SHEET_NAMES["expense_case_documents"]:
+            return list(_TRIP_DOCUMENT_HEADERS)
+        if name == SHEET_NAMES["backoffice_users"]:
+            return list(_BACKOFFICE_USER_HEADERS)
+        if name == SHEET_NAMES["audit_log"]:
+            return list(_AUDIT_LOG_HEADERS)
+        return []
 
     def _with_retry(self, operation, retries: int = 3, base_delay: float = 0.5):
         last_exc: Exception | None = None
@@ -1091,6 +1306,36 @@ class SheetsService:
         self._upsert_by_key(SHEET_NAMES["conversations"], "phone", phone, to_sheet)
         return conversation
 
+    def append_audit_log(
+        self,
+        *,
+        user_email: str,
+        user_role: str,
+        action: str,
+        resource_type: str,
+        resource_id: str,
+        company_id: str = "",
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        row = {
+            "audit_id": make_id("audit"),
+            "timestamp": utc_now_iso(),
+            "user_email": str(user_email or "").strip().lower(),
+            "user_role": str(user_role or "").strip(),
+            "action": str(action or "").strip(),
+            "resource_type": str(resource_type or "").strip(),
+            "resource_id": str(resource_id or "").strip(),
+            "company_id": str(company_id or "").strip(),
+            "details": json_dumps(details or {}),
+        }
+        self._append_row(SHEET_NAMES["audit_log"], row)
+        return row
+
+    def list_audit_log(self) -> list[dict[str, Any]]:
+        rows = [dict(row) for row in self._get_records(SHEET_NAMES["audit_log"])]
+        rows.sort(key=lambda item: str(item.get("timestamp", "") or ""), reverse=True)
+        return rows
+
     def list_employees(self) -> list[dict[str, Any]]:
         employees: list[dict[str, Any]] = []
         for row in self._get_records(SHEET_NAMES["employees"]):
@@ -1256,6 +1501,7 @@ class SheetsService:
                     payload.get("employee_phone", payload.get("phone", ""))
                 ),
                 "closure_method": str(payload.get("closure_method", "docusign") or "docusign").strip().lower(),
+                "daily_reminders_enabled": payload.get("daily_reminders_enabled", True),
                 "status": str(payload.get("status", "active") or "active").strip(),
                 "created_at": str(payload.get("created_at", "") or "").strip() or now,
                 "updated_at": str(payload.get("updated_at", "") or "").strip() or now,
@@ -1398,6 +1644,12 @@ class SheetsService:
         normalized["phone"] = normalized["employee_phone"]
         normalized["company_id"] = str(normalized.get("company_id", "") or "").strip()
         normalized["closure_method"] = str(normalized.get("closure_method", "") or "").strip().lower() or "docusign"
+        raw_daily_reminders_enabled = normalized.get("daily_reminders_enabled", True)
+        normalized["daily_reminders_enabled"] = (
+            True
+            if raw_daily_reminders_enabled in (None, "")
+            else truthy(raw_daily_reminders_enabled)
+        )
         normalized["created_at"] = normalized.get("created_at", normalized.get("opened_at", ""))
         normalized["updated_at"] = normalized.get("updated_at", normalized.get("created_at", ""))
         normalized["notes"] = normalized.get("notes", "")
@@ -1426,6 +1678,15 @@ class SheetsService:
         payload["employee_phone"] = payload["phone"]
         payload["company_id"] = str(row.get("company_id", "") or "").strip()
         payload["closure_method"] = str(row.get("closure_method", "") or "").strip().lower() or "docusign"
+        raw_daily_reminders_enabled = row.get("daily_reminders_enabled", True)
+        daily_reminders_enabled = (
+            raw_daily_reminders_enabled
+            if isinstance(raw_daily_reminders_enabled, bool)
+            else True
+            if raw_daily_reminders_enabled in (None, "")
+            else truthy(raw_daily_reminders_enabled)
+        )
+        payload["daily_reminders_enabled"] = "TRUE" if daily_reminders_enabled else "FALSE"
         payload["created_at"] = row.get("created_at", "")
         payload["updated_at"] = row.get("updated_at", "")
         payload["notes"] = row.get("notes", "")
