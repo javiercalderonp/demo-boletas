@@ -8,6 +8,7 @@ import {
   CheckSquare,
   Download,
   Ellipsis,
+  FileText,
   Filter,
   Inbox,
   Search,
@@ -58,6 +59,36 @@ function ReviewScoreBadge({ score }: { score?: number }) {
     >
       {score}
     </span>
+  );
+}
+
+function ReceiptThumbnail({ expense }: { expense: Expense }) {
+  const receiptUrl = expense.image_url || expense.document_url;
+  const thumbnail = expense.image_url ? (
+    <img
+      src={expense.image_url}
+      alt={`Boleta de ${expense.merchant || "comercio sin identificar"}`}
+      className="h-14 w-14 rounded-xl border border-gray-200 bg-white object-cover shadow-sm transition hover:border-primary-300"
+      loading="lazy"
+    />
+  ) : (
+    <span className="flex h-14 w-14 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-400 shadow-sm transition hover:border-primary-300 hover:text-primary-600">
+      <FileText className="h-5 w-5" />
+    </span>
+  );
+
+  if (!receiptUrl) return thumbnail;
+
+  return (
+    <a
+      href={receiptUrl}
+      target="_blank"
+      rel="noreferrer"
+      title="Abrir boleta"
+      aria-label={`Abrir boleta de ${expense.merchant || "comercio sin identificar"}`}
+    >
+      {thumbnail}
+    </a>
   );
 }
 
@@ -519,7 +550,7 @@ export default function ExpensesPage() {
 
         <SectionCard title="Listado de gastos">
           {items === null ? (
-            <TableSkeleton columns={5} rows={6} />
+            <TableSkeleton columns={7} rows={6} />
           ) : (
             <>
               {/* Mobile card list */}
@@ -544,6 +575,7 @@ export default function ExpensesPage() {
                       return (
                         <div key={expense.expense_id} className="rounded-xl border border-gray-100 bg-gray-50/60 p-4">
                           <div className="flex items-start justify-between gap-3">
+                            <ReceiptThumbnail expense={expense} />
                             <div className="min-w-0 flex-1">
                               <div className="flex flex-wrap items-center gap-2">
                                 <span className="font-semibold text-gray-900">
@@ -661,6 +693,7 @@ export default function ExpensesPage() {
                       )}
                     </button>,
                     "Empleado",
+                    "Imagen",
                     "Boleta",
                     "Centro costo",
                     "Monto",
@@ -696,6 +729,7 @@ export default function ExpensesPage() {
                           {expense.phone}
                         </span>
                       </div>,
+                      <ReceiptThumbnail key="thumbnail" expense={expense} />,
                       <div key="document" className="min-w-[280px]">
                         <span className="block font-medium text-gray-900">
                           {expense.merchant || "Comercio sin identificar"}

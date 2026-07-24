@@ -3,14 +3,12 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
-  AlertTriangle,
   ArrowRight,
   Banknote,
   CheckCircle,
   ChevronDown,
   FileSearch,
   FolderOpen,
-  MessageSquare,
   XCircle,
 } from "lucide-react";
 
@@ -122,12 +120,8 @@ const severityLabel: Record<string, string> = {
 const dashboardStatLinks = {
   totalFondos: "/cases",
   totalRendido: "/expenses?review_status=approved",
-  totalPendienteRevision: "/expenses?review_status=pending_review",
-  totalSaldo: "/cases",
   rendicionesAbiertas: "/cases?status=open",
   rendicionesPendientes: "/cases?status=pending_user_confirmation",
-  docsPorRevisar: "/expenses?review_status=needs_manual_review",
-  conversaciones: "/conversations?state=active",
 };
 
 export default function DashboardPage() {
@@ -164,7 +158,7 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Primary stats */}
+        {/* Summary stats */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {data ? (
             <>
@@ -185,39 +179,6 @@ export default function DashboardPage() {
                   className="transition group-hover:border-emerald-300 group-hover:shadow-md"
                 />
               </Link>
-              <Link href={dashboardStatLinks.totalPendienteRevision} className="group block">
-                <StatCard
-                  label="Pendiente revisión"
-                  value={formatCLP(data.stats.total_pendiente_revision)}
-                  icon={FileSearch}
-                  tone={data.stats.total_pendiente_revision > 0 ? "warning" : "default"}
-                  className="transition group-hover:border-amber-300 group-hover:shadow-md"
-                />
-              </Link>
-              <Link href={dashboardStatLinks.totalSaldo} className="group block">
-                <StatCard
-                  label="Saldo total"
-                  value={formatCLP(data.stats.total_saldo)}
-                  icon={Banknote}
-                  tone={data.stats.total_saldo < 0 ? "error" : "default"}
-                  className="transition group-hover:border-primary-300 group-hover:shadow-md"
-                />
-              </Link>
-            </>
-          ) : (
-            <>
-              <StatCardSkeleton />
-              <StatCardSkeleton />
-              <StatCardSkeleton />
-              <StatCardSkeleton />
-            </>
-          )}
-        </div>
-
-        {/* Secondary stats */}
-        <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
-          {data ? (
-            <>
               <Link href={dashboardStatLinks.rendicionesAbiertas} className="group block">
                 <StatCard
                   label="Rendiciones abiertas"
@@ -235,23 +196,6 @@ export default function DashboardPage() {
                   className="transition group-hover:border-amber-300 group-hover:shadow-md"
                 />
               </Link>
-              <Link href={dashboardStatLinks.docsPorRevisar} className="group block">
-                <StatCard
-                  label="Docs por revisar"
-                  value={data.stats.docs_needs_review}
-                  icon={AlertTriangle}
-                  tone={data.stats.docs_needs_review > 0 ? "warning" : "default"}
-                  className="transition group-hover:border-orange-300 group-hover:shadow-md"
-                />
-              </Link>
-              <Link href={dashboardStatLinks.conversaciones} className="group block">
-                <StatCard
-                  label="Conversaciones"
-                  value={data.stats.active_conversations}
-                  icon={MessageSquare}
-                  className="transition group-hover:border-primary-300 group-hover:shadow-md"
-                />
-              </Link>
             </>
           ) : (
             <>
@@ -263,9 +207,9 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Chart + Rendiciones */}
-        <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-5">
-          <div className="xl:col-span-2">
+        {/* Rendiciones */}
+        <div className="mt-6 space-y-6">
+          <div>
             <SectionCard title="Estado de rendiciones">
               {data?.rendicion_status_distribution ? (
                 <DonutChart distribution={data.rendicion_status_distribution} />
@@ -277,33 +221,33 @@ export default function DashboardPage() {
             </SectionCard>
           </div>
 
-          <div className="xl:col-span-3">
-          <SectionCard
-            title="Rendiciones activas"
-            action={
-              <Link
-                href="/cases"
-                className="flex items-center gap-1 text-xs font-medium text-primary-600 transition hover:text-primary-700"
-              >
-                Ver todas <ArrowRight className="h-3 w-3" />
-              </Link>
-            }
-          >
-            {data ? (
-              <DataTable
-                columns={[
-                  "Rendición",
-                  "Empleado",
-                  "Fondos",
-                  "Aprobado",
-                  "Saldo",
-                  "Estado",
-                  "",
-                ]}
-                rows={(data.rendiciones || []).map((c) => [
-                  <span key="id" className="font-mono text-xs">
-                    {c.case_id}
-                  </span>,
+          <div>
+            <SectionCard
+              title="Rendiciones activas"
+              action={
+                <Link
+                  href="/cases"
+                  className="flex items-center gap-1 text-xs font-medium text-primary-600 transition hover:text-primary-700"
+                >
+                  Ver todas <ArrowRight className="h-3 w-3" />
+                </Link>
+              }
+            >
+              {data ? (
+                <DataTable
+                  columns={[
+                    "Rendición",
+                    "Empleado",
+                    "Fondos",
+                    "Aprobado",
+                    "Saldo",
+                    "Estado",
+                    "",
+                  ]}
+                  rows={(data.rendiciones || []).map((c) => [
+                    <span key="name" className="text-sm font-medium">
+                      {c.context_label || "Sin nombre"}
+                    </span>,
                   <span key="emp" className="text-sm">
                     {c.employee?.name || c.employee_phone || "-"}
                   </span>,
@@ -336,95 +280,10 @@ export default function DashboardPage() {
                   >
                     Ver
                   </Link>,
-                ])}
-              />
-            ) : (
-              <TableSkeleton columns={7} rows={4} />
-            )}
-          </SectionCard>
-          </div>
-        </div>
-
-        {/* Tables */}
-        <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-5">
-          <div className="xl:col-span-3">
-            <SectionCard
-              title="Últimos documentos"
-              action={
-                <Link
-                  href="/expenses"
-                  className="flex items-center gap-1 text-xs font-medium text-primary-600 transition hover:text-primary-700"
-                >
-                  Ver todos <ArrowRight className="h-3 w-3" />
-                </Link>
-              }
-            >
-              {data ? (
-                <DataTable
-                  columns={["Doc", "Empleado", "Merchant", "Monto", "Review", ""]}
-                  rows={(data.latest_expenses || []).map((expense) => [
-                    <span key="id" className="font-mono text-xs">
-                      {expense.expense_id}
-                    </span>,
-                    <span key="emp" className="text-sm">
-                      {expense.employee?.name || expense.phone}
-                    </span>,
-                    <span key="merchant" className="text-sm">
-                      {expense.merchant || "-"}
-                    </span>,
-                    <span key="amount" className="text-sm font-medium">
-                      {`${expense.currency || ""} ${expense.total || "-"}`}
-                    </span>,
-                    <Badge key="status">
-                      {expense.review_status || expense.status || "-"}
-                    </Badge>,
-                    <Link
-                      className="text-sm font-medium text-primary-600 transition hover:text-primary-700"
-                      href={`/expenses/${expense.expense_id}`}
-                      key="view"
-                    >
-                      Ver
-                    </Link>,
                   ])}
                 />
               ) : (
-                <TableSkeleton columns={6} rows={4} />
-              )}
-            </SectionCard>
-          </div>
-
-          <div className="xl:col-span-2">
-            <SectionCard
-              title="Conversaciones recientes"
-              action={
-                <Link
-                  href="/conversations"
-                  className="flex items-center gap-1 text-xs font-medium text-primary-600 transition hover:text-primary-700"
-                >
-                  Ver todas <ArrowRight className="h-3 w-3" />
-                </Link>
-              }
-            >
-              {data ? (
-                <DataTable
-                  columns={["Persona", "Estado", "Paso", ""]}
-                  rows={(data.latest_conversations || []).map(
-                    (conversation) => [
-                      conversation.employee?.name || conversation.phone,
-                      <Badge key="state">{conversation.state}</Badge>,
-                      conversation.current_step || "-",
-                      <Link
-                        className="text-sm font-medium text-primary-600 transition hover:text-primary-700"
-                        href={`/conversations/${encodeURIComponent(conversation.phone)}`}
-                        key="detail"
-                      >
-                        Ver
-                      </Link>,
-                    ],
-                  )}
-                />
-              ) : (
-                <TableSkeleton columns={4} rows={4} />
+                <TableSkeleton columns={7} rows={4} />
               )}
             </SectionCard>
           </div>

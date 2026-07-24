@@ -1515,20 +1515,21 @@ def list_expenses(
     sort_by: str = Query(default=""),
     user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
+    expenses = _get_container(request).backoffice.list_expenses(
+        {
+            "status": status_value,
+            "review_status": review_status,
+            "employee_phone": employee_phone,
+            "category": category,
+            "cost_center": cost_center,
+            "date_from": date_from,
+            "date_to": date_to,
+            "sort_by": sort_by,
+        },
+        user,
+    )
     return {
-        "items": _get_container(request).backoffice.list_expenses(
-            {
-                "status": status_value,
-                "review_status": review_status,
-                "employee_phone": employee_phone,
-                "category": category,
-                "cost_center": cost_center,
-                "date_from": date_from,
-                "date_to": date_to,
-                "sort_by": sort_by,
-            },
-            user,
-        )
+        "items": [_attach_expense_receipt_urls(request, expense) for expense in expenses]
     }
 
 
