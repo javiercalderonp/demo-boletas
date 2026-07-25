@@ -21,12 +21,12 @@ from app.logging_config import configure_logging, request_id_context
 from services.consolidated_document_service import ConsolidatedDocumentService
 from services.conversation_service import (
     CATEGORY_OPTIONS,
-    CORRECTION_FIELD_LABELS,
-    CORRECTION_FIELD_OPTIONS,
     COUNTRY_OPTIONS,
     CURRENCY_OPTIONS,
     DOCUMENT_TYPE_OPTIONS,
     ConversationService,
+    get_correction_field_label,
+    get_correction_field_options,
 )
 from services.backoffice_auth_service import BackofficeAuthService
 from services.backoffice_service import BackofficeService
@@ -2084,11 +2084,15 @@ def _build_interactive_prompt(
         }
 
     if state == "CONFIRM_SUMMARY" and current_step == "select_correction_field":
+        draft = context.get("draft_expense", {}) if isinstance(context, dict) else {}
         return {
             "body": "¿Qué campo quieres corregir?",
             "choices": [
-                {"id": option_id, "title": _label_for_correction_field(field_name)}
-                for option_id, field_name in CORRECTION_FIELD_OPTIONS.items()
+                {
+                    "id": option_id,
+                    "title": get_correction_field_label(field_name, draft),
+                }
+                for option_id, field_name in get_correction_field_options(draft).items()
             ],
         }
 
@@ -2190,11 +2194,6 @@ def _normalize_cost_center_choices(raw_value: Any) -> list[str]:
         seen.add(key)
         centers.append(center)
     return centers
-
-
-def _label_for_correction_field(field_name: str) -> str:
-    label = CORRECTION_FIELD_LABELS.get(field_name, field_name)
-    return label[:1].upper() + label[1:]
 
 
 def _merge_dicts_preserving_existing(base_value: dict[str, Any], new_value: dict[str, Any]) -> dict[str, Any]:

@@ -370,6 +370,11 @@
 
 ### Completado
 
+- [x] **Campos dinámicos en el flujo de corrección de comprobantes**
+  - El menú de edición ahora refleja los campos mostrados en el resumen según el tipo de documento
+  - Las boletas de honorarios permiten corregir emisor, fecha, folio, RUT emisor/receptor y montos líquido/bruto
+  - Las correcciones manuales de montos no son sobrescritas nuevamente por la extracción OCR
+
 - [x] **Cierre contable mensual — backend MVP**
   - Preview mensual autoritativa con filtros, agregaciones monetarias con `Decimal` y validación de scope por empresa
   - Informe PDF ReportLab, XLSX contable, CSV UTF-8 BOM y ZIP con comprobantes, consolidados y `manifest.json`

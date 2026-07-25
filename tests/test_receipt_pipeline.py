@@ -11,6 +11,7 @@ os.environ["GCS_BUCKET_NAME"] = ""
 
 from app.main import (
     _build_initial_wait_receipt_reply,
+    _build_interactive_prompt,
     _debounced_send_receipt_batch_notice,
     _extract_media_entries,
     _is_duplicate_inbound_message,
@@ -29,7 +30,7 @@ from app.main import (
     _sync_manual_cost_center_to_case,
 )
 from app.config import Settings
-from services.conversation_service import ConversationService
+from services.conversation_service import ConversationService, get_correction_field_options
 from services.expense_service import ExpenseService
 from services.llm_service import LLMService
 from services.ocr_service import OCRService
@@ -1007,6 +1008,82 @@ class ReceiptPipelineTests(unittest.TestCase):
 
         self.assertEqual(result["state"], "CONFIRM_SUMMARY")
         self.assertEqual(result["context_json"]["draft_expense"]["currency"], "EUR")
+
+    def test_professional_fee_receipt_correction_fields_match_summary(self):
+        draft = {
+            "document_type": "professional_fee_receipt",
+            "merchant": "LUZ FILMS LIMITADA",
+            "date": "2024-05-12",
+            "invoice_number": "1254",
+            "issuer_tax_id": "76.543.210-8",
+            "receiver_tax_id": "77.123.456-1",
+            "net_amount": 1200000,
+            "gross_amount": 1200000,
+            "currency": "CLP",
+        }
+
+        options = get_correction_field_options(draft)
+        prompt = _build_interactive_prompt(
+            state="CONFIRM_SUMMARY",
+            current_step="select_correction_field",
+            response_text="",
+            context={"draft_expense": draft},
+        )
+
+        self.assertEqual(
+            list(options.values()),
+            [
+                "merchant",
+                "date",
+                "invoice_number",
+                "issuer_tax_id",
+                "receiver_tax_id",
+                "net_amount",
+                "gross_amount",
+            ],
+        )
+        self.assertEqual(
+            [choice["title"] for choice in prompt["choices"]],
+            [
+                "Emisor",
+                "Fecha",
+                "Folio",
+                "RUT emisor",
+                "RUT receptor",
+                "Monto líquido",
+                "Monto bruto",
+            ],
+        )
+
+    def test_professional_fee_receipt_manual_net_correction_is_not_overwritten_by_ocr(self):
+        service = ConversationService(expense_service=ExpenseService(None, None))
+        conversation = {
+            "state": "NEEDS_INFO",
+            "current_step": "net_amount",
+            "context_json": {
+                "draft_expense": {
+                    "document_type": "professional_fee_receipt",
+                    "merchant": "LUZ FILMS LIMITADA",
+                    "date": "2024-05-12",
+                    "invoice_number": "1254",
+                    "net_amount": 1200000,
+                    "gross_amount": 1400000,
+                    "currency": "CLP",
+                    "country": "Chile",
+                    "ocr_text": "Monto bruto 1.400.000 Monto líquido 1.200.000",
+                },
+                "missing_fields": ["net_amount"],
+                "last_question": "net_amount",
+                "correction_field": "net_amount",
+            },
+        }
+
+        result = service.handle_text_message(conversation, "1100000")
+
+        self.assertEqual(
+            result["context_json"]["draft_expense"]["net_amount"],
+            1100000,
+        )
 
     def test_expense_service_normalizes_invalid_euro_currency(self):
         service = ExpenseService(sheets_service=None, llm_service=None)

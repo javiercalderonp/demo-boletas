@@ -22,6 +22,11 @@ FIELD_PROMPTS = {
     "currency": "¿Cuál es la moneda?\n1. CLP\n2. USD\n3. PEN\n4. CNY\n5. EUR",
     "category": "¿Cuál es la categoría?\n1. Meals\n2. Transport\n3. Lodging\n4. Other",
     "country": "¿En qué país fue el gasto?\n1. Chile\n2. Peru\n3. China\n4. Otro (escribir texto)",
+    "invoice_number": "¿Cuál es el folio?",
+    "issuer_tax_id": "¿Cuál es el RUT/ID del emisor?",
+    "receiver_tax_id": "¿Cuál es el RUT/ID del receptor?",
+    "net_amount": "¿Cuál es el monto líquido? (solo número)",
+    "gross_amount": "¿Cuál es el monto bruto? (solo número)",
 }
 
 FIELD_PROMPTS_BY_LANGUAGE = {
@@ -101,6 +106,18 @@ CORRECTION_FIELD_ALIASES = {
     "total": "total",
     "monto": "total",
     "importe": "total",
+    "emisor": "merchant",
+    "folio": "invoice_number",
+    "rut emisor": "issuer_tax_id",
+    "rut del emisor": "issuer_tax_id",
+    "rut receptor": "receiver_tax_id",
+    "rut del receptor": "receiver_tax_id",
+    "monto liquido": "net_amount",
+    "monto líquido": "net_amount",
+    "liquido": "net_amount",
+    "líquido": "net_amount",
+    "monto bruto": "gross_amount",
+    "bruto": "gross_amount",
     "moneda": "currency",
     "currency": "currency",
     "categoria": "category",
@@ -117,7 +134,68 @@ CORRECTION_FIELD_LABELS = {
     "currency": "moneda",
     "category": "categoría",
     "country": "país",
+    "invoice_number": "folio",
+    "issuer_tax_id": "RUT emisor",
+    "receiver_tax_id": "RUT receptor",
+    "net_amount": "monto líquido",
+    "gross_amount": "monto bruto",
 }
+
+CORRECTION_FIELDS_BY_DOCUMENT_TYPE = {
+    "receipt": ("merchant", "date", "total", "currency", "category", "country"),
+    "invoice": (
+        "merchant",
+        "date",
+        "invoice_number",
+        "total",
+        "currency",
+        "category",
+        "country",
+        "issuer_tax_id",
+        "receiver_tax_id",
+    ),
+    "professional_fee_receipt": (
+        "merchant",
+        "date",
+        "invoice_number",
+        "issuer_tax_id",
+        "receiver_tax_id",
+        "net_amount",
+        "gross_amount",
+    ),
+}
+
+
+def get_correction_field_options(draft: dict[str, Any]) -> dict[str, str]:
+    """Return fields in the same order and presence as the document summary."""
+    document_type = str(draft.get("document_type", "") or "").strip()
+    fields = CORRECTION_FIELDS_BY_DOCUMENT_TYPE.get(document_type)
+    if not fields:
+        fields = tuple(CORRECTION_FIELD_OPTIONS.values())
+
+    optional_summary_fields = {
+        "receipt": {"payment_method"},
+        "invoice": {"issuer_tax_id", "receiver_tax_id"},
+        "professional_fee_receipt": {"issuer_tax_id", "receiver_tax_id", "gross_amount"},
+    }.get(document_type, set())
+    visible_fields = [
+        field
+        for field in fields
+        if field not in optional_summary_fields or draft.get(field) not in (None, "")
+    ]
+    return {str(index): field for index, field in enumerate(visible_fields, start=1)}
+
+
+def get_correction_field_label(field_name: str, draft: dict[str, Any]) -> str:
+    document_type = str(draft.get("document_type", "") or "").strip()
+    if field_name == "merchant":
+        return {
+            "receipt": "Comercio",
+            "invoice": "Proveedor",
+            "professional_fee_receipt": "Emisor",
+        }.get(document_type, "Merchant")
+    label = CORRECTION_FIELD_LABELS.get(field_name, field_name)
+    return label[:1].upper() + label[1:]
 
 
 @dataclass
@@ -457,6 +535,10 @@ class ConversationService:
             }
 
         draft[current_field] = parsed_value
+        if context.get("correction_field") == current_field:
+            manually_corrected = set(draft.get("_manually_corrected_fields", []))
+            manually_corrected.add(current_field)
+            draft["_manually_corrected_fields"] = sorted(manually_corrected)
         if current_field == "country":
             inferred_currency = self.expense_service.infer_currency_from_country(parsed_value)
             if inferred_currency:
@@ -505,7 +587,7 @@ class ConversationService:
         draft = dict(context.get("draft_expense", {}))
 
         if current_step == "select_correction_field":
-            selected_field = self._parse_correction_field_choice(message)
+            selected_field = self._parse_correction_field_choice(message, draft)
             if selected_field:
                 return self._to_needs_info_for_field(draft, selected_field)
             return {
@@ -516,9 +598,9 @@ class ConversationService:
                     "missing_fields": [],
                     "last_question": None,
                 },
-                "reply": (
-                    "No entendí qué campo quieres corregir.\n"
-                    f"{self._build_correction_field_prompt()}"
+                    "reply": (
+                        "No entendí qué campo quieres corregir.\n"
+                        f"{self._build_correction_field_prompt(draft)}"
                 ),
                 "action": "noop",
             }
@@ -626,7 +708,7 @@ class ConversationService:
                     "missing_fields": [],
                     "last_question": None,
                 },
-                "reply": self._build_correction_field_prompt(),
+                "reply": self._build_correction_field_prompt(draft),
                 "action": "noop",
             }
 
@@ -889,29 +971,32 @@ class ConversationService:
             if text.lower() in {"4", "otro", "other_country"}:
                 return OTHER_COUNTRY_SENTINEL
             return COUNTRY_OPTIONS.get(text) or text
-        if field_name == "total":
+        if field_name in {"total", "net_amount", "gross_amount"}:
             try:
                 return float(text.replace(",", "."))
             except ValueError:
                 return None
         return text
 
-    def _build_correction_field_prompt(self) -> str:
-        return (
-            "¿Qué campo quieres corregir?\n"
-            "1. Merchant\n"
-            "2. Fecha\n"
-            "3. Total\n"
-            "4. Moneda\n"
-            "5. Categoría\n"
-            "6. País"
-        )
+    def _build_correction_field_prompt(self, draft: dict[str, Any]) -> str:
+        options = get_correction_field_options(draft)
+        option_lines = [
+            f"{option_id}. {get_correction_field_label(field_name, draft)}"
+            for option_id, field_name in options.items()
+        ]
+        return "\n".join(["¿Qué campo quieres corregir?", *option_lines])
 
-    def _parse_correction_field_choice(self, message: str) -> str | None:
+    def _parse_correction_field_choice(
+        self,
+        message: str,
+        draft: dict[str, Any],
+    ) -> str | None:
         text = (message or "").strip()
         if not text:
             return None
-        return CORRECTION_FIELD_OPTIONS.get(text) or CORRECTION_FIELD_ALIASES.get(text.lower())
+        options = get_correction_field_options(draft)
+        selected = options.get(text) or CORRECTION_FIELD_ALIASES.get(text.lower())
+        return selected if selected in options.values() else None
 
     def _to_needs_info_for_field(self, draft: dict[str, Any], field_name: str) -> dict[str, Any]:
         extra = ""
@@ -925,6 +1010,7 @@ class ConversationService:
                 "draft_expense": draft,
                 "missing_fields": [field_name],
                 "last_question": field_name,
+                "correction_field": field_name,
             },
             "reply": f"Vamos a corregir {field_label}.{extra}\n{self.prompt_for_field(field_name)}",
             "action": "noop",

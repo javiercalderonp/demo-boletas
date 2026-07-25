@@ -37,7 +37,7 @@ const emptyForm = {
   cost_centers: [] as string[],
   company_id: "",
   closure_method: "simple",
-  daily_reminders_enabled: true,
+  daily_reminders_enabled: false,
   status: "active",
   fondos_entregados: "",
   notes: "",
@@ -1125,27 +1125,6 @@ export default function CasesPage() {
                     ))}
                   </select>
                 </div>
-                <label className="flex items-start gap-3 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
-                  <input
-                    type="checkbox"
-                    checked={form.daily_reminders_enabled}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        daily_reminders_enabled: event.target.checked,
-                      }))
-                    }
-                    className="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                  />
-                  <span>
-                    <span className="block text-sm font-medium text-gray-900">
-                      Enviar recordatorios diarios
-                    </span>
-                    <span className="mt-0.5 block text-xs leading-5 text-gray-500">
-                      El bot preguntará al inicio y cierre del día por documentos pendientes.
-                    </span>
-                  </span>
-                </label>
                 {createEmployeeOpen && (
                   <div>
                     <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-4">
@@ -1313,6 +1292,27 @@ export default function CasesPage() {
                     className="block w-full resize-none rounded-lg border border-gray-300 px-3.5 py-2 text-sm text-gray-900 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
                   />
                 </div>
+                <label className="flex items-start gap-3 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={form.daily_reminders_enabled}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        daily_reminders_enabled: event.target.checked,
+                      }))
+                    }
+                    className="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium text-gray-900">
+                      Enviar recordatorios diarios
+                    </span>
+                    <span className="mt-0.5 block text-xs leading-5 text-gray-500">
+                      El bot preguntará al inicio y cierre del día por documentos pendientes.
+                    </span>
+                  </span>
+                </label>
                 </div>
                 <div className="grid shrink-0 grid-cols-2 gap-3 border-t border-gray-100 bg-white px-5 py-4 pb-[calc(1rem_+_env(safe-area-inset-bottom))] sm:flex sm:justify-end sm:pb-4">
                   <button

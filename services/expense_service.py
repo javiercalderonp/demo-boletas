@@ -315,6 +315,7 @@ class ExpenseService:
         net = parse_float(draft.get("net_amount"))
         withholding = parse_float(draft.get("withholding_amount"))
         rate = parse_float(draft.get("withholding_rate"))
+        manually_corrected = set(draft.get("_manually_corrected_fields", []))
 
         # Document AI's structured monetary entities are more reliable than
         # plain-text proximity when its layout output groups several labels
@@ -336,7 +337,7 @@ class ExpenseService:
                     "bruto",
                 ),
             )
-            if labeled_gross is not None:
+            if labeled_gross is not None and "gross_amount" not in manually_corrected:
                 gross = labeled_gross
             labeled_withholding = self._extract_amount_after_labels(
                 draft.get("ocr_text"),
@@ -361,7 +362,7 @@ class ExpenseService:
                     "líquido",
                 ),
             )
-            if labeled_net is not None:
+            if labeled_net is not None and "net_amount" not in manually_corrected:
                 net = labeled_net
         if rate is None:
             rate = self._extract_withholding_rate(draft.get("ocr_text"))
