@@ -4,6 +4,13 @@
 
 ### Completado — Deploy demo (Cloud Run backend + Vercel backoffice)
 
+- [x] **Ordenar documentos y recursos sueltos del repositorio**
+  - Documentación de planificación agrupada en `docs/planning/`
+  - Flujo funcional movido a `docs/workflows/`
+  - Imágenes fuente agrupadas en `assets/branding/`
+  - Residuos vacíos y copia duplicada del logo eliminados
+  - Referencias internas y exclusiones de despliegue actualizadas
+
 - [x] **Refactor ADC (ADC-first, file-path opcional)**
   - `services/sheets_service.py`, `services/storage_service.py` y `app/config.py` aceptan credenciales por defecto del entorno cuando `GOOGLE_APPLICATION_CREDENTIALS` está vacío
   - Preservada la ruta legacy con archivo JSON para seeding y desarrollo local
@@ -354,7 +361,7 @@
   - Migración de `Google Sheets` a base de datos real
   - Separación de worker asíncrono si OCR/PDF crecen en costo o latencia
   - CI/CD con build y deploy automáticos
-  - Siguiente etapa documentada como pendientes operativos/técnicos en `tasklist-produccion.md` y `docs/CLOUD_RUN_OPERATIONS.md`
+  - Siguiente etapa documentada como pendientes operativos/técnicos en `docs/planning/production-roadmap.md` y `docs/CLOUD_RUN_OPERATIONS.md`
   - Ambientes separados `dev` / `staging` / `prod`
   - Observabilidad más completa y auditoría
   - Gestión más robusta de usuarios/roles del backoffice
@@ -466,7 +473,7 @@
   - `liquidación financiera`: cálculo final de quién le debe a quién
   - `cierre total`: el caso quedó completamente liquidado y cerrado
   - Documentar el criterio de avance entre etapas y qué actor destraba cada una
-  - Implementado con `rendicion_status`, `closure_method`, `user_confirmation_status`, `settlement_*`, gates de transición y documentación en `rendicion-workflow.md`
+  - Implementado con `rendicion_status`, `closure_method`, `user_confirmation_status`, `settlement_*`, gates de transición y documentación en `docs/workflows/expense-submission.md`
 
 - [x] **Definir regla canónica de "documentos resueltos"**
   - La rendición no debe exigir que todas las boletas estén aprobadas; debe exigir que todas estén resueltas

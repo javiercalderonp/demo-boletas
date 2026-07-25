@@ -104,6 +104,15 @@ Notas:
 - `scripts/install_scheduler_cron.sh`: instala el job de recordatorios.
 - `scripts/backup_sqlite.py`: crea una copia timestamped de la base SQLite.
 
+## Documentación
+
+- `docs/ARCHITECTURE.md`: arquitectura técnica.
+- `docs/CLOUD_RUN_OPERATIONS.md`: despliegue y operación en Cloud Run.
+- `docs/CODE_REVIEW.md`: revisión técnica y prioridades.
+- `docs/workflows/expense-submission.md`: flujo funcional de rendición.
+- `docs/planning/task-list.md`: tareas del proyecto.
+- `docs/planning/production-roadmap.md`: pendientes para producción.
+
 ## Verificación
 
 Prueba ejecutada durante este refactor:

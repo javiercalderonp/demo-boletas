@@ -626,7 +626,11 @@ export default function EmployeesPage() {
                               >
                                 Ver gastos
                               </Link>
-                              <details className="relative">
+                              <details
+                                className="relative"
+                                onClick={(event) => event.stopPropagation()}
+                                onKeyDown={(event) => event.stopPropagation()}
+                              >
                                 <summary className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-full transition hover:bg-gray-200 [&::-webkit-details-marker]:hidden">
                                   <MoreHorizontal className="h-4 w-4 text-gray-500" />
                                 </summary>
@@ -701,7 +705,11 @@ export default function EmployeesPage() {
                       >
                         Ver gastos
                       </Link>
-                      <details className="relative">
+                      <details
+                        className="relative"
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => event.stopPropagation()}
+                      >
                         <summary className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-full text-gray-500 transition hover:bg-slate-100 hover:text-gray-700 [&::-webkit-details-marker]:hidden">
                           <MoreHorizontal className="h-4 w-4" />
                         </summary>

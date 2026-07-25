@@ -234,13 +234,13 @@ Recomendacion:
 
 - Cambiar a `datetime.now(timezone.utc)` y mantener salida ISO `Z`.
 
-### Bajo - Archivos residuales en la raiz
+### Resuelto - Archivos residuales en la raiz
 
-Hay archivos vacios sin rol aparente.
+Los archivos vacíos sin rol aparente fueron eliminados durante la reorganización del repositorio.
 
 Evidencia:
 
-- `S`, `next`, `expense-backoffice@0.1.0` existen y `file` los reporta como empty.
+- `S`, `next`, `expense-backoffice@0.1.0` eran archivos vacíos.
 
 Impacto:
 
@@ -248,7 +248,7 @@ Impacto:
 
 Recomendacion:
 
-- Confirmar si son residuos locales y eliminarlos o agregarlos a `.gitignore` si los genera alguna herramienta.
+- Resuelto: se eliminaron al no tener contenido ni referencias.
 
 ## Notas positivas
 

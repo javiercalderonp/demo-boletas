@@ -409,7 +409,9 @@ class ExpenseService:
         if not raw:
             return None
         for label in labels:
-            pattern = rf"{re.escape(label)}([^\n\r]{{0,80}})"
+            # Document AI often places a label and its value on adjacent lines
+            # when they belong to separate layout blocks.
+            pattern = rf"{re.escape(label)}([\s\S]{{0,80}})"
             match = re.search(pattern, raw, re.IGNORECASE)
             if match:
                 candidates = re.findall(r"([0-9][0-9\., ]+)\s*(%)?", match.group(1))

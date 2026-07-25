@@ -425,7 +425,19 @@ export default function CasesPage() {
           token,
         });
       } else {
-        await apiRequest("/cases", { method: "POST", body: payload, token });
+        const created = await apiRequest<CaseItem>("/cases", {
+          method: "POST",
+          body: payload,
+          token,
+        });
+        if (created.intro_notification?.status !== "sent") {
+          const detail = created.intro_notification?.error?.trim();
+          setError(
+            `La rendición fue creada, pero no se pudo enviar el WhatsApp.${
+              detail ? ` Detalle: ${detail}` : ""
+            }`,
+          );
+        }
       }
       setForm(emptyForm);
       setCostCenterDraft("");

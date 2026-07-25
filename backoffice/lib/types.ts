@@ -87,6 +87,12 @@ export type CaseItem = {
   notes?: string;
   employee?: Employee;
   expense_count?: number;
+  intro_notification?: {
+    status?: "sent" | "send_failed" | "conversation_reset_failed" | string;
+    error?: string;
+    template_name?: string;
+    message_count?: number;
+  };
 };
 
 export type Expense = {
@@ -114,6 +120,7 @@ export type Expense = {
   review_breakdown?: Record<string, number>;
   review_flags?: string[];
   primary_review_reason?: string;
+  review_reason?: string;
   document_type?: string;
   invoice_number?: string;
   tax_amount?: number | string;

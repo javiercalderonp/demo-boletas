@@ -396,6 +396,50 @@ class WhatsAppService:
                     )
         return [event for event in events if event.get("phone")]
 
+    def parse_meta_webhook_statuses(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        statuses: list[dict[str, Any]] = []
+        for entry in payload.get("entry", []) or []:
+            if not isinstance(entry, dict):
+                continue
+            for change in entry.get("changes", []) or []:
+                if not isinstance(change, dict):
+                    continue
+                value = change.get("value", {})
+                if not isinstance(value, dict):
+                    continue
+                for raw_status in value.get("statuses", []) or []:
+                    if not isinstance(raw_status, dict):
+                        continue
+                    errors = raw_status.get("errors", []) or []
+                    first_error = errors[0] if errors and isinstance(errors[0], dict) else {}
+                    error_data = (
+                        first_error.get("error_data", {})
+                        if isinstance(first_error.get("error_data"), dict)
+                        else {}
+                    )
+                    statuses.append(
+                        {
+                            "message_id": str(raw_status.get("id") or "").strip(),
+                            "phone": str(raw_status.get("recipient_id") or "").strip(),
+                            "status": str(raw_status.get("status") or "").strip().lower(),
+                            "timestamp": str(raw_status.get("timestamp") or "").strip(),
+                            "conversation_id": str(
+                                (raw_status.get("conversation") or {}).get("id") or ""
+                            ).strip()
+                            if isinstance(raw_status.get("conversation"), dict)
+                            else "",
+                            "error_code": first_error.get("code"),
+                            "error_title": str(first_error.get("title") or "").strip(),
+                            "error_message": str(first_error.get("message") or "").strip(),
+                            "error_details": str(error_data.get("details") or "").strip(),
+                        }
+                    )
+        return [
+            status
+            for status in statuses
+            if status.get("message_id") and status.get("status")
+        ]
+
     def get_meta_media_url(self, media_id: str) -> tuple[str, str]:
         if self.provider != "meta":
             raise RuntimeError("Resolución de media Meta no disponible con proveedor actual.")

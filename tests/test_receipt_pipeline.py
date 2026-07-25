@@ -1188,6 +1188,48 @@ class ReceiptPipelineTests(unittest.TestCase):
         self.assertEqual(events[0]["media_entries"][0]["filename"], "factura.pdf")
         self.assertEqual(events[0]["media_entries"][0]["message_type"], "document")
 
+    def test_meta_delivery_failure_status_is_parsed_with_error_details(self):
+        service = WhatsAppService(settings=Settings())
+        payload = {
+            "entry": [
+                {
+                    "changes": [
+                        {
+                            "value": {
+                                "statuses": [
+                                    {
+                                        "id": "wamid.template",
+                                        "recipient_id": "56911111111",
+                                        "status": "failed",
+                                        "timestamp": "1753398883",
+                                        "errors": [
+                                            {
+                                                "code": 131049,
+                                                "title": "Message not delivered",
+                                                "message": "Message not delivered",
+                                                "error_data": {
+                                                    "details": "Meta chose not to deliver this marketing message."
+                                                },
+                                            }
+                                        ],
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+        statuses = service.parse_meta_webhook_statuses(payload)
+
+        self.assertEqual(len(statuses), 1)
+        self.assertEqual(statuses[0]["message_id"], "wamid.template")
+        self.assertEqual(statuses[0]["phone"], "56911111111")
+        self.assertEqual(statuses[0]["status"], "failed")
+        self.assertEqual(statuses[0]["error_code"], 131049)
+        self.assertIn("marketing", statuses[0]["error_details"])
+
     def test_meta_signature_validation_accepts_valid_sha256_signature(self):
         body = b'{"object":"whatsapp_business_account"}'
         app_secret = "test-app-secret"

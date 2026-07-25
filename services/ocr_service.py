@@ -793,7 +793,9 @@ class OCRService:
             ),
         }
         for label in label_map.get(target, ()):
-            pattern = rf"{re.escape(label)}([^\n\r]{{0,80}})"
+            # Labels and values can be emitted on adjacent lines by Document AI
+            # even when they appear on the same visual row.
+            pattern = rf"{re.escape(label)}([\s\S]{{0,80}})"
             match = re.search(pattern, text or "", flags=re.IGNORECASE)
             if match:
                 candidates = re.findall(r"([0-9][0-9\., ]+)\s*(%)?", match.group(1))

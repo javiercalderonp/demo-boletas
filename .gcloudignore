@@ -18,9 +18,8 @@ logs
 viaticos-*.json
 service-account*.json
 *.log
-rendicion-workflow.md
-backoffice.md
-task-list.md
+docs/workflows/expense-submission.md
+docs/planning/task-list.md
 CLAUDE.md
 README.md
-ChatGPT*.png
+assets/branding/concept-original.png

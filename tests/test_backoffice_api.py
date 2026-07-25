@@ -909,18 +909,26 @@ class BackofficeApiTests(unittest.TestCase):
         self.assertEqual(context["message_log"][0]["id"], "old-msg")
         self.assertEqual(
             context["message_log"][1]["text"],
-            "Plantilla WhatsApp enviada: inicio_rendicion (es_CL)",
+            "Plantilla WhatsApp enviada: inicio_rendicion_detalle (es_CL)",
         )
-        self.assertEqual(context["message_log"][1]["template_name"], "inicio_rendicion")
-        self.assertEqual(context["message_log"][1]["template_parameters"], ["Usuario", "CASE-NEW"])
+        self.assertEqual(context["message_log"][1]["template_name"], "inicio_rendicion_detalle")
+        self.assertEqual(
+            context["message_log"][1]["template_parameters"],
+            ["Usuario", "CASE-NEW", "Sin presupuesto definido", "Sin centros de costo definidos"],
+        )
         self.assertEqual(
             container.whatsapp.sent_templates,
             [
                 {
                     "phone": "+56911111111",
-                    "template_name": "inicio_rendicion",
+                    "template_name": "inicio_rendicion_detalle",
                     "language_code": "es_CL",
-                    "body_parameters": ["Usuario", "CASE-NEW"],
+                    "body_parameters": [
+                        "Usuario",
+                        "CASE-NEW",
+                        "Sin presupuesto definido",
+                        "Sin centros de costo definidos",
+                    ],
                 }
             ],
         )

@@ -1664,7 +1664,34 @@ async def _handle_meta_webhook(
         )
 
     events = container.whatsapp.parse_meta_webhook_messages(payload)
-    logger.warning("Meta webhook parsed events=%d", len(events))
+    statuses = container.whatsapp.parse_meta_webhook_statuses(payload)
+    logger.warning(
+        "Meta webhook parsed events=%d statuses=%d",
+        len(events),
+        len(statuses),
+    )
+    for delivery in statuses:
+        phone = normalize_whatsapp_phone(delivery.get("phone"))
+        message_id = str(delivery.get("message_id") or "").strip()
+        delivery_status = str(delivery.get("status") or "").strip()
+        error_code = delivery.get("error_code")
+        error_details = str(
+            delivery.get("error_details")
+            or delivery.get("error_message")
+            or delivery.get("error_title")
+            or ""
+        ).strip()
+        log_method = logger.error if delivery_status == "failed" else logger.info
+        log_method(
+            "Meta delivery status phone=%s message_id=%s status=%s error_code=%s error=%s",
+            phone or None,
+            message_id or None,
+            delivery_status or None,
+            error_code,
+            error_details or None,
+        )
+        if phone:
+            _record_meta_delivery_status(container, phone, delivery)
     for event in events:
         phone = normalize_whatsapp_phone(event.get("phone"))
         body = str(event.get("body") or "").strip()
@@ -1813,10 +1840,60 @@ async def _handle_meta_webhook(
             await _run_media_processing_during_request(container, phone, next_payload)
 
     return Response(
-        content=json.dumps({"processed": len(events)}),
+        content=json.dumps({"processed": len(events), "statuses": len(statuses)}),
         media_type="application/json",
         status_code=200,
         background=background_tasks,
+    )
+
+
+def _record_meta_delivery_status(
+    container: ServiceContainer,
+    phone: str,
+    delivery: dict[str, Any],
+) -> None:
+    conversation = container.conversation.ensure_conversation(
+        container.sheets.get_conversation(phone)
+    )
+    context = conversation.get("context_json", {})
+    if not isinstance(context, dict):
+        context = {}
+    message_log = context.get("message_log", [])
+    if not isinstance(message_log, list):
+        return
+
+    message_id = str(delivery.get("message_id") or "").strip()
+    updated = False
+    next_log: list[Any] = []
+    for item in message_log:
+        if not isinstance(item, dict) or str(item.get("provider_message_id") or "").strip() != message_id:
+            next_log.append(item)
+            continue
+        next_item = dict(item)
+        next_item["delivery_status"] = str(delivery.get("status") or "").strip()
+        next_item["delivery_updated_at"] = utc_now_iso()
+        if delivery.get("error_code") is not None:
+            next_item["delivery_error_code"] = delivery.get("error_code")
+        error_detail = str(
+            delivery.get("error_details")
+            or delivery.get("error_message")
+            or delivery.get("error_title")
+            or ""
+        ).strip()
+        if error_detail:
+            next_item["delivery_error"] = error_detail
+        next_log.append(next_item)
+        updated = True
+
+    if not updated:
+        return
+    container.sheets.update_conversation(
+        phone,
+        {
+            "state": conversation.get("state", "WAIT_RECEIPT"),
+            "current_step": conversation.get("current_step", ""),
+            "context_json": {**context, "message_log": next_log},
+        },
     )
 
 

@@ -107,7 +107,7 @@ REVIEW_PRIORITY_ORDER: dict[str, int] = {
     ExpenseReviewStatus.REJECTED: 5,
 }
 
-# Canonical mapping defined in rendicion-workflow.md. We are not persisting
+# Canonical mapping defined in docs/workflows/expense-submission.md. We are not persisting
 # these values yet; this is a helper layer to bridge the current model.
 CANONICAL_DOCUMENT_STATUS_BY_CURRENT: dict[str, str] = {
     ExpenseStatus.PENDING_APPROVAL: "pending_submission_review",

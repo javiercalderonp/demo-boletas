@@ -583,28 +583,23 @@ def _build_case_intro_template_payload(container: Any, phone: str, expense_case:
     case_label = str(expense_case.get("context_label", "") or "").strip()
     case_reference = case_label or str(expense_case.get("case_id", "") or "").strip() or "tu rendición"
     cost_centers = normalize_cost_centers(expense_case.get("cost_centers", []))
-    if cost_centers:
-        budget = (
-            expense_case.get("fondos_entregados")
-            or expense_case.get("policy_limit")
-            or expense_case.get("budget")
-        )
-        return {
-            "template_name": "inicio_rendicion_detalle",
-            "language_code": "es_CL",
-            "body_parameters": [
-                _truncate_template_parameter(employee_name),
-                _truncate_template_parameter(case_reference),
-                _truncate_template_parameter(_format_template_clp(budget)),
-                _truncate_template_parameter(", ".join(cost_centers)),
-            ],
-        }
+    budget = (
+        expense_case.get("fondos_entregados")
+        or expense_case.get("policy_limit")
+        or expense_case.get("budget")
+    )
     return {
-        "template_name": "inicio_rendicion",
+        # This approved UTILITY template is used for every new case. The former
+        # simple template is categorized as MARKETING by Meta and is therefore
+        # subject to marketing delivery limits even though this is a
+        # transactional notification.
+        "template_name": "inicio_rendicion_detalle",
         "language_code": "es_CL",
         "body_parameters": [
             _truncate_template_parameter(employee_name),
             _truncate_template_parameter(case_reference),
+            _truncate_template_parameter(_format_template_clp(budget)),
+            _truncate_template_parameter(", ".join(cost_centers) or "Sin centros de costo definidos"),
         ],
     }
 
@@ -871,6 +866,10 @@ def get_employee(
     detail = _get_container(request).backoffice.get_employee_detail(phone, user)
     if not detail:
         raise HTTPException(status_code=404, detail="Employee not found")
+    detail["expenses"] = [
+        _attach_expense_receipt_urls(request, expense)
+        for expense in detail.get("expenses", [])
+    ]
     return detail
 
 

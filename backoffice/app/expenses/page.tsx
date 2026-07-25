@@ -134,6 +134,7 @@ function renderSecondaryExpenseAction({
     <button
       className="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-red-600 transition hover:bg-red-50"
       onClick={(event) => {
+        event.stopPropagation();
         (event.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open");
         onClick();
       }}
@@ -646,7 +647,11 @@ export default function ExpensesPage() {
                               </button>
                             )}
                             {canReject && (
-                              <details className="relative">
+                              <details
+                                className="relative"
+                                onClick={(event) => event.stopPropagation()}
+                                onKeyDown={(event) => event.stopPropagation()}
+                              >
                                 <summary className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-full transition hover:bg-gray-200 [&::-webkit-details-marker]:hidden">
                                   <Ellipsis className="h-4 w-4 text-gray-500" />
                                 </summary>
@@ -754,7 +759,11 @@ export default function ExpensesPage() {
                             </button>
                           )}
                           {canReject && (
-                            <details className="relative">
+                            <details
+                              className="relative"
+                              onClick={(event) => event.stopPropagation()}
+                              onKeyDown={(event) => event.stopPropagation()}
+                            >
                               <summary className="flex h-8 w-8 cursor-pointer list-none items-center justify-center rounded-md border border-gray-300 bg-white text-gray-600 transition hover:bg-gray-50 [&::-webkit-details-marker]:hidden">
                                 <Ellipsis className="h-4 w-4" />
                               </summary>
