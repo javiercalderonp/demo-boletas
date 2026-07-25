@@ -33,6 +33,7 @@ from services.backoffice_service import BackofficeService
 from services.docusign_service import DocusignError, DocusignService
 from services.expense_service import ExpenseService
 from services.llm_service import LLMService
+from services.monthly_accounting_export_service import MonthlyAccountingExportService
 from services.ocr_service import OCRService
 from services.scheduler_service import SchedulerService
 from services.sheets_service import SheetsService, normalize_cost_centers
@@ -161,6 +162,7 @@ class ServiceContainer:
     conversation: ConversationService
     whatsapp: WhatsAppService
     scheduler: SchedulerService
+    monthly_accounting_export: MonthlyAccountingExportService
 
 
 def create_app() -> FastAPI:
@@ -255,6 +257,10 @@ def create_app() -> FastAPI:
             whatsapp_service=whatsapp_service,
             consolidated_document_service=consolidated_document_service,
             docusign_service=docusign_service,
+        ),
+        monthly_accounting_export=MonthlyAccountingExportService(
+            sheets_service=sheets_service,
+            storage_service=storage_service,
         ),
     )
     app.state.services = container
@@ -959,12 +965,6 @@ def _handle_media_message(container: ServiceContainer, phone: str, payload: dict
     )
 
     if not expense_case:
-        review_draft = container.expense.enrich_draft_expense(ocr_data)
-        review_expense = container.expense.create_expense_for_review(
-            phone=phone,
-            draft_expense=review_draft,
-            review_reason="no_active_case",
-        )
         container.sheets.update_conversation(
             phone,
             {
@@ -979,18 +979,10 @@ def _handle_media_message(container: ServiceContainer, phone: str, payload: dict
             },
         )
         logger.info(
-            "Receipt routed to backoffice review phone=%s expense_id=%s review_reason=%s",
+            "Receipt rejected because there is no active expense case phone=%s",
             phone,
-            review_expense.get("expense_id"),
-            review_expense.get("review_reason"),
         )
-        review_reply = (
-            "No encontré un caso activo asociado a tu usuario. "
-            "Un operador deberá revisarlo."
-        )
-        if ocr_warning:
-            review_reply = f"{ocr_warning}\n\n{review_reply}"
-        return review_reply
+        return "No tienes una rendición creada."
 
     transition_started_at = time.perf_counter()
     transition = container.conversation.process_ocr_result(phone, ocr_data, expense_case)

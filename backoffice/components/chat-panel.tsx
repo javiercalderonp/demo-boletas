@@ -10,6 +10,21 @@ import { apiRequest } from "@/lib/api";
 import { useAutoRefresh } from "@/lib/use-auto-refresh";
 import type { CaseItem, Conversation, ConversationMessage, Employee } from "@/lib/types";
 
+const conversationStateLabels: Record<string, string> = {
+  WAIT_RECEIPT: "Esperando comprobante",
+  PROCESSING: "Procesando documento",
+  NEEDS_INFO: "Esperando información adicional",
+  CONFIRM_SUMMARY: "Esperando confirmación",
+  DONE: "Caso finalizado",
+  active: "Activa",
+};
+
+function formatConversationState(value?: string) {
+  if (!value) return "Sin estado";
+  return conversationStateLabels[value] ??
+    value.replace(/_/g, " ").toLowerCase().replace(/^\w/, (letter) => letter.toUpperCase());
+}
+
 function formatDateTime(value?: string) {
   if (!value) return "Sin fecha";
   const date = new Date(value);
@@ -167,7 +182,7 @@ export function ChatPanel({
       action={
         <div className="flex items-center gap-2">
           <span className="hidden text-xs text-gray-400 sm:inline">{messageCountLabel}</span>
-          <Badge>{conversation.state}</Badge>
+          <Badge tone={conversation.state}>{formatConversationState(conversation.state)}</Badge>
           <button
             aria-expanded={isExpanded}
             className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1 text-xs font-medium text-gray-600 transition hover:bg-gray-50"

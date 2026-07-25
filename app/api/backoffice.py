@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, s
 from fastapi.responses import StreamingResponse
 
 from app.schemas.backoffice import (
+    AccountingExportPayload,
     BackofficeUserPayload,
     CasePayload,
     CaseChatPayload,
@@ -835,6 +836,110 @@ def list_companies(
     user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
     return {"items": _get_container(request).backoffice.list_companies(user)}
+
+
+@router.get("/accounting-exports/preview")
+def preview_accounting_export(
+    request: Request,
+    company_id: str = Query(min_length=1),
+    year: int = Query(ge=2000, le=2100),
+    month: int = Query(ge=1, le=12),
+    cost_center: str = Query(default=""),
+    case_status: str = Query(default=""),
+    expense_status: str = Query(default=""),
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    try:
+        return _get_container(request).monthly_accounting_export.preview(
+            user=user,
+            company_id=company_id,
+            year=year,
+            month=month,
+            cost_center=cost_center,
+            case_status=case_status,
+            expense_status=expense_status,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.get("/accounting-exports")
+def list_accounting_exports(
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    return {"items": _get_container(request).monthly_accounting_export.list_for_user(user)}
+
+
+@router.post("/accounting-exports", status_code=status.HTTP_201_CREATED)
+def create_accounting_export(
+    payload: AccountingExportPayload,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    try:
+        result = _get_container(request).monthly_accounting_export.generate(
+            user=user, **payload.model_dump()
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    _audit_backoffice_action(
+        request,
+        user,
+        action="generate_accounting_export",
+        resource_type="monthly_accounting_export",
+        resource_id=str(result.get("export_id", "")),
+        company_id=payload.company_id,
+        details={
+            "period": f"{payload.year:04d}-{payload.month:02d}",
+            "filters": payload.model_dump(),
+            "status": result.get("status"),
+        },
+    )
+    return result
+
+
+@router.get("/accounting-exports/{export_id}")
+def get_accounting_export(
+    export_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    result = _get_container(request).monthly_accounting_export.get_for_user(user, export_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Exportación no encontrada")
+    return result
+
+
+@router.get("/accounting-exports/{export_id}/download")
+def download_accounting_export(
+    export_id: str,
+    request: Request,
+    format: str = Query(pattern="^(pdf|xlsx|csv|zip)$"),
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, str]:
+    export = _get_container(request).monthly_accounting_export.get_for_user(user, export_id)
+    if export is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Exportación no encontrada")
+    url = _get_container(request).monthly_accounting_export.signed_download_url(
+        user, export_id, format
+    )
+    if not url:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archivo no disponible")
+    _audit_backoffice_action(
+        request,
+        user,
+        action="download_accounting_export",
+        resource_type="monthly_accounting_export",
+        resource_id=export_id,
+        company_id=export.get("company_id", ""),
+        details={"format": format},
+    )
+    return {"download_url": url, "expires_in_seconds": "300"}
 
 
 @router.post("/employees", status_code=status.HTTP_201_CREATED)

@@ -370,6 +370,13 @@
 
 ### Completado
 
+- [x] **Cierre contable mensual — backend MVP**
+  - Preview mensual autoritativa con filtros, agregaciones monetarias con `Decimal` y validación de scope por empresa
+  - Informe PDF ReportLab, XLSX contable, CSV UTF-8 BOM y ZIP con comprobantes, consolidados y `manifest.json`
+  - Persistencia versionada en `MonthlyAccountingExports`, snapshot de IDs/totales, almacenamiento GCS privado y signed URLs de 5 minutos
+  - Historial, auditoría de generación/descarga, advertencias por datos incompletos y tolerancia a archivos inaccesibles
+  - Cobertura de permisos, mes vacío, monedas, nombres seguros, colisiones, manifest, ZIP, Excel numérico y signed URLs
+
 - [x] **Chatbot con clasificación inteligente de intención**
   - Mensajes de texto en estado `WAIT_RECEIPT` ahora se clasifican por intención usando LLM
   - `case_question`: preguntas sobre presupuesto, centros de costo, gastos registrados → se responden con contexto completo del caso activo (centros de costo, presupuesto, gastos por CC)
@@ -702,6 +709,12 @@
 ## Frontend
 
 ### Completado
+
+- [x] **Cierre contable mensual — dashboard MVP**
+  - Panel entre métricas y operación con selector de empresa, mes y año
+  - Vista previa de rendiciones, gastos, total y estados
+  - Modal de confirmación con advertencias, generación y estado visible
+  - Historial básico con descarga individual de PDF, Excel y ZIP
 
 - [x] **Dashboard rediseñado**
   - 4 cards primarios: fondos entregados, total rendido, pendiente revisión, saldo total

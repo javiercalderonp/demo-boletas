@@ -138,3 +138,18 @@ export function setStoredLoginEmail(email: string | null): void {
   }
   window.localStorage.setItem(BACKOFFICE_LOGIN_EMAIL_STORAGE_KEY, normalizedEmail);
 }
+
+export async function downloadApiFile(
+  path: string,
+  token: string,
+  filename: string,
+): Promise<void> {
+  const result = await apiRequest<{ download_url: string }>(path, { token });
+  const anchor = document.createElement("a");
+  anchor.href = result.download_url;
+  anchor.download = filename;
+  anchor.rel = "noopener";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+}

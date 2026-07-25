@@ -189,3 +189,45 @@ export type DashboardData = {
   latest_conversations: Conversation[];
   alerts: { type: string; severity?: string; message: string; case_id?: string; expense_id?: string }[];
 };
+
+export type AccountingExportWarning = {
+  type: string;
+  description: string;
+  severity: string;
+};
+
+export type AccountingExportPreview = {
+  period: string;
+  company_id: string;
+  company_name: string;
+  case_count: number;
+  expense_count: number;
+  employee_count: number;
+  total_clp: number;
+  approved_count: number;
+  pending_count: number;
+  rejected_count: number;
+  observed_count: number;
+  amounts: Record<string, number>;
+  without_receipt_count: number;
+  without_cost_center_count: number;
+  open_case_count: number;
+  warnings: AccountingExportWarning[];
+};
+
+export type AccountingExport = {
+  export_id: string;
+  company_id: string;
+  period_year: number;
+  period_month: number;
+  status: string;
+  requested_by: string;
+  requested_at: string;
+  completed_at?: string;
+  expense_count: number;
+  case_count: number;
+  employee_count: number;
+  total_clp: number;
+  warnings: AccountingExportWarning[];
+  downloads: Record<"pdf" | "xlsx" | "csv" | "zip", boolean>;
+};

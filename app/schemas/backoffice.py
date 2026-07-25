@@ -133,6 +133,16 @@ class ConversationPayload(BaseModel):
     updated_at: Optional[str] = None
 
 
+class AccountingExportPayload(BaseModel):
+    company_id: str = Field(min_length=1)
+    year: int = Field(ge=2000, le=2100)
+    month: int = Field(ge=1, le=12)
+    cost_center: str = ""
+    case_status: str = ""
+    expense_status: str = ""
+    include_csv: bool = True
+
+
 class DashboardResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
 

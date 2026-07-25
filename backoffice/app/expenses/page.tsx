@@ -18,6 +18,7 @@ import {
 
 import { DataTable } from "@/components/data-table";
 import { Badge } from "@/components/badge";
+import { ImagePreviewDialog } from "@/components/image-preview-dialog";
 import { ProtectedPage } from "@/components/protected-page";
 import { RejectExpenseDialog } from "@/components/reject-expense-dialog";
 import { SectionCard } from "@/components/section-card";
@@ -63,11 +64,11 @@ function ReviewScoreBadge({ score }: { score?: number }) {
 }
 
 function ReceiptThumbnail({ expense }: { expense: Expense }) {
-  const receiptUrl = expense.image_url || expense.document_url;
+  const alt = `boleta de ${expense.merchant || "comercio sin identificar"}`;
   const thumbnail = expense.image_url ? (
     <img
       src={expense.image_url}
-      alt={`Boleta de ${expense.merchant || "comercio sin identificar"}`}
+      alt={alt}
       className="h-14 w-14 rounded-xl border border-gray-200 bg-white object-cover shadow-sm transition hover:border-primary-300"
       loading="lazy"
     />
@@ -77,15 +78,29 @@ function ReceiptThumbnail({ expense }: { expense: Expense }) {
     </span>
   );
 
-  if (!receiptUrl) return thumbnail;
+  if (expense.image_url) {
+    return (
+      <ImagePreviewDialog
+        src={expense.image_url}
+        alt={alt}
+        title={expense.merchant || "Comprobante del gasto"}
+        triggerClassName="rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+      >
+        {thumbnail}
+      </ImagePreviewDialog>
+    );
+  }
+
+  if (!expense.document_url) return thumbnail;
 
   return (
     <a
-      href={receiptUrl}
+      href={expense.document_url}
       target="_blank"
       rel="noreferrer"
-      title="Abrir boleta"
-      aria-label={`Abrir boleta de ${expense.merchant || "comercio sin identificar"}`}
+      title="Abrir documento"
+      aria-label={`Abrir documento de ${expense.merchant || "comercio sin identificar"}`}
+      onClick={(event) => event.stopPropagation()}
     >
       {thumbnail}
     </a>

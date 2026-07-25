@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 
 import { Badge } from "@/components/badge";
+import { ImagePreviewDialog } from "@/components/image-preview-dialog";
 import { ProtectedPage } from "@/components/protected-page";
 import { RejectExpenseDialog } from "@/components/reject-expense-dialog";
 import { SectionCard } from "@/components/section-card";
@@ -570,15 +571,15 @@ export default function ExpenseDetailPage() {
                   </Link>
                 )}
                 {expense?.image_url && (
-                  <a
-                    className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
-                    href={expense.image_url}
-                    target="_blank"
-                    rel="noreferrer"
+                  <ImagePreviewDialog
+                    src={expense.image_url}
+                    alt={`comprobante de ${expense.merchant || "gasto sin identificar"}`}
+                    title={expense.merchant || "Comprobante del gasto"}
+                    triggerClassName="flex w-full items-center gap-2 rounded-lg border border-gray-200 px-3 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
                   >
                     <ExternalLink className="h-4 w-4 text-gray-400" />
-                    Abrir imagen
-                  </a>
+                    Ver imagen
+                  </ImagePreviewDialog>
                 )}
                 {expense?.document_url && (
                   <a

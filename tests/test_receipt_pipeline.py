@@ -1096,7 +1096,7 @@ class ReceiptPipelineTests(unittest.TestCase):
         self.assertNotIn("prefilled_case_id", result["context_json"])
         self.assertNotIn("identificador del caso", result["reply"].lower())
 
-    def test_handle_media_message_routes_to_review_when_no_active_case(self):
+    def test_handle_media_message_rejects_receipt_when_no_active_case(self):
         container = FakeContainerNoActiveCase()
 
         with patch("app.main.logger.exception"), patch("app.main.logger.info"):
@@ -1110,10 +1110,10 @@ class ReceiptPipelineTests(unittest.TestCase):
                 },
             )
 
-        self.assertIn("Un operador deberá revisarlo", reply)
-        self.assertNotIn("identificador del caso", reply.lower())
+        self.assertEqual(reply, "No tienes una rendición creada.")
         self.assertEqual(container.sheets.conversation["state"], "WAIT_RECEIPT")
         self.assertEqual(container.sheets.conversation["current_step"], "")
+        self.assertEqual(container.sheets.expenses, [])
 
     def test_meta_interactive_list_reply_uses_list_id(self):
         service = WhatsAppService(settings=Settings())

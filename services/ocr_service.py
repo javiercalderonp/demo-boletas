@@ -70,6 +70,7 @@ _ENTITY_TYPE_ALIASES: dict[str, tuple[str, ...]] = {
         "tax_withheld",
     ),
     "net_amount": (
+        "net_amount",
         "net_payable",
         "amount_paid",
         "total_boleta",
@@ -409,8 +410,22 @@ class OCRService:
         receiver_name = self._pick_entity_text(entities, "receiver_name")
         service_description = self._pick_entity_text(entities, "service_description")
 
-        if document_type == "boleta_honorarios" and net_amount is not None:
-            total = net_amount
+        if document_type == "boleta_honorarios":
+            # Generic Document AI processors commonly expose Total Honorarios
+            # as total_amount and Total Liquido as net_amount. Prefer those
+            # structured values over text proximity, whose reading order may
+            # group all labels before all amounts.
+            if gross_amount is None and total is not None:
+                gross_amount = total
+            if gross_amount is not None and net_amount is not None and gross_amount >= net_amount:
+                expected_withholding = round(gross_amount - net_amount, 2)
+                if (
+                    withholding_amount is None
+                    or abs(withholding_amount - expected_withholding) > max(1, gross_amount * 0.001)
+                ):
+                    withholding_amount = expected_withholding
+            if net_amount is not None:
+                total = net_amount
 
         return {
             "merchant": merchant,

@@ -249,8 +249,6 @@ export default function EmployeeDetailPage() {
     0,
   );
   const budget = toNumber(selectedCase?.fondos_entregados);
-  const approvedCount = selectedExpenses.filter((item) => item.status === "approved").length;
-  const rejectedCount = selectedExpenses.filter((item) => item.status === "rejected").length;
   const availableBalance = selectedCase?.saldo_restante !== undefined
     ? toNumber(selectedCase.saldo_restante)
     : budget - totalSpent;
@@ -362,14 +360,11 @@ export default function EmployeeDetailPage() {
                     </Link>
                   </div>
 
-                  <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
                     <Metric label="Total gastado" value={formatClp(totalSpent)} emphasis />
                     <Metric label="Fondos entregados" value={formatClp(budget)} />
                     <Metric label="Saldo disponible" value={formatClp(availableBalance)} />
                     <Metric label="Estado rendición" value={statusLabel(selectedCase.rendicion_status || selectedCase.status)} />
-                    <Metric label="Total de gastos" value={selectedExpenses.length} />
-                    <Metric label="Aprobados" value={approvedCount} />
-                    <Metric label="Rechazados" value={rejectedCount} />
                     <Metric
                       label="Liquidación"
                       value={

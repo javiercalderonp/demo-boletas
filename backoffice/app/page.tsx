@@ -23,6 +23,7 @@ import { apiRequest } from "@/lib/api";
 import { useAutoRefresh } from "@/lib/use-auto-refresh";
 import type { DashboardData } from "@/lib/types";
 import { useAuth } from "@/components/auth-provider";
+import { MonthlyAccountingClose } from "@/components/monthly-accounting-close";
 
 function formatCLP(value?: number): string {
   if (value == null || isNaN(value)) return "-";
@@ -206,6 +207,12 @@ export default function DashboardPage() {
             </>
           )}
         </div>
+
+        {token && (
+          <div className="mt-6">
+            <MonthlyAccountingClose token={token} />
+          </div>
+        )}
 
         {/* Rendiciones */}
         <div className="mt-6 space-y-6">

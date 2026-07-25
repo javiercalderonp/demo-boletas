@@ -172,6 +172,24 @@ class GCSStorageService:
             "object_key": object_key,
         }
 
+    def upload_private_bytes(
+        self, *, object_key: str, content: bytes, content_type: str
+    ) -> dict[str, str]:
+        if not self._bucket:
+            raise StorageUploadError("GCS no está habilitado")
+        if not object_key or not content:
+            raise StorageUploadError("Objeto o contenido vacío")
+        blob = self._bucket.blob(object_key)
+        blob.upload_from_string(content, content_type=content_type)
+        return {"storage_provider": "gcs", "object_key": object_key}
+
+    def download_private_bytes(self, *, object_key: str) -> bytes:
+        if not self._bucket:
+            raise StorageUploadError("GCS no está habilitado")
+        if not object_key:
+            raise StorageUploadError("object_key vacío")
+        return bytes(self._bucket.blob(object_key).download_as_bytes())
+
     def _download_media(self, media_url: str, media_content_type: str | None) -> tuple[bytes, str]:
         headers = {"User-Agent": "TravelExpenseAgent/1.0"}
         auth_header = self._media_authorization_header()

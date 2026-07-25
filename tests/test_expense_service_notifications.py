@@ -424,6 +424,35 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
         self.assertEqual(draft["net_amount"], 1035000)
         self.assertEqual(draft["total"], 1200000)
 
+    def test_professional_fee_receipt_preserves_consistent_structured_amounts(self):
+        service = ExpenseService(sheets_service=FakeSheetsService())
+
+        draft = service.enrich_draft_expense(
+            {
+                "document_type": "professional_fee_receipt",
+                "merchant": "LUZ FILMS LIMITADA",
+                "date": "2024-05-12",
+                "currency": "CLP",
+                "gross_amount": 1200000,
+                "withholding_amount": 165000,
+                "net_amount": 1035000,
+                "ocr_text": (
+                    "Total Honorarios:\n"
+                    "Retención (13,75%):\n"
+                    "Total Liquido:\n"
+                    "$ 1.200.000\n"
+                    "$ 1.200.000\n"
+                    "-$165.000\n"
+                    "$ 1.035.000"
+                ),
+            }
+        )
+
+        self.assertEqual(draft["gross_amount"], 1200000)
+        self.assertEqual(draft["withholding_amount"], 165000)
+        self.assertEqual(draft["net_amount"], 1035000)
+        self.assertEqual(draft["total"], 1200000)
+
     def test_professional_fee_receipt_derives_gross_from_net_and_expected_rate(self):
         service = ExpenseService(sheets_service=FakeSheetsService())
 

@@ -316,42 +316,53 @@ class ExpenseService:
         withholding = parse_float(draft.get("withholding_amount"))
         rate = parse_float(draft.get("withholding_rate"))
 
-        labeled_gross = self._extract_amount_after_labels(
-            draft.get("ocr_text"),
-            (
-                "total honorarios",
-                "monto bruto",
-                "total bruto",
-                "bruto",
-            ),
+        # Document AI's structured monetary entities are more reliable than
+        # plain-text proximity when its layout output groups several labels
+        # first and their values afterwards.
+        structured_amounts_are_consistent = (
+            gross is not None
+            and net is not None
+            and withholding is not None
+            and gross >= net
+            and abs((gross - net) - withholding) <= max(1, gross * 0.001)
         )
-        if labeled_gross is not None:
-            gross = labeled_gross
-        labeled_withholding = self._extract_amount_after_labels(
-            draft.get("ocr_text"),
-            (
-                "retencion",
-                "retención",
-                "monto retenido",
-                "impuesto retenido",
-            ),
-        )
-        if labeled_withholding is not None:
-            withholding = labeled_withholding
-        labeled_net = self._extract_amount_after_labels(
-            draft.get("ocr_text"),
-            (
-                "total boleta",
-                "total liquido",
-                "total líquido",
-                "liquido a pagar",
-                "líquido a pagar",
-                "liquido",
-                "líquido",
-            ),
-        )
-        if labeled_net is not None:
-            net = labeled_net
+        if not structured_amounts_are_consistent:
+            labeled_gross = self._extract_amount_after_labels(
+                draft.get("ocr_text"),
+                (
+                    "total honorarios",
+                    "monto bruto",
+                    "total bruto",
+                    "bruto",
+                ),
+            )
+            if labeled_gross is not None:
+                gross = labeled_gross
+            labeled_withholding = self._extract_amount_after_labels(
+                draft.get("ocr_text"),
+                (
+                    "retencion",
+                    "retención",
+                    "monto retenido",
+                    "impuesto retenido",
+                ),
+            )
+            if labeled_withholding is not None:
+                withholding = labeled_withholding
+            labeled_net = self._extract_amount_after_labels(
+                draft.get("ocr_text"),
+                (
+                    "total boleta",
+                    "total liquido",
+                    "total líquido",
+                    "liquido a pagar",
+                    "líquido a pagar",
+                    "liquido",
+                    "líquido",
+                ),
+            )
+            if labeled_net is not None:
+                net = labeled_net
         if rate is None:
             rate = self._extract_withholding_rate(draft.get("ocr_text"))
         if rate is None:

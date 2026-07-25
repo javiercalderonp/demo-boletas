@@ -33,6 +33,7 @@ SHEET_NAMES = {
     "expense_case_documents": "ExpenseCaseDocuments",
     "backoffice_users": "BackofficeUsers",
     "audit_log": "AuditLog",
+    "monthly_accounting_exports": "MonthlyAccountingExports",
 }
 
 LEGACY_SHEET_NAMES = {
@@ -190,6 +191,30 @@ _AUDIT_LOG_HEADERS = [
     "company_id",
     "details",
 ]
+_MONTHLY_ACCOUNTING_EXPORT_HEADERS = [
+    "export_id",
+    "company_id",
+    "period_year",
+    "period_month",
+    "filters_json",
+    "status",
+    "requested_by",
+    "requested_at",
+    "completed_at",
+    "pdf_object_key",
+    "xlsx_object_key",
+    "csv_object_key",
+    "zip_object_key",
+    "manifest_object_key",
+    "expense_count",
+    "case_count",
+    "employee_count",
+    "total_clp",
+    "warnings_json",
+    "snapshot_json",
+    "error_message",
+    "format_version",
+]
 
 
 def _to_sheet_cell(value: Any) -> Any:
@@ -272,6 +297,7 @@ class SheetsService:
             "ExpenseCaseDocuments": [],
             "BackofficeUsers": [],
             "AuditLog": [],
+            "MonthlyAccountingExports": [],
         }
         credentials_path = str(getattr(self.settings, "google_application_credentials", "") or "").strip()
         if (
@@ -631,6 +657,10 @@ class SheetsService:
             SHEET_NAMES["backoffice_users"], list(_BACKOFFICE_USER_HEADERS)
         )
         self._ensure_sheet_headers(SHEET_NAMES["audit_log"], list(_AUDIT_LOG_HEADERS))
+        self._ensure_sheet_headers(
+            SHEET_NAMES["monthly_accounting_exports"],
+            list(_MONTHLY_ACCOUNTING_EXPORT_HEADERS),
+        )
 
     def _ensure_expenses_headers(self) -> None:
         ws = self._worksheet(SHEET_NAMES["expenses"])
@@ -882,6 +912,8 @@ class SheetsService:
             return list(_BACKOFFICE_USER_HEADERS)
         if name == SHEET_NAMES["audit_log"]:
             return list(_AUDIT_LOG_HEADERS)
+        if name == SHEET_NAMES["monthly_accounting_exports"]:
+            return list(_MONTHLY_ACCOUNTING_EXPORT_HEADERS)
         return []
 
     def _with_retry(self, operation, retries: int = 3, base_delay: float = 0.5):
@@ -1334,6 +1366,42 @@ class SheetsService:
     def list_audit_log(self) -> list[dict[str, Any]]:
         rows = [dict(row) for row in self._get_records(SHEET_NAMES["audit_log"])]
         rows.sort(key=lambda item: str(item.get("timestamp", "") or ""), reverse=True)
+        return rows
+
+    def create_monthly_accounting_export(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._append_row(SHEET_NAMES["monthly_accounting_exports"], payload)
+        return dict(payload)
+
+    def update_monthly_accounting_export(
+        self, export_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        existing = self.get_monthly_accounting_export(export_id)
+        if existing is None:
+            return None
+        merged = dict(existing)
+        merged.update(payload)
+        merged["export_id"] = str(export_id or "").strip()
+        self._upsert_by_key(
+            SHEET_NAMES["monthly_accounting_exports"],
+            "export_id",
+            merged["export_id"],
+            merged,
+        )
+        return merged
+
+    def get_monthly_accounting_export(self, export_id: str) -> dict[str, Any] | None:
+        target = str(export_id or "").strip()
+        for row in self._get_records(SHEET_NAMES["monthly_accounting_exports"]):
+            if str(row.get("export_id", "") or "").strip() == target:
+                return dict(row)
+        return None
+
+    def list_monthly_accounting_exports(self) -> list[dict[str, Any]]:
+        rows = [
+            dict(row)
+            for row in self._get_records(SHEET_NAMES["monthly_accounting_exports"])
+        ]
+        rows.sort(key=lambda item: str(item.get("requested_at", "") or ""), reverse=True)
         return rows
 
     def list_employees(self) -> list[dict[str, Any]]:
