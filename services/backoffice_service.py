@@ -971,6 +971,7 @@ class BackofficeService:
     ) -> dict[str, Any]:
         monto_aprobado = 0.0
         monto_pendiente = 0.0
+        pending_expense_count = 0
         for exp in case_expenses:
             total_clp = parse_float(exp.get("total_clp")) or 0.0
             status = normalize_state(exp.get("status"))
@@ -978,9 +979,11 @@ class BackofficeService:
                 monto_aprobado += total_clp
             elif status in EXPENSE_PENDING_STATUSES or status == "pending":
                 monto_pendiente += total_clp
+                pending_expense_count += 1
         return {
             "monto_rendido_aprobado": round(monto_aprobado, 2),
             "monto_pendiente_revision": round(monto_pendiente, 2),
+            "pending_expense_count": pending_expense_count,
             "saldo_restante": round(fondos_entregados - monto_aprobado, 2),
         }
 

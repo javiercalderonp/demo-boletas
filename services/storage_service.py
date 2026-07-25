@@ -190,6 +190,13 @@ class GCSStorageService:
             raise StorageUploadError("object_key vacío")
         return bytes(self._bucket.blob(object_key).download_as_bytes())
 
+    def delete_private_object(self, *, object_key: str) -> None:
+        if not self._bucket:
+            raise StorageUploadError("GCS no está habilitado")
+        if not object_key:
+            raise StorageUploadError("object_key vacío")
+        self._bucket.blob(object_key).delete()
+
     def _download_media(self, media_url: str, media_content_type: str | None) -> tuple[bytes, str]:
         headers = {"User-Agent": "TravelExpenseAgent/1.0"}
         auth_header = self._media_authorization_header()

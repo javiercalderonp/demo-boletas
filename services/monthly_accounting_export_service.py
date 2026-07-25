@@ -193,6 +193,27 @@ class MonthlyAccountingExportService:
             return None
         return self._public_row(row)
 
+    def delete_for_user(self, user: dict[str, Any], export_id: str) -> dict[str, Any] | None:
+        row = self.sheets_service.get_monthly_accounting_export(export_id)
+        if not row or not can_access_company(user, row.get("company_id", "")):
+            return None
+
+        object_fields = (
+            "pdf_object_key",
+            "xlsx_object_key",
+            "csv_object_key",
+            "zip_object_key",
+            "manifest_object_key",
+        )
+        for field in object_fields:
+            object_key = str(row.get(field, "") or "").strip()
+            if not object_key:
+                continue
+            self.storage_service.delete_private_object(object_key=object_key)
+
+        deleted = self.sheets_service.delete_monthly_accounting_export(export_id)
+        return self._public_row(deleted) if deleted else None
+
     def signed_download_url(
         self, user: dict[str, Any], export_id: str, file_format: str
     ) -> str | None:

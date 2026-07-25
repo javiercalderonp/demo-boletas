@@ -995,34 +995,6 @@ def _handle_media_message(container: ServiceContainer, phone: str, payload: dict
         _summarize_receipt_payload(transition.get("context_json", {}).get("draft_expense", {})),
     )
 
-    if not ocr_warning and _should_auto_confirm_receipt(container, phone, transition):
-        latest_context = _get_latest_context(container, phone)
-        draft = dict(transition.get("context_json", {}).get("draft_expense", {}) or {})
-        source_message_id = _get_active_receipt_message_id(latest_context)
-        if source_message_id:
-            draft["source_message_id"] = source_message_id
-        saved = container.expense.save_confirmed_expense(phone, draft)
-        container.sheets.update_conversation(
-            phone,
-            {
-                "state": "WAIT_RECEIPT",
-                "current_step": "",
-                "context_json": _clear_active_receipt_message_id(
-                    _merge_context_preserving_sticky(
-                        latest_context,
-                        container.conversation.default_context(),
-                    )
-                ),
-            },
-        )
-        logger.info(
-            "Receipt auto-confirmed phone=%s expense_id=%s review_score=%s",
-            phone,
-            saved.get("expense_id"),
-            saved.get("review_score"),
-        )
-        return _build_auto_confirmed_receipt_message(saved)
-
     container.sheets.update_conversation(
         phone,
         {
@@ -1248,50 +1220,6 @@ def _find_case_waiting_for_employee_payment_proof(
         key=lambda item: str(item.get("settlement_calculated_at", item.get("updated_at", "")) or ""),
         reverse=True,
     )[0]
-
-
-def _should_auto_confirm_receipt(
-    container: ServiceContainer,
-    phone: str,
-    transition: dict[str, Any],
-) -> bool:
-    if transition.get("state") != "CONFIRM_SUMMARY":
-        return False
-    if transition.get("current_step") != "confirm_summary":
-        return False
-    draft = transition.get("context_json", {}).get("draft_expense", {})
-    if not isinstance(draft, dict):
-        return False
-    if container.expense.find_missing_required_fields(draft):
-        return False
-    try:
-        review = container.expense.compute_draft_review(phone, draft)
-    except Exception:
-        logger.exception("Could not compute auto-confirm review phone=%s", phone)
-        return False
-    score = review.get("review_score", 0)
-    flags = review.get("review_flags") or []
-    try:
-        numeric_score = float(score)
-    except (TypeError, ValueError):
-        numeric_score = 0.0
-    return numeric_score >= 90 and not flags
-
-
-def _build_auto_confirmed_receipt_message(saved_expense: dict[str, Any]) -> str:
-    merchant = str(saved_expense.get("merchant", "") or "").strip() or "gasto"
-    currency = str(saved_expense.get("currency", "") or "").strip() or "CLP"
-    total = saved_expense.get("total", "")
-    amount_text = str(total or "").strip()
-    if isinstance(total, (int, float)):
-        if float(total).is_integer():
-            amount_text = f"{int(total):,}".replace(",", ".")
-        else:
-            amount_text = f"{float(total):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    return (
-        f"Guardé tu gasto: {merchant} {amount_text} {currency}. "
-        "Si algo está mal, escribe 'corregir'."
-    )
 
 
 def _handle_text_message(container: ServiceContainer, phone: str, body: str) -> str | list[str]:

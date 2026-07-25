@@ -23,6 +23,7 @@ from app.api.backoffice import (
     generate_case_consolidated_document,
     list_audit_log,
     refresh_auth_token,
+    require_global_admin,
     require_super_admin,
     send_conversation_message,
     send_conversation_template_message,
@@ -450,6 +451,24 @@ class BackofficeApiTests(unittest.TestCase):
     def test_require_super_admin_rejects_non_super_admin(self):
         with self.assertRaises(HTTPException) as ctx:
             require_super_admin({"role": "company_admin", "scope_type": "company", "active": True})
+
+        self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_require_global_admin_accepts_legacy_general_admin(self):
+        user = {"role": "admin", "scope_type": "global", "active": True}
+
+        self.assertIs(require_global_admin(user), user)
+
+    def test_require_global_admin_rejects_company_admin(self):
+        with self.assertRaises(HTTPException) as ctx:
+            require_global_admin(
+                {
+                    "role": "company_admin",
+                    "scope_type": "company",
+                    "company_ids": ["acme"],
+                    "active": True,
+                }
+            )
 
         self.assertEqual(ctx.exception.status_code, 403)
 

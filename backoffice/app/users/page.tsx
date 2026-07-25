@@ -39,7 +39,8 @@ export default function UsersPage() {
   const [submitting, setSubmitting] = useState(false);
 
   const isGlobalAdmin = user?.scope_type === "global";
-  const canCreateUsers = user?.role === "super_admin";
+  const canCreateUsers =
+    isGlobalAdmin && (user?.role === "super_admin" || user?.role === "admin");
 
   function load() {
     if (!token) {

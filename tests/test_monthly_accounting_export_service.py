@@ -62,6 +62,13 @@ class FakeSheets:
     def list_monthly_accounting_exports(self):
         return [dict(item) for item in reversed(self.exports)]
 
+    def delete_monthly_accounting_export(self, export_id):
+        row = next((item for item in self.exports if item["export_id"] == export_id), None)
+        if row is None:
+            return None
+        self.exports.remove(row)
+        return dict(row)
+
 
 class FakeStorage:
     def __init__(self, *, missing_receipt: bool = False) -> None:
@@ -79,6 +86,9 @@ class FakeStorage:
 
     def generate_signed_url(self, *, object_key, ttl_seconds):
         return f"https://signed.example/{object_key}?ttl={ttl_seconds}"
+
+    def delete_private_object(self, *, object_key):
+        self.uploaded.pop(object_key, None)
 
 
 class MonthlyAccountingExportServiceTests(unittest.TestCase):
@@ -143,6 +153,27 @@ class MonthlyAccountingExportServiceTests(unittest.TestCase):
         self.assertIn("ttl=300", url)
         denied = {"role": "company_admin", "scope_type": "company", "company_ids": ["other"]}
         self.assertIsNone(self.service.signed_download_url(denied, result["export_id"], "pdf"))
+
+    def test_delete_removes_export_and_generated_files(self):
+        result = self.service.generate(
+            user=self.global_user, company_id="acme", year=2026, month=7
+        )
+        self.assertTrue(self.storage.uploaded)
+
+        deleted = self.service.delete_for_user(self.scoped_user, result["export_id"])
+
+        self.assertEqual(deleted["export_id"], result["export_id"])
+        self.assertFalse(self.storage.uploaded)
+        self.assertIsNone(self.sheets.get_monthly_accounting_export(result["export_id"]))
+
+    def test_delete_is_scoped_to_accessible_companies(self):
+        result = self.service.generate(
+            user=self.global_user, company_id="acme", year=2026, month=7
+        )
+        denied = {"role": "company_admin", "scope_type": "company", "company_ids": ["other"]}
+
+        self.assertIsNone(self.service.delete_for_user(denied, result["export_id"]))
+        self.assertIsNotNone(self.sheets.get_monthly_accounting_export(result["export_id"]))
 
 
 if __name__ == "__main__":

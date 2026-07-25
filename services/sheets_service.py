@@ -1404,6 +1404,19 @@ class SheetsService:
         rows.sort(key=lambda item: str(item.get("requested_at", "") or ""), reverse=True)
         return rows
 
+    def delete_monthly_accounting_export(
+        self, export_id: str
+    ) -> dict[str, Any] | None:
+        existing = self.get_monthly_accounting_export(export_id)
+        if existing is None:
+            return None
+        deleted = self._delete_by_key(
+            SHEET_NAMES["monthly_accounting_exports"],
+            "export_id",
+            str(export_id or "").strip(),
+        )
+        return existing if deleted else None
+
     def list_employees(self) -> list[dict[str, Any]]:
         employees: list[dict[str, Any]] = []
         for row in self._get_records(SHEET_NAMES["employees"]):

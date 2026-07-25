@@ -241,6 +241,13 @@ def require_super_admin(user: dict[str, Any] = Depends(require_user)) -> dict[st
     return user
 
 
+def require_global_admin(user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    access = resolve_access(user)
+    if access.role not in {SUPER_ADMIN_ROLE, LEGACY_ADMIN_ROLE} or not access.is_global:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No autorizado")
+    return user
+
+
 def _safe_user_payload(user: dict[str, Any]) -> dict[str, Any]:
     return _safe_user(user)
 
@@ -744,7 +751,7 @@ def list_audit_log(
 def create_backoffice_user(
     payload: BackofficeUserPayload,
     request: Request,
-    user: dict[str, Any] = Depends(require_super_admin),
+    user: dict[str, Any] = Depends(require_global_admin),
 ) -> dict[str, Any]:
     container = _get_container(request)
     email = str(payload.email or "").strip().lower()
@@ -912,6 +919,32 @@ def get_accounting_export(
     result = _get_container(request).monthly_accounting_export.get_for_user(user, export_id)
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Exportación no encontrada")
+    return result
+
+
+@router.delete("/accounting-exports/{export_id}")
+def delete_accounting_export(
+    export_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    result = _get_container(request).monthly_accounting_export.delete_for_user(user, export_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Exportación no encontrada")
+    _audit_backoffice_action(
+        request,
+        user,
+        action="delete_accounting_export",
+        resource_type="monthly_accounting_export",
+        resource_id=export_id,
+        company_id=result.get("company_id", ""),
+        details={
+            "period": (
+                f"{int(result.get('period_year', 0)):04d}-"
+                f"{int(result.get('period_month', 0)):02d}"
+            ),
+        },
+    )
     return result
 
 

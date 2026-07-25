@@ -1461,7 +1461,7 @@ export default function CasesPage() {
           }
         >
           {filteredItems === null ? (
-            <TableSkeleton columns={8} rows={5} />
+            <TableSkeleton columns={9} rows={5} />
           ) : (
             <>
               {/* Mobile card list */}
@@ -1523,7 +1523,7 @@ export default function CasesPage() {
                             </div>
                           </div>
 
-                          <div className="mt-3 grid grid-cols-3 gap-2 rounded-lg border border-gray-100 bg-white p-3 text-center text-xs">
+                          <div className="mt-3 grid grid-cols-2 gap-2 rounded-lg border border-gray-100 bg-white p-3 text-center text-xs">
                             <div>
                               <div className="text-gray-400">Fondos</div>
                               <div className="mt-0.5 font-semibold text-gray-900">
@@ -1534,6 +1534,15 @@ export default function CasesPage() {
                               <div className="text-gray-400">Aprobado</div>
                               <div className="mt-0.5 font-semibold text-emerald-700">
                                 {formatCLP(item.monto_rendido_aprobado)}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-gray-400">Pendientes de aprobar</div>
+                              <div className="mt-0.5 font-semibold text-amber-700">
+                                {formatCLP(item.monto_pendiente_revision)}{" "}
+                                <span className="text-gray-500">
+                                  ({item.pending_expense_count ?? 0})
+                                </span>
                               </div>
                             </div>
                             <div>
@@ -1576,6 +1585,7 @@ export default function CasesPage() {
                     "Empleado",
                     "Fondos",
                     "Aprobado",
+                    "Pendientes de aprobar",
                     "Progreso",
                     "Saldo",
                     "",
@@ -1643,6 +1653,12 @@ export default function CasesPage() {
                       </span>,
                       <span key="aprobado" className="text-sm font-medium text-emerald-700">
                         {formatCLP(item.monto_rendido_aprobado)}
+                      </span>,
+                      <span key="pendiente" className="whitespace-nowrap text-sm font-medium text-amber-700">
+                        {formatCLP(item.monto_pendiente_revision)}{" "}
+                        <span className="text-gray-500">
+                          ({item.pending_expense_count ?? 0})
+                        </span>
                       </span>,
                       <div key="progress" className="pt-1">
                         {renderProgress(item)}

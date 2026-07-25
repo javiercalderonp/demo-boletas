@@ -75,6 +75,7 @@ export type CaseItem = {
   user_confirmation_status?: string;
   monto_rendido_aprobado?: number;
   monto_pendiente_revision?: number;
+  pending_expense_count?: number;
   saldo_restante?: number;
   settlement_direction?: string;
   settlement_status?: string;

@@ -85,7 +85,42 @@ class BackofficeCaseTransitionTests(unittest.TestCase):
 
         self.assertEqual(balance["monto_rendido_aprobado"], 30000)
         self.assertEqual(balance["monto_pendiente_revision"], 20000)
+        self.assertEqual(balance["pending_expense_count"], 2)
         self.assertEqual(balance["saldo_restante"], 70000)
+
+    def test_list_cases_exposes_pending_amount_and_expense_count(self):
+        sheets = FakeSheetsService(
+            case_row={
+                "case_id": "CASE-1",
+                "status": "active",
+                "fondos_entregados": 100000,
+            },
+            expenses=[
+                {
+                    "expense_id": "EXP-1",
+                    "case_id": "CASE-1",
+                    "status": "pending_approval",
+                    "total_clp": 12000,
+                },
+                {
+                    "expense_id": "EXP-2",
+                    "case_id": "CASE-1",
+                    "status": "pending_review",
+                    "total_clp": 8000,
+                },
+                {
+                    "expense_id": "EXP-3",
+                    "case_id": "CASE-1",
+                    "status": "approved",
+                    "total_clp": 30000,
+                },
+            ],
+        )
+
+        expense_case = BackofficeService(sheets_service=sheets).list_cases()[0]
+
+        self.assertEqual(expense_case["monto_pendiente_revision"], 20000)
+        self.assertEqual(expense_case["pending_expense_count"], 2)
 
     def test_create_case_blocks_when_employee_already_has_active_case(self):
         sheets = FakeSheetsService(

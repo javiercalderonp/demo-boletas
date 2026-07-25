@@ -1584,7 +1584,7 @@ class ReceiptPipelineTests(unittest.TestCase):
             {"status": "pending"},
         )
 
-    def test_handle_media_message_auto_saves_when_review_is_perfect(self):
+    def test_handle_media_message_requires_confirmation_when_review_is_perfect(self):
         container = FakeContainerPerfectOCR()
 
         with patch("app.main.logger.exception"), patch("app.main.logger.info"):
@@ -1598,14 +1598,36 @@ class ReceiptPipelineTests(unittest.TestCase):
                 },
             )
 
-        self.assertIn("Guardé tu gasto: Starbucks", reply)
-        self.assertIn("Si algo está mal, escribe 'corregir'", reply)
-        self.assertEqual(container.sheets.conversation["state"], "WAIT_RECEIPT")
-        self.assertEqual(container.sheets.conversation["current_step"], "")
-        self.assertEqual(len(container.sheets.expenses), 1)
-        self.assertEqual(container.sheets.expenses[0]["expense_id"], "EXP-AUTO-1")
-        self.assertEqual(container.sheets.expenses[0]["source_message_id"], "wamid.auto")
-        self.assertNotIn("active_receipt_message_id", container.sheets.conversation["context_json"])
+        self.assertIn("Detecte este gasto", reply)
+        self.assertIn("Tipo de documento: boleta", reply)
+        self.assertEqual(container.sheets.conversation["state"], "CONFIRM_SUMMARY")
+        self.assertEqual(container.sheets.conversation["current_step"], "confirm_summary")
+        self.assertEqual(container.sheets.expenses, [])
+        self.assertEqual(
+            container.sheets.conversation["context_json"]["active_receipt_message_id"],
+            "wamid.auto",
+        )
+
+        draft = dict(container.sheets.conversation["context_json"]["draft_expense"])
+        draft["cost_centers"] = container.sheets.expense_case["cost_centers"]
+        confirmation = ConversationService(ExpenseService(sheets_service=container.sheets)).handle_text_message(
+            {
+                "state": "CONFIRM_SUMMARY",
+                "current_step": "confirm_summary",
+                "context_json": {
+                    "draft_expense": draft,
+                    "missing_fields": [],
+                    "last_question": None,
+                },
+            },
+            "confirmar",
+            phone="+56933333333",
+        )
+
+        self.assertIn("¿A qué centro de costo está dirigido este gasto?", confirmation["reply"])
+        self.assertEqual(confirmation["state"], "CONFIRM_SUMMARY")
+        self.assertEqual(confirmation["current_step"], "cost_center")
+        self.assertEqual(container.sheets.expenses, [])
 
     def test_handle_media_message_rejects_non_document_images(self):
         container = FakeContainerNoDocument()

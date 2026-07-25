@@ -371,9 +371,16 @@ class ExpenseService:
         if gross is None and net is None:
             net = parse_float(draft.get("total"))
 
-        if gross is not None and net is not None and withholding is not None:
-            if abs(gross - net) < 0.01 and withholding > 0:
-                gross = round(net + withholding, 2)
+        if gross is not None and net is not None and abs(gross - net) < 0.01:
+            # A Chilean fee receipt with a positive withholding rate cannot
+            # have equal gross and net amounts. Generic OCR commonly assigns
+            # Total Honorarios to both fields, so preserve it as gross and
+            # derive the liquid amount instead of inflating the gross amount.
+            if withholding is not None and 0 < withholding < gross:
+                net = round(gross - withholding, 2)
+            elif rate is not None and 0 < rate < 100:
+                withholding = round(gross * rate / 100, 2)
+                net = round(gross - withholding, 2)
         if gross is None and net is not None and withholding is not None and withholding > 0:
             gross = round(net + withholding, 2)
         if gross is None and net is not None and rate is not None:

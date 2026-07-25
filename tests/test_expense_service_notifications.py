@@ -366,9 +366,30 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(draft["gross_amount"], 318500)
-        self.assertEqual(draft["net_amount"], 280000)
-        self.assertEqual(draft["total"], 318500)
+        self.assertEqual(draft["gross_amount"], 280000)
+        self.assertEqual(draft["net_amount"], 241500)
+        self.assertEqual(draft["total"], 280000)
+
+    def test_professional_fee_receipt_derives_net_when_ocr_duplicates_gross(self):
+        service = ExpenseService(sheets_service=FakeSheetsService())
+
+        draft = service.enrich_draft_expense(
+            {
+                "document_type": "professional_fee_receipt",
+                "merchant": "LUZ FILMS LIMITADA",
+                "date": "2024-05-12",
+                "currency": "CLP",
+                "total": 1200000,
+                "gross_amount": 1200000,
+                "net_amount": 1200000,
+                "withholding_rate": 13.75,
+            }
+        )
+
+        self.assertEqual(draft["gross_amount"], 1200000)
+        self.assertEqual(draft["withholding_amount"], 165000)
+        self.assertEqual(draft["net_amount"], 1035000)
+        self.assertEqual(draft["total"], 1200000)
 
     def test_professional_fee_receipt_prefers_explicit_labeled_amounts(self):
         service = ExpenseService(sheets_service=FakeSheetsService())

@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Download, FileArchive, FileSpreadsheet, FileText, X } from "lucide-react";
+import { AlertTriangle, FileArchive, FileSpreadsheet, FileText, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { Badge } from "@/components/badge";
@@ -45,6 +45,8 @@ export function MonthlyAccountingClose({ token }: { token: string }) {
   const [preview, setPreview] = useState<AccountingExportPreview | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<AccountingExport | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
 
   const loadHistory = useCallback(async () => {
@@ -121,6 +123,36 @@ export function MonthlyAccountingClose({ token }: { token: string }) {
     }
   }
 
+  async function deleteExport(): Promise<void> {
+    if (!pendingDelete) return;
+    setDeleting(true);
+    setError("");
+    try {
+      await apiRequest<AccountingExport>(
+        `/accounting-exports/${pendingDelete.export_id}`,
+        { method: "DELETE", token },
+      );
+      setHistory((current) =>
+        current.filter((item) => item.export_id !== pendingDelete.export_id),
+      );
+      setPendingDelete(null);
+    } catch (nextError) {
+      setError(
+        nextError instanceof Error
+          ? nextError.message
+          : "No se pudo eliminar el cierre contable.",
+      );
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  const downloadActions = {
+    pdf: { label: "PDF", icon: FileText, color: "text-red-600 hover:bg-red-50" },
+    xlsx: { label: "Excel", icon: FileSpreadsheet, color: "text-emerald-600 hover:bg-emerald-50" },
+    zip: { label: "ZIP", icon: FileArchive, color: "text-amber-600 hover:bg-amber-50" },
+  } as const;
+
   return (
     <>
       <SectionCard
@@ -196,12 +228,34 @@ export function MonthlyAccountingClose({ token }: { token: string }) {
                     <td className="py-2">{item.expense_count}</td>
                     <td className="py-2">{formatCLP(Number(item.total_clp))}</td>
                     <td className="py-2">
-                      <div className="flex gap-1">
-                        {(["pdf", "xlsx", "zip"] as const).map((format) => item.downloads[format] && (
-                          <button key={format} type="button" onClick={() => void download(item, format)} className="rounded p-1 text-primary-600 hover:bg-primary-50" aria-label={`Descargar ${format.toUpperCase()}`}>
-                            <Download className="h-4 w-4" />
-                          </button>
-                        ))}
+                      <div className="flex items-center gap-1">
+                        {(["pdf", "xlsx", "zip"] as const).map((format) => {
+                          if (!item.downloads[format]) return null;
+                          const action = downloadActions[format];
+                          const Icon = action.icon;
+                          return (
+                            <button
+                              key={format}
+                              type="button"
+                              onClick={() => void download(item, format)}
+                              className={`rounded p-1.5 transition ${action.color}`}
+                              aria-label={`Descargar ${action.label}`}
+                              title={`Descargar ${action.label}`}
+                            >
+                              <Icon className="h-4 w-4" />
+                            </button>
+                          );
+                        })}
+                        <span className="mx-1 h-4 w-px bg-gray-200" aria-hidden="true" />
+                        <button
+                          type="button"
+                          onClick={() => setPendingDelete(item)}
+                          className="rounded p-1.5 text-gray-400 transition hover:bg-red-50 hover:text-red-600"
+                          aria-label="Eliminar cierre contable"
+                          title="Eliminar cierre contable"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -237,6 +291,28 @@ export function MonthlyAccountingClose({ token }: { token: string }) {
             <div className="mt-6 flex justify-end gap-2">
               <button type="button" onClick={() => setModalOpen(false)} className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium">Cancelar</button>
               <button type="button" onClick={() => void generate()} disabled={generating} className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{generating ? "Generando…" : "Confirmar y generar"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-labelledby="delete-accounting-close-title">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+            <div className="flex items-start gap-3">
+              <div className="rounded-full bg-red-50 p-2 text-red-600">
+                <Trash2 className="h-5 w-5" />
+              </div>
+              <div>
+                <h2 id="delete-accounting-close-title" className="text-lg font-semibold text-gray-900">Eliminar cierre contable</h2>
+                <p className="mt-2 text-sm text-gray-600">
+                  Se eliminará el cierre de {pendingDelete.period_year}-{String(pendingDelete.period_month).padStart(2, "0")} y todos sus archivos descargables. Esta acción no se puede deshacer.
+                </p>
+              </div>
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <button type="button" onClick={() => setPendingDelete(null)} disabled={deleting} className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium disabled:opacity-50">Cancelar</button>
+              <button type="button" onClick={() => void deleteExport()} disabled={deleting} className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-700 disabled:opacity-50">{deleting ? "Eliminando…" : "Eliminar"}</button>
             </div>
           </div>
         </div>

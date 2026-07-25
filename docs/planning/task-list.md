@@ -370,6 +370,9 @@
 
 ### Completado
 
+- [x] **Exponer monto y cantidad de gastos pendientes de aprobación por caso**
+  - El resumen de cada caso incluye `monto_pendiente_revision` y `pending_expense_count`, calculados con los mismos estados pendientes.
+
 - [x] **Campos dinámicos en el flujo de corrección de comprobantes**
   - El menú de edición ahora refleja los campos mostrados en el resumen según el tipo de documento
   - Las boletas de honorarios permiten corregir emisor, fecha, folio, RUT emisor/receptor y montos líquido/bruto
@@ -714,6 +717,9 @@
 ## Frontend
 
 ### Completado
+
+- [x] **Mostrar gastos pendientes de aprobar en la vista de casos**
+  - Nueva columna y resumen móvil con monto CLP pendiente y cantidad de gastos entre paréntesis.
 
 - [x] **Cierre contable mensual — dashboard MVP**
   - Panel entre métricas y operación con selector de empresa, mes y año
