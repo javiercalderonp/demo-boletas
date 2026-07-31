@@ -143,6 +143,18 @@ def is_resolved_expense_status(value: Any) -> bool:
     return normalize_expense_status(value) in EXPENSE_RESOLVED_STATUSES
 
 
+def is_expense_eligible_for_accounting_export(expense: dict[str, Any]) -> bool:
+    """Use only the current expense workflow's approval state."""
+
+    expense_status = normalize_expense_status(expense.get("status"))
+    if expense_status:
+        return expense_status == ExpenseStatus.APPROVED
+    return (
+        normalize_review_status(expense.get("review_status"))
+        == ExpenseReviewStatus.APPROVED
+    )
+
+
 def is_review_blocking_expense_status(value: Any) -> bool:
     return normalize_expense_status(value) in EXPENSE_REVIEW_BLOCKING_STATUSES
 

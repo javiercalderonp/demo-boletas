@@ -8,6 +8,7 @@ import re
 import unicodedata
 import zipfile
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import PurePosixPath
 from typing import Any
@@ -49,6 +50,11 @@ def _date_in_period(value: Any, year: int, month: int) -> bool:
     return text[:7] == f"{year:04d}-{month:02d}"
 
 
+def _date_in_range(value: Any, date_from: str, date_to: str) -> bool:
+    text = str(value or "").strip()[:10]
+    return len(text) == 10 and date_from <= text <= date_to
+
+
 def _status(value: Any) -> str:
     return str(value or "").strip().lower().replace(" ", "_")
 
@@ -68,6 +74,8 @@ class MonthlyAccountingExportService:
         cost_center: str = "",
         case_status: str = "",
         expense_status: str = "",
+        date_from: str = "",
+        date_to: str = "",
     ) -> dict[str, Any]:
         dataset = self._dataset(
             user=user,
@@ -77,6 +85,8 @@ class MonthlyAccountingExportService:
             cost_center=cost_center,
             case_status=case_status,
             expense_status=expense_status,
+            date_from=date_from,
+            date_to=date_to,
         )
         return self._summary(dataset)
 
@@ -90,6 +100,8 @@ class MonthlyAccountingExportService:
         cost_center: str = "",
         case_status: str = "",
         expense_status: str = "",
+        date_from: str = "",
+        date_to: str = "",
         include_csv: bool = True,
     ) -> dict[str, Any]:
         dataset = self._dataset(
@@ -100,6 +112,8 @@ class MonthlyAccountingExportService:
             cost_center=cost_center,
             case_status=case_status,
             expense_status=expense_status,
+            date_from=date_from,
+            date_to=date_to,
         )
         if len(dataset["expenses"]) > MAX_EXPENSES:
             raise ValueError(f"La exportación supera el límite de {MAX_EXPENSES} gastos")
@@ -109,6 +123,8 @@ class MonthlyAccountingExportService:
             "cost_center": cost_center,
             "case_status": case_status,
             "expense_status": expense_status,
+            "date_from": date_from,
+            "date_to": date_to,
             "include_csv": include_csv,
         }
         row = {
@@ -227,9 +243,19 @@ class MonthlyAccountingExportService:
             object_key=str(row[field]), ttl_seconds=300
         )
 
-    def _dataset(self, *, user: dict[str, Any], company_id: str, year: int, month: int, cost_center: str, case_status: str, expense_status: str) -> dict[str, Any]:
+    def _dataset(self, *, user: dict[str, Any], company_id: str, year: int, month: int, cost_center: str, case_status: str, expense_status: str, date_from: str = "", date_to: str = "") -> dict[str, Any]:
         if year < 2000 or year > 2100 or month < 1 or month > 12:
             raise ValueError("Periodo inválido")
+        if bool(date_from) != bool(date_to):
+            raise ValueError("Debes indicar las fechas desde y hasta")
+        if date_from and date_to:
+            try:
+                start = date.fromisoformat(date_from)
+                end = date.fromisoformat(date_to)
+            except ValueError as exc:
+                raise ValueError("Rango de fechas inválido") from exc
+            if start > end:
+                raise ValueError("La fecha desde no puede ser posterior a la fecha hasta")
         if not company_id or not can_access_company(user, company_id):
             raise PermissionError("No tienes acceso a la empresa seleccionada")
         companies = self.sheets_service.list_companies()
@@ -248,12 +274,30 @@ class MonthlyAccountingExportService:
                 continue
             company_cases.append(case)
         company_cases_by_id = {str(c.get("case_id", "")): c for c in company_cases}
+        closed_case_ids = {
+            str(case.get("case_id", ""))
+            for case in company_cases
+            if case.get("closed_at")
+            and (
+                _date_in_range(case.get("closed_at"), date_from, date_to)
+                if date_from and date_to
+                else _date_in_period(case.get("closed_at"), year, month)
+            )
+        }
         expenses = []
         for expense in self.sheets_service.list_expenses():
-            if str(expense.get("case_id", "")) not in company_cases_by_id:
+            expense_case_id = str(expense.get("case_id", ""))
+            if expense_case_id not in company_cases_by_id:
                 continue
             expense_date = expense.get("date") or expense.get("created_at")
-            if not _date_in_period(expense_date, year, month):
+            if date_from and date_to:
+                matches_period = _date_in_range(expense_date, date_from, date_to)
+            else:
+                matches_period = _date_in_period(expense_date, year, month)
+            case_is_closed = bool(company_cases_by_id[expense_case_id].get("closed_at"))
+            if case_is_closed:
+                matches_period = expense_case_id in closed_case_ids
+            if not matches_period:
                 continue
             if cost_center and str(expense.get("cost_center", "")).strip().lower() != cost_center.strip().lower():
                 continue
@@ -265,13 +309,22 @@ class MonthlyAccountingExportService:
             case
             for case in company_cases
             if str(case.get("case_id", "")) in included_case_ids
+            or str(case.get("case_id", "")) in closed_case_ids
             or (
                 not cost_center
                 and not expense_status
-                and _date_in_period(
-                    case.get("created_at") or case.get("closed_at") or case.get("updated_at"),
-                    year,
-                    month,
+                and (
+                    _date_in_range(
+                        case.get("closed_at") or case.get("created_at") or case.get("updated_at"),
+                        date_from,
+                        date_to,
+                    )
+                    if date_from and date_to
+                    else _date_in_period(
+                        case.get("closed_at") or case.get("created_at") or case.get("updated_at"),
+                        year,
+                        month,
+                    )
                 )
             )
         ]
@@ -282,7 +335,7 @@ class MonthlyAccountingExportService:
         for case in cases:
             phone = str(case.get("employee_phone", case.get("phone", "")) or "")
             documents.extend(self.sheets_service.list_expense_case_documents_by_phone_case(phone, str(case.get("case_id", ""))))
-        return {"company": company, "employees": included_employees, "employees_by_phone": employees_by_phone, "cases": cases, "cases_by_id": cases_by_id, "expenses": expenses, "documents": documents, "year": year, "month": month}
+        return {"company": company, "employees": included_employees, "employees_by_phone": employees_by_phone, "cases": cases, "cases_by_id": cases_by_id, "expenses": expenses, "documents": documents, "year": year, "month": month, "date_from": date_from, "date_to": date_to}
 
     def _summary(self, data: dict[str, Any]) -> dict[str, Any]:
         amounts = {"approved": Decimal("0"), "pending": Decimal("0"), "rejected": Decimal("0"), "observed": Decimal("0"), "processing": Decimal("0")}
@@ -313,7 +366,11 @@ class MonthlyAccountingExportService:
             warnings.append({"type": "missing_cost_center", "description": f"{without_center} gastos no tienen centro de costo", "severity": "warning"})
         advances = sum((_decimal(c.get("fondos_entregados")) for c in data["cases"]), Decimal("0"))
         return {
-            "period": f"{data['year']:04d}-{data['month']:02d}",
+            "period": (
+                f"{data['date_from']} al {data['date_to']}"
+                if data.get("date_from") and data.get("date_to")
+                else f"{data['year']:04d}-{data['month']:02d}"
+            ),
             "company_id": data["company"].get("company_id"),
             "company_name": data["company"].get("name"),
             "case_count": len(data["cases"]),
@@ -347,7 +404,11 @@ class MonthlyAccountingExportService:
             phone = str(case.get("employee_phone", case.get("phone", expense.get("phone", ""))) or "")
             employee = data["employees_by_phone"].get(phone, {})
             rows.append([
-                f"{data['year']:04d}-{data['month']:02d}", expense.get("expense_id", ""), expense.get("case_id", ""),
+                (
+                    f"{data['date_from']} al {data['date_to']}"
+                    if data.get("date_from") and data.get("date_to")
+                    else f"{data['year']:04d}-{data['month']:02d}"
+                ), expense.get("expense_id", ""), expense.get("case_id", ""),
                 case.get("context_label", ""), case.get("rendicion_status", case.get("status", "")),
                 employee.get("name", ""), employee.get("rut", ""), employee.get("email", ""), employee.get("phone", ""),
                 data["company"].get("name", ""), expense.get("date", ""), expense.get("created_at", ""),

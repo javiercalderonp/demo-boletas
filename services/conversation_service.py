@@ -93,9 +93,8 @@ CORRECTION_FIELD_OPTIONS = {
     "1": "merchant",
     "2": "date",
     "3": "total",
-    "4": "currency",
-    "5": "category",
-    "6": "country",
+    "4": "category",
+    "5": "country",
 }
 CORRECTION_FIELD_ALIASES = {
     "merchant": "merchant",
@@ -142,13 +141,12 @@ CORRECTION_FIELD_LABELS = {
 }
 
 CORRECTION_FIELDS_BY_DOCUMENT_TYPE = {
-    "receipt": ("merchant", "date", "total", "currency", "category", "country"),
+    "receipt": ("merchant", "date", "total", "category", "country"),
     "invoice": (
         "merchant",
         "date",
         "invoice_number",
         "total",
-        "currency",
         "category",
         "country",
         "issuer_tax_id",

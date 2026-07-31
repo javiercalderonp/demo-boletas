@@ -275,23 +275,22 @@ class GCSStorageService:
         if credentials is None:
             return None
 
-        service_account_email = str(
-            getattr(credentials, "service_account_email", "")
-            or getattr(self._client, "_service_account_email", "")
-            or ""
-        ).strip()
-        if not service_account_email:
-            return None
-
-        # Force refresh to guarantee the access token includes IAM signing scopes.
+        # Compute Engine credentials start with "default" as the account identifier.
+        # Refresh resolves that alias to the real Cloud Run service-account email and
+        # obtains a token with the requested IAM scopes.
         try:
             from google.auth.transport.requests import Request
         except ImportError:
             return None
         credentials.refresh(Request())
+        service_account_email = str(
+            getattr(credentials, "service_account_email", "")
+            or getattr(self._client, "_service_account_email", "")
+            or ""
+        ).strip()
         token = str(getattr(credentials, "token", "") or "").strip()
 
-        if not token:
+        if not service_account_email or service_account_email.lower() == "default" or not token:
             return None
 
         return {

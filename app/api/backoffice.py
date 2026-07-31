@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 
 from app.schemas.backoffice import (
@@ -22,6 +22,7 @@ from app.schemas.backoffice import (
     ExpensePayload,
     LoginRequest,
     LoginResponse,
+    PortaExportPayload,
     SendMessagePayload,
     SendTemplatePayload,
     SetupPasswordPayload,
@@ -41,6 +42,8 @@ from services.statuses import (
     CaseStatus,
     ExpenseStatus,
     RendicionStatus,
+    SettlementStatus,
+    SettlementDirection,
 )
 from services.sheets_service import normalize_cost_centers
 from utils.helpers import json_loads, make_id, parse_float, utc_now_iso
@@ -292,6 +295,19 @@ def _ensure_user_can_access_company(user: dict[str, Any], company_id: Any) -> No
     )
 
 
+def _company_admin_company_id(user: dict[str, Any]) -> str | None:
+    access = resolve_access(user)
+    if access.role != COMPANY_ADMIN_ROLE:
+        return None
+    company_ids = sorted(access.company_ids)
+    if len(company_ids) != 1:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="El administrador de empresa debe tener una única empresa asociada",
+        )
+    return company_ids[0]
+
+
 def _attach_expense_receipt_urls(request: Request, expense: dict[str, Any]) -> dict[str, Any]:
     item = dict(expense)
     if item.get("image_url") or item.get("document_url"):
@@ -307,7 +323,41 @@ def _attach_expense_receipt_urls(request: Request, expense: dict[str, Any]) -> d
     if provider != "gcs" or not object_key:
         return item
 
-    signed_url = storage.generate_signed_url(object_key=object_key)
+    try:
+        signed_url = storage.generate_signed_url(object_key=object_key)
+    except Exception:
+        logger.exception(
+            "Failed to sign expense receipt URL expense_id=%s object_key=%s",
+            str(item.get("expense_id", "") or "") or None,
+            object_key,
+        )
+        item["receipt_url_error"] = "signed_url_unavailable"
+        return item
+    if object_key.lower().endswith(".pdf"):
+        item["document_url"] = signed_url
+    else:
+        item["image_url"] = signed_url
+    return item
+
+
+def _attach_case_document_url(request: Request, document: dict[str, Any]) -> dict[str, Any]:
+    item = dict(document)
+    container = _get_container(request)
+    storage = getattr(container, "storage", None)
+    provider = str(item.get("storage_provider", "") or "").strip().lower()
+    object_key = str(item.get("object_key", "") or "").strip()
+    if not storage or not getattr(storage, "enabled", False) or provider != "gcs" or not object_key:
+        return item
+    try:
+        signed_url = storage.generate_signed_url(object_key=object_key)
+    except Exception:
+        logger.exception(
+            "Failed to sign case document URL document_id=%s object_key=%s",
+            str(item.get("document_id", "") or "") or None,
+            object_key,
+        )
+        item["document_url_error"] = "signed_url_unavailable"
+        return item
     if object_key.lower().endswith(".pdf"):
         item["document_url"] = signed_url
     else:
@@ -703,7 +753,7 @@ def refresh_auth_token(
 @router.get("/users")
 def list_backoffice_users(
     request: Request,
-    _: dict[str, Any] = Depends(require_admin),
+    _: dict[str, Any] = Depends(require_global_admin),
 ) -> dict[str, Any]:
     return {"items": [_safe_user_payload(user) for user in _get_container(request).sheets.list_users()]}
 
@@ -715,7 +765,7 @@ def list_audit_log(
     resource_type: str | None = Query(default=None),
     company_id: str | None = Query(default=None),
     limit: int = Query(default=200, ge=1, le=1000),
-    user: dict[str, Any] = Depends(require_admin),
+    user: dict[str, Any] = Depends(require_global_admin),
 ) -> dict[str, Any]:
     access = resolve_access(user)
     action_filter = str(action or "").strip().lower()
@@ -854,8 +904,11 @@ def preview_accounting_export(
     cost_center: str = Query(default=""),
     case_status: str = Query(default=""),
     expense_status: str = Query(default=""),
+    date_from: str = Query(default=""),
+    date_to: str = Query(default=""),
     user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
+    company_id = _company_admin_company_id(user) or company_id
     try:
         return _get_container(request).monthly_accounting_export.preview(
             user=user,
@@ -865,6 +918,8 @@ def preview_accounting_export(
             cost_center=cost_center,
             case_status=case_status,
             expense_status=expense_status,
+            date_from=date_from,
+            date_to=date_to,
         )
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
@@ -886,6 +941,9 @@ def create_accounting_export(
     request: Request,
     user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
+    company_id = _company_admin_company_id(user)
+    if company_id:
+        payload = payload.model_copy(update={"company_id": company_id})
     try:
         result = _get_container(request).monthly_accounting_export.generate(
             user=user, **payload.model_dump()
@@ -975,12 +1033,171 @@ def download_accounting_export(
     return {"download_url": url, "expires_in_seconds": "300"}
 
 
+@router.post("/porta-exports/preview")
+def preview_porta_export(
+    payload: PortaExportPayload,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    company_id = _company_admin_company_id(user)
+    if company_id:
+        payload = payload.model_copy(update={"company_id": company_id})
+    try:
+        return _get_container(request).porta_export.preview(
+            user=user, **payload.model_dump()
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.get("/porta-exports")
+def list_porta_exports(
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    return {"items": _get_container(request).porta_export.list_for_user(user)}
+
+
+@router.post("/porta-exports", status_code=status.HTTP_201_CREATED)
+def create_porta_export(
+    payload: PortaExportPayload,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    company_id = _company_admin_company_id(user)
+    if company_id:
+        payload = payload.model_copy(update={"company_id": company_id})
+    try:
+        result = _get_container(request).porta_export.generate(
+            user=user, **payload.model_dump()
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    _audit_backoffice_action(
+        request,
+        user,
+        action="porta_export.generate",
+        resource_type="porta_export",
+        resource_id=str(result.get("export_id", "")),
+        company_id=payload.company_id,
+        details=payload.model_dump(),
+    )
+    return result
+
+
+@router.get("/porta-exports/{export_id}")
+def get_porta_export(
+    export_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    result = _get_container(request).porta_export.get_for_user(user, export_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Exportación no encontrada")
+    return result
+
+
+@router.get("/porta-exports/{export_id}/download")
+def download_porta_export(
+    export_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, str]:
+    export = _get_container(request).porta_export.get_for_user(user, export_id)
+    if export is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Exportación no encontrada")
+    url = _get_container(request).porta_export.signed_download_url(user, export_id)
+    if not url:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archivo no disponible")
+    _audit_backoffice_action(
+        request,
+        user,
+        action="porta_export.download",
+        resource_type="porta_export",
+        resource_id=export_id,
+        company_id=export.get("company_id", ""),
+    )
+    return {"download_url": url, "expires_in_seconds": "300"}
+
+
+def _case_porta_payload(request: Request, case_id: str, user: dict[str, Any]) -> dict[str, Any]:
+    expense_case = _get_container(request).sheets.get_expense_case_by_id(case_id)
+    if not expense_case:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Caso no encontrado")
+    company_id = str(expense_case.get("company_id", "") or "")
+    if not company_id:
+        phone = str(expense_case.get("employee_phone", expense_case.get("phone", "")) or "")
+        employee = next(
+            (
+                item for item in _get_container(request).sheets.list_employees()
+                if str(item.get("phone", "") or "") == phone
+            ),
+            {},
+        )
+        company_id = str(employee.get("company_id", "") or "")
+    _ensure_user_can_access_company(user, company_id)
+    return {
+        "company_id": company_id,
+        "scope": "case",
+        "case_id": case_id,
+        "date_source": "document_date",
+    }
+
+
+@router.get("/cases/{case_id}/porta-export/preview")
+def preview_case_porta_export(
+    case_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    try:
+        return _get_container(request).porta_export.preview(
+            user=user, **_case_porta_payload(request, case_id, user)
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post("/cases/{case_id}/porta-export", status_code=status.HTTP_201_CREATED)
+def create_case_porta_export(
+    case_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    filters = _case_porta_payload(request, case_id, user)
+    try:
+        result = _get_container(request).porta_export.generate(user=user, **filters)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    _audit_backoffice_action(
+        request,
+        user,
+        action="porta_export.generate_case",
+        resource_type="porta_export",
+        resource_id=str(result.get("export_id", "")),
+        company_id=filters["company_id"],
+        details={"case_id": case_id},
+    )
+    return result
+
+
 @router.post("/employees", status_code=status.HTTP_201_CREATED)
 def create_employee(
     payload: EmployeePayload,
     request: Request,
     user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
+    company_id = _company_admin_company_id(user)
+    if company_id:
+        payload = payload.model_copy(update={"company_id": company_id})
     _ensure_user_can_access_company(user, payload.company_id)
     employee = _get_container(request).backoffice.create_employee(payload.model_dump())
     _audit_backoffice_action(
@@ -1120,6 +1337,9 @@ def create_case(
     user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
     container = _get_container(request)
+    company_id = _company_admin_company_id(user)
+    if company_id:
+        payload = payload.model_copy(update={"company_id": company_id})
     _ensure_user_can_access_company(user, payload.company_id)
     try:
         expense_case = container.backoffice.create_case(payload.model_dump())
@@ -1241,7 +1461,155 @@ def get_case(
     detail = _get_container(request).backoffice.get_case_detail(case_id, user)
     if not detail:
         raise HTTPException(status_code=404, detail="Case not found")
+    detail["expenses"] = [
+        _attach_expense_receipt_urls(request, expense)
+        for expense in detail.get("expenses", [])
+    ]
+    detail["case_documents"] = [
+        _attach_case_document_url(request, document)
+        for document in detail.get("case_documents", [])
+    ]
     return detail
+
+
+@router.post("/cases/{case_id}/company-payment-proof")
+async def upload_company_payment_proof(
+    case_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    container = _get_container(request)
+    detail = container.backoffice.get_case_detail(case_id, user)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Case not found")
+    expense_case = detail.get("case") or {}
+    if str(expense_case.get("settlement_direction", "") or "").strip() != SettlementDirection.COMPANY_OWES_EMPLOYEE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Esta rendición no tiene un reembolso pendiente desde la empresa.",
+        )
+    try:
+        container.backoffice.ensure_case_ready_for_settlement_resolution(case_id)
+    except ValueError as exc:
+        raise _conflict_response(
+            exc,
+            "La rendición todavía no está lista para registrar el pago de la empresa.",
+        ) from exc
+
+    content_type = str(file.content_type or "").split(";", 1)[0].strip().lower()
+    allowed_types = {
+        "application/pdf": ".pdf",
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+    }
+    extension = allowed_types.get(content_type)
+    if not extension:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Adjunta un PDF o una imagen JPG, PNG o WEBP.",
+        )
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="El archivo está vacío.")
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="El archivo supera el máximo de 10 MB.")
+
+    storage = getattr(container, "storage", None)
+    if not storage or not getattr(storage, "enabled", False):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="El almacenamiento privado no está disponible.",
+        )
+
+    document_id = make_id("COMPAY")
+    safe_case_id = "".join(
+        character for character in str(case_id or "") if character.isalnum() or character in {"-", "_"}
+    ) or "case"
+    object_key = f"settlements/{safe_case_id}/{document_id}{extension}"
+    try:
+        storage.upload_private_bytes(
+            object_key=object_key,
+            content=content,
+            content_type=content_type,
+        )
+        signed_url = storage.generate_signed_url(object_key=object_key, ttl_seconds=3600)
+        phone = str(
+            expense_case.get("employee_phone", expense_case.get("phone", "")) or ""
+        ).strip()
+        if not phone:
+            raise RuntimeError("La rendición no tiene teléfono asociado.")
+        filename = str(file.filename or f"comprobante-transferencia{extension}").strip()
+        container.whatsapp.send_outbound_document(
+            phone,
+            signed_url,
+            filename=filename,
+            caption=(
+                "La empresa realizó el reembolso de tu rendición. "
+                f"Adjuntamos el comprobante por "
+                f"{container.backoffice._format_clp(expense_case.get('settlement_amount_clp'))}."
+            ),
+        )
+    except Exception as exc:
+        try:
+            storage.delete_private_object(object_key=object_key)
+        except Exception:
+            logger.warning("Could not remove failed company payment proof object_key=%s", object_key)
+        logger.exception("Failed to deliver company payment proof case_id=%s", case_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo guardar o enviar el comprobante. Intenta nuevamente.",
+        ) from exc
+
+    now = utc_now_iso()
+    document = container.sheets.create_expense_case_document(
+        {
+            "document_id": document_id,
+            "phone": phone,
+            "case_id": case_id,
+            "document_type": "company_payment_proof",
+            "storage_provider": "gcs",
+            "object_key": object_key,
+            "media_content_type": content_type,
+            "filename": filename,
+            "status": "approved",
+            "review_status": "approved",
+            "review_reason": "uploaded_and_sent_by_backoffice",
+            "expected_amount_clp": expense_case.get("settlement_amount_clp", ""),
+            "created_at": now,
+            "updated_at": now,
+            "reviewed_at": now,
+            "reviewed_by": user.get("email", ""),
+        }
+    )
+    expense_case = container.backoffice.sync_case_settlement(
+        case_id,
+        mark_settled=True,
+        resolved_at=now,
+    )
+    expense_case = container.backoffice.update_case(
+        case_id,
+        {
+            "company_payment_proof_document_id": document_id,
+            "settlement_notes": "Comprobante de reembolso enviado al trabajador por WhatsApp.",
+            "updated_at": now,
+        },
+    ) or expense_case
+    _audit_backoffice_action(
+        request,
+        user,
+        action="case.upload_company_payment_proof",
+        resource_type="case",
+        resource_id=case_id,
+        company_id=expense_case.get("company_id", ""),
+        details={"document_id": document_id, "filename": filename},
+    )
+    return {
+        "case": expense_case,
+        "document": _attach_case_document_url(request, document),
+        "delivery_status": "sent",
+    }
 
 
 @router.post("/cases/{case_id}/consolidated-document")
@@ -1610,17 +1978,99 @@ def case_action(
             )
         return expense_case
 
+    if payload.action in {"approve_settlement_proof", "reject_settlement_proof"}:
+        detail = container.backoffice.get_case_detail(case_id, user) or {}
+        document_id = str(
+            detail.get("case", {}).get("settlement_payment_proof_document_id", "")
+            or ""
+        ).strip()
+        document = container.sheets.get_expense_case_document_by_id(document_id)
+        if not document or str(document.get("case_id", "") or "").strip() != case_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La rendición no tiene un comprobante de transferencia para revisar.",
+            )
+        now = utc_now_iso()
+        approved = payload.action == "approve_settlement_proof"
+        document = container.sheets.update_expense_case_document(
+            document_id,
+            {
+                "status": "approved" if approved else SettlementStatus.PAYMENT_PROOF_REJECTED,
+                "review_status": "approved" if approved else SettlementStatus.PAYMENT_PROOF_REJECTED,
+                "review_reason": payload.reason or (
+                    "finance_approved" if approved else "finance_rejected"
+                ),
+                "reviewed_at": now,
+                "reviewed_by": user.get("email", ""),
+                "updated_at": now,
+            },
+        )
+        if approved:
+            expense_case = container.backoffice.sync_case_settlement(
+                case_id,
+                mark_settled=True,
+                resolved_at=now,
+            )
+        else:
+            expense_case = container.backoffice.update_case(
+                case_id,
+                {
+                    "settlement_status": SettlementStatus.PAYMENT_PROOF_REJECTED,
+                    "settlement_notes": payload.reason or "Comprobante rechazado por finanzas.",
+                    "updated_at": now,
+                },
+            )
+        _audit_backoffice_action(
+            request,
+            user,
+            action=f"case.{payload.action}",
+            resource_type="case",
+            resource_id=case_id,
+            company_id=(expense_case or {}).get("company_id", ""),
+            details={"document_id": document_id, "reason": payload.reason or ""},
+        )
+        phone = str(
+            (expense_case or {}).get("employee_phone", (expense_case or {}).get("phone", ""))
+            or ""
+        ).strip()
+        if phone:
+            message = (
+                "Aprobamos tu comprobante de transferencia. La liquidación quedó resuelta."
+                if approved
+                else "No pudimos aprobar tu comprobante de transferencia. "
+                "Por favor revisa los datos y envía uno nuevo."
+            )
+            _safe_send_whatsapp_notification(request, phone=phone, message=message)
+        return {"case": expense_case, "document": document}
+
     if payload.action == "close_rendicion":
+        forced_financial_close = False
         try:
             container.backoffice.ensure_case_ready_for_close(case_id)
         except ValueError as exc:
-            raise _conflict_response(
-                exc,
-                "La rendición todavía no cumple las condiciones de cierre.",
-            ) from exc
+            if not payload.force:
+                raise _conflict_response(
+                    exc,
+                    "La rendición todavía no cumple las condiciones de cierre.",
+                ) from exc
+            container.backoffice.ensure_case_ready_for_settlement_resolution(case_id)
+            forced_financial_close = True
         expense_case = container.backoffice.update_case(
             case_id,
-            {"rendicion_status": RendicionStatus.CLOSED, "status": CaseStatus.CLOSED},
+            {
+                "rendicion_status": RendicionStatus.CLOSED,
+                "status": CaseStatus.CLOSED,
+                **(
+                    {
+                        "settlement_notes": (
+                            "Cierre administrativo forzado sin comprobante de transferencia aprobado "
+                            f"por {user.get('email', 'usuario backoffice')}."
+                        )
+                    }
+                    if forced_financial_close
+                    else {}
+                ),
+            },
         )
         if not expense_case:
             raise HTTPException(status_code=404, detail="Case not found")
@@ -1630,9 +2080,14 @@ def case_action(
                 request,
                 phone=phone,
                 message=(
-                    "Tu rendición quedó completamente cerrada.\n"
-                    + _build_case_settlement_message(expense_case)
-                ),
+                    (
+                        "Tu rendición fue cerrada administrativamente. "
+                        "La devolución sigue pendiente de validación financiera.\n"
+                    )
+                    if forced_financial_close
+                    else "Tu rendición quedó completamente cerrada.\n"
+                )
+                + _build_case_settlement_message(expense_case),
             )
         return expense_case
 

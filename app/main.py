@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app.api import backoffice_router
 from app.config import settings
@@ -34,6 +34,8 @@ from services.docusign_service import DocusignError, DocusignService
 from services.expense_service import ExpenseService
 from services.llm_service import LLMService
 from services.monthly_accounting_export_service import MonthlyAccountingExportService
+from services.porta_excel_export_service import PortaExcelExportService
+from services.porta_export_service import PortaExportService
 from services.ocr_service import OCRService
 from services.scheduler_service import SchedulerService
 from services.sheets_service import SheetsService, normalize_cost_centers
@@ -45,7 +47,7 @@ from services.whatsapp_service import (
     TwilioDailyLimitExceededError,
     WhatsAppService,
 )
-from utils.helpers import make_id, normalize_whatsapp_phone, utc_now_iso
+from utils.helpers import make_id, normalize_whatsapp_phone, parse_float, utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +165,7 @@ class ServiceContainer:
     whatsapp: WhatsAppService
     scheduler: SchedulerService
     monthly_accounting_export: MonthlyAccountingExportService
+    porta_export: PortaExportService
 
 
 def create_app() -> FastAPI:
@@ -185,6 +188,7 @@ def create_app() -> FastAPI:
     default_backoffice_origins = [
         "https://viaticos-backoffice.vercel.app",
         "https://expenseops-backoffice.vercel.app",
+        "https://expensops.com",
     ]
     if settings.debug:
         default_backoffice_origins.append("http://localhost:3000")
@@ -198,6 +202,30 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        request_id = str(request.headers.get("x-request-id") or uuid.uuid4().hex)
+        logger.error(
+            "Unhandled API error method=%s path=%s request_id=%s",
+            request.method,
+            request.url.path,
+            request_id,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        headers = {"X-Request-ID": request_id}
+        origin = request.headers.get("origin", "")
+        if origin in backoffice_origins:
+            headers["Access-Control-Allow-Origin"] = origin
+            headers["Vary"] = "Origin"
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "detail": "La API encontró un error interno. Intenta nuevamente.",
+                "request_id": request_id,
+            },
+            headers=headers,
+        )
 
     @app.middleware("http")
     async def request_id_middleware(request: Request, call_next):
@@ -261,6 +289,13 @@ def create_app() -> FastAPI:
         monthly_accounting_export=MonthlyAccountingExportService(
             sheets_service=sheets_service,
             storage_service=storage_service,
+        ),
+        porta_export=PortaExportService(
+            sheets_service=sheets_service,
+            storage_service=storage_service,
+            excel_service=PortaExcelExportService(settings.porta_export_template_path),
+            default_date_source=settings.porta_export_date_source,
+            expense_service=expense_service,
         ),
     )
     app.state.services = container
@@ -1116,13 +1151,38 @@ def _maybe_handle_settlement_payment_proof(
     if not expense_case:
         return None
 
-    now = utc_now_iso()
     case_id = str(expense_case.get("case_id", expense_case.get("trip_id", "")) or "").strip()
     document_id = make_id("PAYPROOF")
     filename = str(payload.get("MediaFilename0") or payload.get("filename") or "").strip()
     expected_amount = expense_case.get("settlement_amount_clp", "")
+    backoffice = getattr(container, "backoffice", None)
+    resolve_company = getattr(backoffice, "_resolve_company_for_case", None)
+    company = resolve_company(expense_case) if callable(resolve_company) else {}
+    company = company or {}
+    extracted_amount = ocr_data.get("total", ocr_data.get("net_amount", ""))
+    extracted_date = ocr_data.get("date", "")
+    extracted_recipient = (
+        ocr_data.get("receiver_name")
+        or ocr_data.get("merchant")
+        or ocr_data.get("supplier_name")
+        or ""
+    )
+    extracted_tax_id = (
+        ocr_data.get("receiver_tax_id")
+        or ocr_data.get("issuer_tax_id")
+        or ""
+    )
+    expected_amount_value = parse_float(expected_amount)
+    extracted_amount_value = parse_float(extracted_amount)
+    amount_matches = (
+        expected_amount_value is not None
+        and extracted_amount_value is not None
+        and abs(expected_amount_value - extracted_amount_value) < 1
+    )
+    company_name = str(company.get("name", "") or "").strip()
+    company_tax_id = str(company.get("rut", company.get("account_holder_rut", "")) or "").strip()
 
-    document = {
+    pending_document = {
         "document_id": document_id,
         "phone": phone,
         "case_id": case_id,
@@ -1132,48 +1192,68 @@ def _maybe_handle_settlement_payment_proof(
         "media_url": media_url,
         "media_content_type": str(media_content_type or ""),
         "filename": filename,
-        "status": SettlementStatus.PAYMENT_PROOF_UNDER_REVIEW,
-        "review_status": SettlementStatus.PAYMENT_PROOF_UNDER_REVIEW,
-        "review_reason": "manual_validation_required",
+        "status": "pending_user_confirmation",
+        "review_status": "pending_user_confirmation",
+        "review_reason": "",
         "expected_amount_clp": expected_amount,
-        "ocr_json": json.dumps(ocr_data, ensure_ascii=False),
-        "created_at": now,
-        "updated_at": now,
+        "ocr_json": json.dumps(
+            {
+                **ocr_data,
+                "settlement_validation": {
+                    "amount_matches": amount_matches,
+                    "expected_amount_clp": expected_amount,
+                    "company_name": company_name,
+                    "company_tax_id": company_tax_id,
+                },
+            },
+            ensure_ascii=False,
+        ),
+        "created_at": utc_now_iso(),
+        "updated_at": utc_now_iso(),
     }
     if inbound_message_id:
-        document["source_message_id"] = inbound_message_id
+        pending_document["source_message_id"] = inbound_message_id
 
-    container.sheets.create_expense_case_document(document)
-    container.sheets.update_expense_case(
-        case_id,
-        {
-            "settlement_status": SettlementStatus.PAYMENT_PROOF_UNDER_REVIEW,
-            "settlement_payment_proof_document_id": document_id,
-            "updated_at": now,
-        },
-    )
+    latest_context = _get_latest_context(container, phone)
+    latest_context["pending_settlement_payment_proof"] = pending_document
     container.sheets.update_conversation(
         phone,
         {
-            "state": "WAIT_RECEIPT",
-            "current_step": "",
-            "context_json": _clear_active_receipt_message_id(
-                _merge_context_preserving_sticky(
-                    _get_latest_context(container, phone),
-                    container.conversation.default_context(),
-                )
-            ),
+            "state": "CONFIRM_SETTLEMENT_PAYMENT_PROOF",
+            "current_step": "confirm_settlement_payment_proof",
+            "context_json": latest_context,
         },
     )
     logger.info(
-        "Settlement payment proof captured phone=%s case_id=%s document_id=%s",
+        "Settlement payment proof OCR ready for confirmation phone=%s case_id=%s document_id=%s",
         phone,
         case_id,
         document_id,
     )
+    amount_text = (
+        f"${extracted_amount_value:,.0f}".replace(",", ".")
+        if extracted_amount_value is not None
+        else "No identificado"
+    )
+    expected_text = (
+        f"${expected_amount_value:,.0f}".replace(",", ".")
+        if expected_amount_value is not None
+        else "No informado"
+    )
+    validation_line = (
+        "✅ El monto coincide con la devolución esperada."
+        if amount_matches
+        else f"⚠️ El monto esperado es {expected_text}; revisa antes de confirmar."
+    )
     return (
-        "Recibí el comprobante de depósito de la liquidación. "
-        "Lo dejé en revisión financiera; te avisaremos cuando quede confirmado."
+        "Leí este comprobante de transferencia:\n"
+        f"- Monto: {amount_text}\n"
+        f"- Fecha: {extracted_date or 'No identificada'}\n"
+        f"- Destinatario: {extracted_recipient or 'No identificado'}\n"
+        f"- RUT destinatario: {extracted_tax_id or 'No identificado'}\n"
+        f"{validation_line}\n\n"
+        "¿Confirmas que estos datos corresponden a la transferencia que realizaste?\n"
+        "Responde *sí* para enviarla a revisión o *no* para descartarla y reenviar el comprobante."
     )
 
 
@@ -1234,6 +1314,15 @@ def _handle_text_message(container: ServiceContainer, phone: str, body: str) -> 
                 "context_json": container.conversation.default_context(),
             },
         )
+
+    settlement_proof_confirmation_reply = _handle_settlement_payment_proof_confirmation(
+        container,
+        phone,
+        body,
+        conversation,
+    )
+    if settlement_proof_confirmation_reply:
+        return settlement_proof_confirmation_reply
 
     case_selection_reply = _handle_case_selection_response(container, phone, body, conversation)
     if case_selection_reply:
@@ -1353,6 +1442,81 @@ def _handle_text_message(container: ServiceContainer, phone: str, body: str) -> 
     ):
         reply = _build_initial_wait_receipt_reply(container, phone)
     return reply
+
+
+def _handle_settlement_payment_proof_confirmation(
+    container: ServiceContainer,
+    phone: str,
+    body: str,
+    conversation: dict[str, Any],
+) -> str | None:
+    if normalize_state(conversation.get("state")) != "confirm_settlement_payment_proof":
+        return None
+    context = conversation.get("context_json")
+    if isinstance(context, str):
+        try:
+            context = json.loads(context)
+        except (TypeError, ValueError):
+            context = {}
+    if not isinstance(context, dict):
+        context = {}
+    pending_document = context.get("pending_settlement_payment_proof")
+    if not isinstance(pending_document, dict):
+        return None
+
+    answer = normalize_state(body).replace("í", "i")
+    affirmative = answer in {"si", "s", "confirmo", "confirmar", "correcto", "ok"}
+    negative = answer in {"no", "n", "rechazar", "descartar", "incorrecto"}
+    if not affirmative and not negative:
+        return (
+            "Por favor responde *sí* para enviar esta transferencia a revisión "
+            "o *no* para descartarla y reenviar el comprobante."
+        )
+
+    context.pop("pending_settlement_payment_proof", None)
+    context = _clear_active_receipt_message_id(context)
+    if negative:
+        container.sheets.update_conversation(
+            phone,
+            {
+                "state": "WAIT_RECEIPT",
+                "current_step": "",
+                "context_json": context,
+            },
+        )
+        return "Descarté este comprobante. Envíame una nueva imagen cuando quieras."
+
+    now = utc_now_iso()
+    document = {
+        **pending_document,
+        "status": SettlementStatus.PAYMENT_PROOF_UNDER_REVIEW,
+        "review_status": SettlementStatus.PAYMENT_PROOF_UNDER_REVIEW,
+        "review_reason": "user_confirmed_pending_finance_review",
+        "user_confirmed_at": now,
+        "updated_at": now,
+    }
+    container.sheets.create_expense_case_document(document)
+    case_id = str(document.get("case_id", "") or "").strip()
+    container.sheets.update_expense_case(
+        case_id,
+        {
+            "settlement_status": SettlementStatus.PAYMENT_PROOF_UNDER_REVIEW,
+            "settlement_payment_proof_document_id": document.get("document_id", ""),
+            "updated_at": now,
+        },
+    )
+    container.sheets.update_conversation(
+        phone,
+        {
+            "state": "WAIT_RECEIPT",
+            "current_step": "",
+            "context_json": context,
+        },
+    )
+    return (
+        "Gracias. Guardé el comprobante y lo envié a revisión financiera. "
+        "Te avisaremos cuando sea aprobado."
+    )
 
 
 def _handle_case_selection_response(

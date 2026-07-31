@@ -27,7 +27,7 @@ import { SectionCard } from "@/components/section-card";
 import { Shell } from "@/components/shell";
 import { TableSkeleton } from "@/components/table-skeleton";
 import { useAuth } from "@/components/auth-provider";
-import { apiRequest, getApiBaseUrl } from "@/lib/api";
+import { apiRequest, downloadApiCsv } from "@/lib/api";
 import { useAutoRefresh } from "@/lib/use-auto-refresh";
 import type { CaseItem, Company, Employee } from "@/lib/types";
 
@@ -233,7 +233,7 @@ function parseActiveCaseConflict(message: string): {
 
 export default function CasesPage() {
   const router = useRouter();
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const [items, setItems] = useState<CaseItem[] | null>(null);
   const [employees, setEmployees] = useState<Employee[] | null>(null);
   const [companies, setCompanies] = useState<Company[] | null>(null);
@@ -262,19 +262,14 @@ export default function CasesPage() {
   const [actionLoading, setActionLoading] = useState("");
   const [fondosMode, setFondosMode] = useState<"total" | "por_centro">("total");
   const [fondosPorCentro, setFondosPorCentro] = useState<Record<string, string>>({});
+  const defaultCompanyId =
+    user?.role === "company_admin"
+      ? user.company_id || user.company_ids?.[0] || companies?.[0]?.company_id || ""
+      : "";
 
   async function exportCsv() {
     if (!token) return;
-    const response = await fetch(`${getApiBaseUrl()}/cases/export/csv`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "rendiciones.csv";
-    a.click();
-    URL.revokeObjectURL(url);
+    await downloadApiCsv("/cases/export/csv", token, "rendiciones.csv");
   }
 
   function load() {
@@ -285,9 +280,24 @@ export default function CasesPage() {
       apiRequest<{ items: Company[] }>("/companies", { token }),
     ])
       .then(([casesData, employeesData, companiesData]) => {
+        const activeCompanies = companiesData.items.filter((company) => company.active);
         setItems(casesData.items);
         setEmployees(employeesData.items);
-        setCompanies(companiesData.items.filter((company) => company.active));
+        setCompanies(activeCompanies);
+        const associatedCompanyId =
+          user?.role === "company_admin"
+            ? user.company_id || user.company_ids?.[0] || activeCompanies[0]?.company_id || ""
+            : "";
+        if (associatedCompanyId) {
+          setForm((current) => ({
+            ...current,
+            company_id: current.company_id || associatedCompanyId,
+          }));
+          setEmployeeForm((current) => ({
+            ...current,
+            company_id: current.company_id || associatedCompanyId,
+          }));
+        }
       })
       .catch((nextError) => setError(nextError.message));
   }
@@ -439,10 +449,10 @@ export default function CasesPage() {
           );
         }
       }
-      setForm(emptyForm);
+      setForm({ ...emptyForm, company_id: defaultCompanyId });
       setCostCenterDraft("");
       setEmployeeSearch("");
-      setEmployeeForm(emptyEmployeeForm);
+      setEmployeeForm({ ...emptyEmployeeForm, company_id: defaultCompanyId });
       setCreateEmployeeOpen(false);
       setCreateOpen(false);
       setEditingCase(null);
@@ -494,7 +504,7 @@ export default function CasesPage() {
         employee_phone: created.phone,
       }));
       setEmployeeSearch(created.name);
-      setEmployeeForm(emptyEmployeeForm);
+      setEmployeeForm({ ...emptyEmployeeForm, company_id: defaultCompanyId });
       setCreateEmployeeOpen(false);
     } catch (nextError) {
       setError(
@@ -599,10 +609,10 @@ export default function CasesPage() {
   }
 
   function resetCaseForm() {
-    setForm(emptyForm);
+    setForm({ ...emptyForm, company_id: defaultCompanyId });
     setCostCenterDraft("");
     setEmployeeSearch("");
-    setEmployeeForm(emptyEmployeeForm);
+    setEmployeeForm({ ...emptyEmployeeForm, company_id: defaultCompanyId });
     setCreateEmployeeOpen(false);
     setCompanyAccordionOpen(false);
     setFondosMode("total");
@@ -640,7 +650,7 @@ export default function CasesPage() {
     });
     setEmployeeSearch(item.employee?.name || employeePhone);
     setCostCenterDraft("");
-    setEmployeeForm(emptyEmployeeForm);
+    setEmployeeForm({ ...emptyEmployeeForm, company_id: defaultCompanyId });
     setCreateEmployeeOpen(false);
     setCompanyAccordionOpen(false);
     setFondosMode(Object.keys(nextFondosPorCentro).length ? "por_centro" : "total");
@@ -1176,7 +1186,10 @@ export default function CasesPage() {
                             type="button"
                             onClick={() => {
                               setCreateEmployeeOpen(false);
-                              setEmployeeForm(emptyEmployeeForm);
+                              setEmployeeForm({
+                                ...emptyEmployeeForm,
+                                company_id: defaultCompanyId,
+                              });
                             }}
                           >
                             Cancelar alta
@@ -1583,18 +1596,16 @@ export default function CasesPage() {
                     "Estado",
                     "Rendición",
                     "Empleado",
-                    "Fondos",
-                    "Aprobado",
+                    "Balance",
                     "Pendientes de aprobar",
                     "Progreso",
-                    "Saldo",
                     "",
                   ]}
                   rowHrefs={filteredItems.map((item) => `/cases/${item.case_id}`)}
                   rows={filteredItems.map((item) => {
                     const actionConfig = getCaseActionConfig(item);
                     return [
-                      <div key="status" className="min-w-[128px] space-y-1.5 pt-0.5">
+                      <div key="status" className="min-w-[108px] space-y-1.5 pt-0.5">
                         <Badge tone={rendicionStatusTone[item.rendicion_status || item.status]}>
                           {rendicionStatusLabels[item.rendicion_status || item.status] ||
                             item.rendicion_status ||
@@ -1607,7 +1618,7 @@ export default function CasesPage() {
                           </span>
                         )}
                       </div>,
-                      <div key="id" className="min-w-[280px]">
+                      <div key="id" className="min-w-[190px] max-w-[230px]">
                         <span className="block font-medium text-gray-900">
                           {item.context_label || item.case_id}
                         </span>
@@ -1615,7 +1626,7 @@ export default function CasesPage() {
                           {item.case_id}
                         </span>
                         {(item.cost_centers || []).length > 0 && (
-                          <div className="mt-2 flex max-w-[260px] flex-wrap gap-1.5">
+                          <div className="mt-2 flex max-w-[220px] flex-wrap gap-1.5">
                             {(item.cost_centers || []).map((center) => (
                               <span
                                 key={center}
@@ -1640,20 +1651,40 @@ export default function CasesPage() {
                           </div>
                         )}
                       </div>,
-                      <div key="emp" className="min-w-[190px]">
-                        <span className="block max-w-[180px] truncate font-medium text-gray-900">
+                      <div key="emp" className="min-w-[145px] max-w-[175px]">
+                        <span className="block truncate font-medium text-gray-900">
                           {item.employee?.name || item.employee_phone || "-"}
                         </span>
                         <span className="mt-1 block text-xs text-gray-500">
                           {item.employee_phone || item.phone || "Sin teléfono"}
                         </span>
                       </div>,
-                      <span key="fondos" className="text-sm font-semibold text-gray-900">
-                        {formatCLP(item.fondos_entregados)}
-                      </span>,
-                      <span key="aprobado" className="text-sm font-medium text-emerald-700">
-                        {formatCLP(item.monto_rendido_aprobado)}
-                      </span>,
+                      <dl key="balance" className="min-w-[138px] space-y-1.5 text-xs">
+                        <div className="flex items-baseline justify-between gap-3">
+                          <dt className="text-gray-400">Fondos</dt>
+                          <dd className="font-semibold text-gray-900">
+                            {formatCLP(item.fondos_entregados)}
+                          </dd>
+                        </div>
+                        <div className="flex items-baseline justify-between gap-3">
+                          <dt className="text-gray-400">Aprobado</dt>
+                          <dd className="font-semibold text-emerald-700">
+                            {formatCLP(item.monto_rendido_aprobado)}
+                          </dd>
+                        </div>
+                        <div className="flex items-baseline justify-between gap-3">
+                          <dt className="text-gray-400">Saldo</dt>
+                          <dd
+                            className={`font-semibold ${
+                              (item.saldo_restante ?? 0) < 0
+                                ? "text-red-600"
+                                : "text-gray-900"
+                            }`}
+                          >
+                            {formatCLP(item.saldo_restante)}
+                          </dd>
+                        </div>
+                      </dl>,
                       <span key="pendiente" className="whitespace-nowrap text-sm font-medium text-amber-700">
                         {formatCLP(item.monto_pendiente_revision)}{" "}
                         <span className="text-gray-500">
@@ -1663,14 +1694,6 @@ export default function CasesPage() {
                       <div key="progress" className="pt-1">
                         {renderProgress(item)}
                       </div>,
-                      <span
-                        key="saldo"
-                        className={`text-sm font-medium ${
-                          (item.saldo_restante ?? 0) < 0 ? "text-red-600" : "text-gray-900"
-                        }`}
-                      >
-                        {formatCLP(item.saldo_restante)}
-                      </span>,
                       <div key="menu" className="flex min-w-[36px] justify-end">
                         {renderCaseMenu(item, "right")}
                       </div>,

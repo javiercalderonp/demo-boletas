@@ -147,6 +147,48 @@ class MonthlyAccountingExportServiceTests(unittest.TestCase):
         self.assertEqual(preview["expense_count"], 0)
         self.assertEqual(preview["total_clp"], 0)
 
+    def test_preview_supports_custom_date_range(self):
+        preview = self.service.preview(
+            user=self.scoped_user,
+            company_id="acme",
+            year=2026,
+            month=7,
+            date_from="2026-07-11",
+            date_to="2026-07-11",
+        )
+        self.assertEqual(preview["period"], "2026-07-11 al 2026-07-11")
+        self.assertEqual(preview["case_count"], 1)
+        self.assertEqual(preview["expense_count"], 1)
+        self.assertEqual(preview["total_clp"], 9500)
+
+    def test_custom_date_range_must_be_ordered(self):
+        with self.assertRaises(ValueError):
+            self.service.preview(
+                user=self.scoped_user,
+                company_id="acme",
+                year=2026,
+                month=7,
+                date_from="2026-07-12",
+                date_to="2026-07-10",
+            )
+
+    def test_closed_case_in_period_includes_all_its_expenses(self):
+        self.sheets.cases[0]["created_at"] = "2026-05-01T00:00:00Z"
+        self.sheets.cases[0]["closed_at"] = "2026-06-30T12:00:00Z"
+        self.sheets.expenses[0]["date"] = "2026-05-10"
+        self.sheets.expenses[1]["date"] = "2026-05-11"
+
+        preview = self.service.preview(
+            user=self.scoped_user,
+            company_id="acme",
+            year=2026,
+            month=6,
+        )
+
+        self.assertEqual(preview["case_count"], 1)
+        self.assertEqual(preview["expense_count"], 2)
+        self.assertEqual(preview["total_clp"], 129500)
+
     def test_signed_url_is_short_lived_and_scoped(self):
         result = self.service.generate(user=self.global_user, company_id="acme", year=2026, month=7)
         url = self.service.signed_download_url(self.scoped_user, result["export_id"], "pdf")

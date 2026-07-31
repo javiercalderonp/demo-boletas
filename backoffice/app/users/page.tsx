@@ -98,7 +98,7 @@ export default function UsersPage() {
   }
 
   return (
-    <ProtectedPage>
+    <ProtectedPage requireGlobalAdmin>
       <Shell
         title="Usuarios"
         description="Crea accesos de backoffice y revisa quién ya activó su clave."

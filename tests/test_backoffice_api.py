@@ -21,6 +21,7 @@ from app.api.backoffice import (
     create_case,
     delete_case as delete_case_endpoint,
     generate_case_consolidated_document,
+    get_case,
     list_audit_log,
     refresh_auth_token,
     require_global_admin,
@@ -365,6 +366,98 @@ class BackofficeApiTests(unittest.TestCase):
         self.assertEqual(response.access_token, "token-for-operator@example.com")
         self.assertEqual(response.user["email"], "operator@example.com")
 
+    def test_case_detail_attaches_signed_receipt_urls_to_expenses(self):
+        class FakeCaseBackoffice:
+            def get_case_detail(self, case_id, user=None):
+                return {
+                    "case": {"case_id": case_id},
+                    "expenses": [
+                        {
+                            "expense_id": "EXP-1",
+                            "receipt_storage_provider": "gcs",
+                            "receipt_object_key": "receipts/boleta.jpg",
+                        },
+                        {
+                            "expense_id": "EXP-2",
+                            "receipt_storage_provider": "gcs",
+                            "receipt_object_key": "receipts/factura.pdf",
+                        },
+                    ],
+                    "case_documents": [],
+                }
+
+        class FakeStorage:
+            enabled = True
+
+            def generate_signed_url(self, *, object_key):
+                return f"https://storage.example/{object_key}"
+
+        container = SimpleNamespace(
+            backoffice=FakeCaseBackoffice(),
+            storage=FakeStorage(),
+        )
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(services=container)),
+        )
+
+        result = get_case("CASE-1", request, SUPER_ADMIN_USER)
+
+        self.assertEqual(
+            result["expenses"][0]["image_url"],
+            "https://storage.example/receipts/boleta.jpg",
+        )
+        self.assertEqual(
+            result["expenses"][1]["document_url"],
+            "https://storage.example/receipts/factura.pdf",
+        )
+
+    def test_case_detail_survives_signed_url_connection_failure(self):
+        class FakeCaseBackoffice:
+            def get_case_detail(self, case_id, user=None):
+                return {
+                    "case": {"case_id": case_id},
+                    "expenses": [
+                        {
+                            "expense_id": "EXP-1",
+                            "receipt_storage_provider": "gcs",
+                            "receipt_object_key": "receipts/boleta.jpg",
+                        },
+                    ],
+                    "case_documents": [
+                        {
+                            "document_id": "DOC-1",
+                            "storage_provider": "gcs",
+                            "object_key": "reports/consolidado.pdf",
+                        },
+                    ],
+                }
+
+        class FailingStorage:
+            enabled = True
+
+            def generate_signed_url(self, *, object_key):
+                raise RuntimeError("IAM signing unavailable")
+
+        container = SimpleNamespace(
+            backoffice=FakeCaseBackoffice(),
+            storage=FailingStorage(),
+        )
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(services=container)),
+        )
+
+        result = get_case("CASE-1", request, SUPER_ADMIN_USER)
+
+        self.assertEqual(result["case"]["case_id"], "CASE-1")
+        self.assertEqual(
+            result["expenses"][0]["receipt_url_error"],
+            "signed_url_unavailable",
+        )
+        self.assertEqual(
+            result["case_documents"][0]["document_url_error"],
+            "signed_url_unavailable",
+        )
+
     def test_production_app_disables_docs_and_localhost_cors(self):
         original_debug = main_app.settings.debug
         main_app.settings.debug = False
@@ -382,6 +475,7 @@ class BackofficeApiTests(unittest.TestCase):
             middleware for middleware in app.user_middleware if middleware.cls.__name__ == "CORSMiddleware"
         )
         self.assertNotIn("http://localhost:3000", cors_middleware.kwargs["allow_origins"])
+        self.assertIn("https://expensops.com", cors_middleware.kwargs["allow_origins"])
 
     def test_debug_app_allows_localhost_cors(self):
         original_debug = main_app.settings.debug

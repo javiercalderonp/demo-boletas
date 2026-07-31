@@ -82,7 +82,7 @@ function splitPhoneValue(phone: string): { phone_country_code: string; phone_num
 }
 
 export default function EmployeesPage() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const [items, setItems] = useState<Employee[] | null>(null);
   const [companies, setCompanies] = useState<Company[] | null>(null);
   const [form, setForm] = useState(emptyForm);
@@ -96,6 +96,10 @@ export default function EmployeesPage() {
     deleteCases: boolean;
   } | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const defaultCompanyId =
+    user?.role === "company_admin"
+      ? user.company_id || user.company_ids?.[0] || companies?.[0]?.company_id || ""
+      : "";
 
   function load() {
     if (!token) {
@@ -106,8 +110,19 @@ export default function EmployeesPage() {
       apiRequest<{ items: Company[] }>("/companies", { token }),
     ])
       .then(([employeesData, companiesData]) => {
+        const activeCompanies = companiesData.items.filter((company) => company.active);
         setItems(employeesData.items);
-        setCompanies(companiesData.items.filter((company) => company.active));
+        setCompanies(activeCompanies);
+        const associatedCompanyId =
+          user?.role === "company_admin"
+            ? user.company_id || user.company_ids?.[0] || activeCompanies[0]?.company_id || ""
+            : "";
+        if (associatedCompanyId) {
+          setForm((current) => ({
+            ...current,
+            company_id: current.company_id || associatedCompanyId,
+          }));
+        }
       })
       .catch((nextError) => setError(nextError.message));
   }
@@ -157,7 +172,7 @@ export default function EmployeesPage() {
         },
         token,
       });
-      setForm(emptyForm);
+      setForm({ ...emptyForm, company_id: defaultCompanyId });
       setCreateOpen(false);
       setCompanyAccordionOpen(false);
       load();
@@ -238,7 +253,7 @@ export default function EmployeesPage() {
                   className="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
                   onClick={() => {
                     setCreateOpen(false);
-                    setForm(emptyForm);
+                    setForm({ ...emptyForm, company_id: defaultCompanyId });
                     setCompanyAccordionOpen(false);
                   }}
                   type="button"
@@ -459,7 +474,7 @@ export default function EmployeesPage() {
                     className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
                     onClick={() => {
                       setCreateOpen(false);
-                      setForm(emptyForm);
+                      setForm({ ...emptyForm, company_id: defaultCompanyId });
                       setCompanyAccordionOpen(false);
                     }}
                     type="button"

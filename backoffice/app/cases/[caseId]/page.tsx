@@ -5,19 +5,21 @@ import { useParams } from "next/navigation";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, CircleDollarSign,
-  Clock3, Download, Eye, FileImage, FileText, FolderOpen, Landmark, LoaderCircle,
+  Clock3, Copy, Download, Eye, FileImage, FileText, FolderOpen, Landmark, LoaderCircle,
   Lock, MessageCircle, Pencil, Receipt, Send, UserRound, WalletCards, XCircle,
 } from "lucide-react";
 
 import { Badge } from "@/components/badge";
+import { ApproveExpenseDialog } from "@/components/approve-expense-dialog";
 import { ChatPanel } from "@/components/chat-panel";
 import { ProtectedPage } from "@/components/protected-page";
+import { PortaCaseExportCard } from "@/components/porta-case-export-card";
 import { RejectExpenseDialog } from "@/components/reject-expense-dialog";
 import { Shell } from "@/components/shell";
 import { useAuth } from "@/components/auth-provider";
-import { apiRequest } from "@/lib/api";
+import { apiRequest, apiUpload } from "@/lib/api";
 import { useAutoRefresh } from "@/lib/use-auto-refresh";
-import type { CaseItem, Employee, Expense } from "@/lib/types";
+import type { CaseDocument, CaseItem, Employee, Expense } from "@/lib/types";
 
 const STATUS_LABELS: Record<string, string> = {
   active: "Activa", open: "Abierta", approved: "Aprobada", rejected: "Rechazada",
@@ -26,6 +28,9 @@ const STATUS_LABELS: Record<string, string> = {
   settlement_pending: "Liquidación pendiente",
   pending_company_payment: "Pendiente de pago de la empresa",
   pending_employee_payment: "Pendiente de devolución de la persona",
+  pending_employee_payment_proof: "Esperando comprobante de la persona",
+  payment_proof_under_review: "Comprobante en revisión",
+  payment_proof_rejected: "Comprobante rechazado",
   settled: "Liquidación completada",
   WAIT_RECEIPT: "Esperando comprobante", PROCESSING: "Procesando documento",
   NEEDS_INFO: "Esperando información adicional",
@@ -59,6 +64,16 @@ function parseAmount(value?: number | string): number {
   if (!value) return 0;
   const amount = Number(value.replace(/\./g, "").replace(",", "."));
   return Number.isFinite(amount) ? amount : 0;
+}
+
+function parseOcrData(value?: string): Record<string, unknown> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
 }
 
 function expenseAmount(expense: Expense): number {
@@ -222,6 +237,7 @@ export default function CaseDetailPage() {
   const [item, setItem] = useState<CaseItem | null>(null);
   const [employee, setEmployee] = useState<Employee | null>(null);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [caseDocuments, setCaseDocuments] = useState<CaseDocument[]>([]);
   const [conversationState, setConversationState] = useState("");
   const [activeTab, setActiveTab] = useState<"centers" | "all">("centers");
   const [expandedCenters, setExpandedCenters] = useState<Record<string, boolean>>({});
@@ -231,15 +247,19 @@ export default function CaseDetailPage() {
   const [actionLoading, setActionLoading] = useState("");
   const [expenseLoading, setExpenseLoading] = useState("");
   const [documentLoading, setDocumentLoading] = useState(false);
+  const [paymentProofLoading, setPaymentProofLoading] = useState(false);
+  const [bankDetailsCopied, setBankDetailsCopied] = useState(false);
   const [error, setError] = useState("");
+  const [approveExpense, setApproveExpense] = useState<Expense | null>(null);
   const [rejectIds, setRejectIds] = useState<string[] | null>(null);
   const [showAllActivity, setShowAllActivity] = useState(false);
 
   const fetchCase = useCallback(() => {
     if (!token || !caseId) return;
-    apiRequest<{ case: CaseItem; employee: Employee; expenses: Expense[]; conversations: { state?: string }[] }>(`/cases/${caseId}`, { token })
+    apiRequest<{ case: CaseItem; employee: Employee; expenses: Expense[]; case_documents: CaseDocument[]; conversations: { state?: string }[] }>(`/cases/${caseId}`, { token })
       .then((data) => {
         setItem(data.case); setEmployee(data.employee); setExpenses(data.expenses);
+        setCaseDocuments(data.case_documents || []);
         setConversationState(data.conversations?.[0]?.state || "");
         setError("");
       })
@@ -255,6 +275,41 @@ export default function CaseDetailPage() {
   const percent = budget > 0 ? Math.round((spent / budget) * 100) : null;
   const status = item?.rendicion_status || item?.status || "open";
   const timeline = useMemo(() => item ? timelineFor(item, expenses) : [], [item, expenses]);
+  const settlementProof = caseDocuments
+    .filter((document) => document.document_type === "settlement_payment_proof")
+    .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))[0];
+  const settlementProofOcr = parseOcrData(settlementProof?.ocr_json);
+  const settlementValidation = (
+    settlementProofOcr.settlement_validation &&
+    typeof settlementProofOcr.settlement_validation === "object"
+      ? settlementProofOcr.settlement_validation
+      : {}
+  ) as Record<string, unknown>;
+  const companyPaymentProof = caseDocuments
+    .filter((document) => document.document_type === "company_payment_proof")
+    .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))[0];
+  const employeeBankDetails = [
+    { label: "Banco", value: employee?.bank_name },
+    { label: "Tipo de cuenta", value: employee?.account_type },
+    { label: "Número de cuenta", value: employee?.account_number },
+    { label: "Titular", value: employee?.account_holder },
+    { label: "RUT del titular", value: employee?.account_holder_rut },
+  ]
+    .map((detail) => ({ ...detail, value: String(detail.value ?? "").trim() }))
+    .filter((detail) => Boolean(detail.value));
+
+  async function copyEmployeeBankDetails() {
+    if (!employeeBankDetails.length) return;
+    try {
+      await navigator.clipboard.writeText(
+        employeeBankDetails.map(({ label, value }) => `${label}: ${value}`).join("\n"),
+      );
+      setBankDetailsCopied(true);
+      window.setTimeout(() => setBankDetailsCopied(false), 2000);
+    } catch {
+      setError("No se pudieron copiar los datos bancarios. Intenta nuevamente.");
+    }
+  }
 
   const centers = useMemo(() => {
     const names = new Set<string>([
@@ -284,21 +339,53 @@ export default function CaseDetailPage() {
     finally { setSaving(false); }
   }
 
-  async function caseAction(action: "request_user_confirmation" | "resolve_settlement" | "close_rendicion") {
+  async function caseAction(
+    action: "request_user_confirmation" | "resolve_settlement" | "close_rendicion" | "approve_settlement_proof" | "reject_settlement_proof",
+    options: { force?: boolean; reason?: string } = {},
+  ) {
     if (!token) return;
     setActionLoading(action); setError("");
-    try { await apiRequest(`/cases/${caseId}/actions`, { method: "POST", body: { action }, token }); fetchCase(); }
+    try { await apiRequest(`/cases/${caseId}/actions`, { method: "POST", body: { action, ...options }, token }); fetchCase(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "No se pudo completar la acción."); }
     finally { setActionLoading(""); }
   }
 
-  async function expenseAction(expenseId: string, action: "approve" | "reject", reason?: string) {
+  function closeRendicion() {
+    if (!item) return;
+    const pending = item.settlement_status !== "settled";
+    const message = pending
+      ? "Esta rendición todavía no tiene una transferencia aprobada. Si continúas, el caso se cerrará administrativamente y la liquidación quedará registrada como pendiente. ¿Cerrar de todas formas?"
+      : "¿Cerrar esta rendición? Esta acción es irreversible.";
+    if (window.confirm(message)) caseAction("close_rendicion", { force: pending });
+  }
+
+  async function uploadCompanyPaymentProof(file: File) {
     if (!token) return;
+    const formData = new FormData();
+    formData.append("file", file);
+    setPaymentProofLoading(true);
+    setError("");
+    try {
+      await apiUpload(`/cases/${caseId}/company-payment-proof`, formData, token);
+      fetchCase();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No se pudo enviar el comprobante.");
+    } finally {
+      setPaymentProofLoading(false);
+    }
+  }
+
+  async function expenseAction(expenseId: string, action: "approve" | "reject", reason?: string) {
+    if (!token) return false;
     setExpenseLoading(`${expenseId}:${action}`); setError("");
     try {
       await apiRequest(`/expenses/${expenseId}/actions`, { method: "POST", body: { action, ...(reason ? { reason } : {}) }, token });
       setRejectIds(null); fetchCase();
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "No se pudo actualizar el gasto."); }
+      return true;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No se pudo actualizar el gasto.");
+      return false;
+    }
     finally { setExpenseLoading(""); }
   }
 
@@ -338,11 +425,7 @@ export default function CaseDetailPage() {
               next.has(expense.expense_id) ? next.delete(expense.expense_id) : next.add(expense.expense_id);
               return next;
             })}
-            onApprove={() => {
-              if (window.confirm(`¿Aprobar el gasto de ${expense.merchant || "comercio no identificado"}?`)) {
-                expenseAction(expense.expense_id, "approve");
-              }
-            }}
+            onApprove={() => setApproveExpense(expense)}
             onReject={() => setRejectIds([expense.expense_id])}
           />
         ))}
@@ -390,8 +473,8 @@ export default function CaseDetailPage() {
                   <button className="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-3.5 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50" onClick={() => setEditing((value) => !value)} type="button">
                     <Pencil className="h-4 w-4" /> {editing ? "Cancelar edición" : "Editar"}
                   </button>
-                  {status === "approved" && item.settlement_status !== "settlement_pending" && (
-                    <button className="inline-flex items-center gap-2 rounded-lg border border-red-200 px-3.5 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50" onClick={() => window.confirm("¿Cerrar esta rendición? Esta acción es irreversible.") && caseAction("close_rendicion")} disabled={Boolean(actionLoading)} type="button">
+                  {status === "approved" && (
+                    <button className="inline-flex items-center gap-2 rounded-lg border border-red-200 px-3.5 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50" onClick={closeRendicion} disabled={Boolean(actionLoading)} type="button">
                       <Lock className="h-4 w-4" /> {actionLoading ? "Cerrando…" : "Cerrar rendición"}
                     </button>
                   )}
@@ -451,6 +534,174 @@ export default function CaseDetailPage() {
               </div>
             </section>
 
+            {item.settlement_direction === "employee_owes_company" && (
+              <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h2 className="font-semibold text-slate-950">Comprobante de transferencia</h2>
+                      <Badge tone={settlementProof?.review_status || "pending"}>
+                        {settlementProof ? humanizeStatus(settlementProof.review_status || settlementProof.status) : "No recibido"}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-sm text-slate-600">
+                      {settlementProof
+                        ? `Confirmado por la persona el ${formatDate(settlementProof.user_confirmed_at || settlementProof.created_at, true)}.`
+                        : "La persona todavía no ha confirmado un comprobante por WhatsApp."}
+                    </p>
+                  </div>
+                  {settlementProof?.review_status === "payment_proof_under_review" && (
+                    <div className="flex gap-2">
+                      <button
+                        className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3.5 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                        disabled={Boolean(actionLoading)}
+                        onClick={() => window.confirm("¿Confirmas que la transferencia fue recibida correctamente?") && caseAction("approve_settlement_proof")}
+                        type="button"
+                      >
+                        <CheckCircle2 className="h-4 w-4" /> Aprobar transferencia
+                      </button>
+                      <button
+                        className="inline-flex items-center gap-2 rounded-lg border border-red-200 px-3.5 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                        disabled={Boolean(actionLoading)}
+                        onClick={() => {
+                          const reason = window.prompt("Motivo del rechazo del comprobante:");
+                          if (reason?.trim()) caseAction("reject_settlement_proof", { reason: reason.trim() });
+                        }}
+                        type="button"
+                      >
+                        <XCircle className="h-4 w-4" /> Rechazar
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {settlementProof && (
+                  <div className="mt-4 grid gap-4 md:grid-cols-[220px_1fr]">
+                    <a
+                      className="block overflow-hidden rounded-xl border border-slate-200 bg-slate-50"
+                      href={settlementProof.image_url || settlementProof.document_url || "#"}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      {settlementProof.image_url ? (
+                        <img className="h-48 w-full object-cover" src={settlementProof.image_url} alt="Comprobante de transferencia" />
+                      ) : (
+                        <span className="flex h-48 items-center justify-center gap-2 text-sm text-slate-500"><FileText className="h-5 w-5" /> Abrir comprobante</span>
+                      )}
+                    </a>
+                    <div className="grid content-start gap-3 rounded-xl bg-slate-50 p-4 text-sm sm:grid-cols-2">
+                      <div><p className="text-xs text-slate-500">Monto esperado</p><p className="font-semibold">{formatClp(settlementProof.expected_amount_clp)}</p></div>
+                      <div><p className="text-xs text-slate-500">Monto leído por OCR</p><p className="font-semibold">{settlementProofOcr.total != null ? formatClp(String(settlementProofOcr.total)) : "No identificado"}</p></div>
+                      <div><p className="text-xs text-slate-500">Fecha leída</p><p className="font-semibold">{String(settlementProofOcr.date || "No identificada")}</p></div>
+                      <div><p className="text-xs text-slate-500">Destinatario leído</p><p className="font-semibold">{String(settlementProofOcr.receiver_name || settlementProofOcr.merchant || "No identificado")}</p></div>
+                      <div><p className="text-xs text-slate-500">Recepción</p><p className="font-semibold">{formatDate(settlementProof.created_at, true)}</p></div>
+                      <div><p className="text-xs text-slate-500">Validación automática</p><p className={`font-semibold ${settlementValidation.amount_matches === true ? "text-emerald-700" : "text-amber-700"}`}>{settlementValidation.amount_matches === true ? "Monto coincidente" : "Requiere revisión"}</p></div>
+                      {settlementProof.review_reason && <div className="sm:col-span-2"><p className="text-xs text-slate-500">Resultado de revisión</p><p className="font-medium">{settlementProof.review_reason}</p></div>}
+                    </div>
+                  </div>
+                )}
+              </section>
+            )}
+
+            {item.settlement_direction === "company_owes_employee" && (
+              <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h2 className="font-semibold text-slate-950">Comprobante de reembolso</h2>
+                      <Badge tone={companyPaymentProof ? "approved" : "pending"}>
+                        {companyPaymentProof ? "Enviado al usuario" : "Pendiente"}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-sm text-slate-600">
+                      {companyPaymentProof
+                        ? `El archivo fue enviado por WhatsApp el ${formatDate(companyPaymentProof.created_at, true)}.`
+                        : `Adjunta el respaldo del pago por ${formatClp(item.settlement_amount_clp)} para enviarlo al usuario.`}
+                    </p>
+                  </div>
+                  {!companyPaymentProof && item.settlement_status !== "settled" && (
+                    <label className={`inline-flex cursor-pointer items-center gap-2 rounded-lg bg-primary-600 px-3.5 py-2 text-sm font-semibold text-white hover:bg-primary-700 ${paymentProofLoading ? "pointer-events-none opacity-50" : ""}`}>
+                      <Send className="h-4 w-4" />
+                      {paymentProofLoading ? "Enviando…" : "Adjuntar y enviar"}
+                      <input
+                        className="sr-only"
+                        type="file"
+                        accept="application/pdf,image/jpeg,image/png,image/webp"
+                        disabled={paymentProofLoading}
+                        onChange={(event) => {
+                          const selectedFile = event.target.files?.[0];
+                          if (selectedFile && window.confirm(`¿Enviar ${selectedFile.name} al usuario como comprobante del reembolso?`)) {
+                            uploadCompanyPaymentProof(selectedFile);
+                          }
+                          event.target.value = "";
+                        }}
+                      />
+                    </label>
+                  )}
+                </div>
+                {!companyPaymentProof && (
+                  <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">Datos bancarios del usuario</p>
+                        <p className="mt-0.5 text-xs text-slate-500">
+                          Verifica estos datos antes de realizar el reembolso.
+                        </p>
+                      </div>
+                      {employeeBankDetails.length > 0 && (
+                        <button
+                          className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                          onClick={copyEmployeeBankDetails}
+                          type="button"
+                        >
+                          {bankDetailsCopied
+                            ? <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                            : <Copy className="h-4 w-4" />}
+                          {bankDetailsCopied ? "Datos copiados" : "Copiar datos"}
+                        </button>
+                      )}
+                    </div>
+                    {employeeBankDetails.length > 0 ? (
+                      <dl className="mt-4 grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
+                        {employeeBankDetails.map(({ label, value }) => (
+                          <div key={label}>
+                            <dt className="text-xs text-slate-500">{label}</dt>
+                            <dd className="mt-0.5 break-words text-sm font-semibold text-slate-900">{value}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    ) : (
+                      <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                        El usuario no tiene datos bancarios registrados.
+                      </div>
+                    )}
+                  </div>
+                )}
+                {companyPaymentProof && (
+                  <div className="mt-4 grid gap-4 md:grid-cols-[220px_1fr]">
+                    <a
+                      className="block overflow-hidden rounded-xl border border-slate-200 bg-slate-50"
+                      href={companyPaymentProof.image_url || companyPaymentProof.document_url || "#"}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      {companyPaymentProof.image_url ? (
+                        <img className="h-48 w-full object-cover" src={companyPaymentProof.image_url} alt="Comprobante de reembolso" />
+                      ) : (
+                        <span className="flex h-48 items-center justify-center gap-2 text-sm text-slate-500"><FileText className="h-5 w-5" /> Abrir comprobante</span>
+                      )}
+                    </a>
+                    <div className="grid content-start gap-3 rounded-xl bg-slate-50 p-4 text-sm sm:grid-cols-2">
+                      <div><p className="text-xs text-slate-500">Monto reembolsado</p><p className="font-semibold">{formatClp(companyPaymentProof.expected_amount_clp)}</p></div>
+                      <div><p className="text-xs text-slate-500">Archivo</p><p className="font-semibold">{companyPaymentProof.filename || "Comprobante"}</p></div>
+                      <div><p className="text-xs text-slate-500">Enviado por</p><p className="font-semibold">{companyPaymentProof.reviewed_by || "Backoffice"}</p></div>
+                      <div><p className="text-xs text-slate-500">Estado</p><p className="font-semibold text-emerald-700">Liquidación resuelta</p></div>
+                    </div>
+                  </div>
+                )}
+              </section>
+            )}
+
             {selected.size > 0 && (
               <div className="sticky top-3 z-20 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary-200 bg-primary-50 p-3 shadow-lg">
                 <span className="text-sm font-semibold text-primary-800">{selected.size} seleccionado{selected.size === 1 ? "" : "s"}</span>
@@ -494,6 +745,7 @@ export default function CaseDetailPage() {
               </section>
 
               <aside className="space-y-4">
+                {token && <PortaCaseExportCard caseId={caseId} token={token} />}
                 <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                   <h2 className="text-sm font-semibold text-slate-950">Persona asociada</h2>
                   {employee ? (
@@ -532,7 +784,25 @@ export default function CaseDetailPage() {
             description="Selecciona el motivo del rechazo. La persona será notificada por WhatsApp."
             loading={Boolean(expenseLoading)}
             onCancel={() => setRejectIds(null)}
-            onConfirm={(reason) => rejectIds.length === 1 ? expenseAction(rejectIds[0], "reject", reason) : bulkReject(reason)}
+            onConfirm={async (reason) => {
+              if (rejectIds.length === 1) {
+                await expenseAction(rejectIds[0], "reject", reason);
+              } else {
+                await bulkReject(reason);
+              }
+            }}
+          />
+        )}
+        {approveExpense && (
+          <ApproveExpenseDialog
+            merchant={approveExpense.merchant || "Comercio no identificado"}
+            amount={formatClp(expenseAmount(approveExpense))}
+            loading={expenseLoading === `${approveExpense.expense_id}:approve`}
+            onCancel={() => setApproveExpense(null)}
+            onConfirm={async () => {
+              const approved = await expenseAction(approveExpense.expense_id, "approve");
+              if (approved) setApproveExpense(null);
+            }}
           />
         )}
       </Shell>

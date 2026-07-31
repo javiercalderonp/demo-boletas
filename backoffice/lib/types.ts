@@ -83,6 +83,7 @@ export type CaseItem = {
   settlement_net_clp?: number | string;
   settlement_calculated_at?: string;
   settlement_resolved_at?: string;
+  company_payment_proof_document_id?: string;
   created_at?: string;
   updated_at?: string;
   notes?: string;
@@ -94,6 +95,24 @@ export type CaseItem = {
     template_name?: string;
     message_count?: number;
   };
+};
+
+export type CaseDocument = {
+  document_id: string;
+  case_id: string;
+  document_type?: string;
+  status?: string;
+  review_status?: string;
+  review_reason?: string;
+  expected_amount_clp?: number | string;
+  ocr_json?: string;
+  image_url?: string;
+  document_url?: string;
+  filename?: string;
+  user_confirmed_at?: string;
+  reviewed_at?: string;
+  reviewed_by?: string;
+  created_at?: string;
 };
 
 export type Expense = {
@@ -230,5 +249,41 @@ export type AccountingExport = {
   employee_count: number;
   total_clp: number;
   warnings: AccountingExportWarning[];
+  filters?: {
+    date_from?: string;
+    date_to?: string;
+  };
   downloads: Record<"pdf" | "xlsx" | "csv" | "zip", boolean>;
+};
+
+export type PortaExportPreview = {
+  company_id: string;
+  scope: "case" | "month" | "range" | "company";
+  date_source: "document_date" | "case_closed_at";
+  included_count: number;
+  excluded_count: number;
+  case_count: number;
+  total_clp: number;
+  by_sheet: Record<string, number>;
+  excluded: { expense_id: string; case_id: string; reasons: string[] }[];
+};
+
+export type PortaExport = {
+  export_id: string;
+  company_id: string;
+  scope: "case" | "month" | "range" | "company";
+  case_id?: string;
+  period_year?: number;
+  period_month?: number;
+  date_from?: string;
+  date_to?: string;
+  date_source: "document_date" | "case_closed_at";
+  status: string;
+  requested_by: string;
+  requested_at: string;
+  completed_at?: string;
+  expense_count: number;
+  case_count: number;
+  total_clp: number;
+  warnings: PortaExportPreview["excluded"];
 };

@@ -349,6 +349,7 @@ class SchedulerSimpleConfirmationTests(unittest.TestCase):
     def test_docusign_closure_package_sends_pdf_link_and_closure_message(self):
         service = self.build_service()
         service.docusign_service.enabled = True
+        service.settings.public_base_url = "https://api.example.com"
         service.sheets_service.case_row["closure_method"] = "docusign"
 
         message = service._deliver_submission_closure_package(

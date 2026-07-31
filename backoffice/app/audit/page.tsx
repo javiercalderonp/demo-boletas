@@ -92,7 +92,7 @@ export default function AuditPage() {
   }
 
   return (
-    <ProtectedPage>
+    <ProtectedPage requireGlobalAdmin>
       <Shell
         title="Auditoría"
         description="Historial de acciones realizadas desde el backoffice."

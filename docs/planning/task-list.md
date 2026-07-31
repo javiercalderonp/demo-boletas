@@ -4,6 +4,16 @@
 
 ### Completado — Deploy demo (Cloud Run backend + Vercel backoffice)
 
+- [x] **Documentar la operación del backoffice para administradores de empresa**
+  - Creada guía funcional de inicio, personas, rendiciones, gastos, WhatsApp, liquidación y reportes
+  - Separadas observaciones internas sobre funciones incompletas, nombres ambiguos y riesgos operativos
+  - Alcance validado contra permisos de `company_admin`, pantallas, servicios y pruebas actuales
+
+- [x] **Mejorar presentación del resumen de boletas por WhatsApp**
+  - Agregados iconos a comercio, fecha, total, categoría, país y medio de pago
+  - Montos CLP formateados sin decimales en resúmenes de boleta, factura, honorarios y documentos genéricos
+  - Agregadas pruebas de regresión para evitar valores como `110300.0 CLP`
+
 - [x] **Ordenar documentos y recursos sueltos del repositorio**
   - Documentación de planificación agrupada en `docs/planning/`
   - Flujo funcional movido a `docs/workflows/`
@@ -370,6 +380,22 @@
 
 ### Completado
 
+- [x] **Exportación contable Porta — backend**
+  - Servicio independiente del exportador administrativo para seleccionar gastos por caso, mes, rango o empresa completa
+  - Elegibilidad centralizada sobre los estados operativos existentes del gasto, sin usar ni modificar estados de pago o liquidación
+  - Regla temporal configurable mediante `PORTA_EXPORT_DATE_SOURCE`; la primera versión usa `document_date`
+  - Generación desde una copia inmutable de `FORMATO RENDICIÓN 2026.xlsx`, conservando sus siete hojas, estilos, combinaciones, totales y referencias de `Resumen`
+  - Filas dinámicas antes de los totales, historial básico independiente, almacenamiento GCS privado y descarga firmada
+
+- [x] **Confirmación y revisión de comprobantes de liquidación**
+  - OCR resume monto, fecha y destinatario de la transferencia y compara el monto con la devolución esperada
+  - El trabajador confirma o descarta la lectura por WhatsApp antes de crear el documento financiero
+  - El comprobante confirmado queda asociado al caso, separado de los gastos y pendiente de revisión financiera
+  - Backoffice puede aprobarlo o rechazarlo; la aprobación resuelve la liquidación y notifica al trabajador
+  - Se permite cierre administrativo forzado sin transferencia aprobada, con advertencia, auditoría y nota persistida
+  - Cuando la empresa debe reembolsar, backoffice puede subir el comprobante; se almacena de forma privada, se envía por WhatsApp y solo entonces se resuelve la liquidación
+  - La carga inversa valida formato y tamaño, y revierte el archivo si no puede entregarse al trabajador
+
 - [x] **Exponer monto y cantidad de gastos pendientes de aprobación por caso**
   - El resumen de cada caso incluye `monto_pendiente_revision` y `pending_expense_count`, calculados con los mismos estados pendientes.
 
@@ -717,6 +743,21 @@
 ## Frontend
 
 ### Completado
+
+- [x] **Exportación contable Porta — backoffice**
+  - Sección independiente para exportar por mes, rango o empresa completa, con preview de incluidos y pendientes de corrección
+  - Tarjeta de exportación Porta en el detalle del caso
+  - Historial básico con una nueva generación por solicitud y descarga del Excel
+
+- [x] **Compactar la tabla de rendiciones para evitar scroll horizontal**
+  - Fondos, aprobado y saldo se agrupan en una sola columna de balance.
+  - Se reducen los anchos mínimos de rendición, empleado y estado para mantener visibles progreso, saldo y menú de acciones en la vista inicial.
+
+- [x] **Mostrar y revisar transferencias en la vista de rendición**
+  - Vista previa del comprobante confirmado, estado, monto esperado y fecha de recepción
+  - Acciones de aprobación y rechazo para el operador financiero
+  - Confirmación reforzada al cerrar una rendición con liquidación todavía pendiente
+  - Para reembolsos de la empresa, selector de PDF/imagen con confirmación previa, estado de envío y vista del documento entregado
 
 - [x] **Mostrar gastos pendientes de aprobar en la vista de casos**
   - Nueva columna y resumen móvil con monto CLP pendiente y cantidad de gastos entre paréntesis.

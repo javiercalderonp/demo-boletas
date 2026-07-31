@@ -19,6 +19,7 @@ from app.main import (
     _maybe_handle_settlement_payment_proof,
     _mark_inbound_message_processed,
     _handle_media_message,
+    _handle_settlement_payment_proof_confirmation,
     _handle_case_selection_response,
     _list_active_cases_for_phone,
     _process_media_message_async,
@@ -566,7 +567,7 @@ class ConversationDocumentTypeTests(unittest.TestCase):
             ["Operaciones", "Ventas", "Marketing"],
         )
 
-    def test_settlement_payment_proof_is_saved_as_case_document(self):
+    def test_settlement_payment_proof_is_saved_after_user_confirmation(self):
         container = FakeContainer({"state": "WAIT_RECEIPT", "current_step": "", "context_json": {}})
         container.sheets.expense_case.update(
             {
@@ -588,8 +589,19 @@ class ConversationDocumentTypeTests(unittest.TestCase):
             inbound_message_id="wamid.payment",
         )
 
-        self.assertIn("revisión financiera", reply)
+        self.assertIn("¿Confirmas", reply)
         self.assertEqual(container.sheets.expenses, [])
+        self.assertEqual(container.sheets.case_documents, [])
+        self.assertEqual(container.sheets.conversation["state"], "CONFIRM_SETTLEMENT_PAYMENT_PROOF")
+
+        confirmation_reply = _handle_settlement_payment_proof_confirmation(
+            container,
+            "+56911111111",
+            "sí",
+            container.sheets.get_conversation("+56911111111"),
+        )
+
+        self.assertIn("revisión financiera", confirmation_reply)
         self.assertEqual(len(container.sheets.case_documents), 1)
         document = container.sheets.case_documents[0]
         self.assertEqual(document["document_type"], "settlement_payment_proof")
@@ -985,8 +997,8 @@ class ReceiptPipelineTests(unittest.TestCase):
             "Operación cancelada. Cuando quieras, envíame otro comprobante o varios.",
         )
 
-    def test_currency_correction_accepts_eur_option(self):
-        service = ConversationService(expense_service=FakeExpense())
+    def test_legacy_currency_correction_is_forced_to_clp(self):
+        service = ConversationService(expense_service=ExpenseService(None, None))
         conversation = {
             "state": "NEEDS_INFO",
             "current_step": "currency",
@@ -1007,7 +1019,7 @@ class ReceiptPipelineTests(unittest.TestCase):
         result = service.handle_text_message(conversation, "5")
 
         self.assertEqual(result["state"], "CONFIRM_SUMMARY")
-        self.assertEqual(result["context_json"]["draft_expense"]["currency"], "EUR")
+        self.assertEqual(result["context_json"]["draft_expense"]["currency"], "CLP")
 
     def test_professional_fee_receipt_correction_fields_match_summary(self):
         draft = {
@@ -1085,7 +1097,7 @@ class ReceiptPipelineTests(unittest.TestCase):
             1100000,
         )
 
-    def test_expense_service_normalizes_invalid_euro_currency(self):
+    def test_expense_service_forces_clp_over_detected_euro_currency(self):
         service = ExpenseService(sheets_service=None, llm_service=None)
 
         draft = service.enrich_draft_expense(
@@ -1101,7 +1113,7 @@ class ReceiptPipelineTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(draft["currency"], "EUR")
+        self.assertEqual(draft["currency"], "CLP")
 
     def test_expense_service_uses_receipt_text_geo_rules_before_llm(self):
         llm = FakeGeoLLM(geo_result={"country": "Peru", "currency": "PEN"})
@@ -1129,7 +1141,7 @@ class ReceiptPipelineTests(unittest.TestCase):
         self.assertEqual(draft["currency"], "CLP")
         self.assertEqual(llm.geo_calls, 0)
 
-    def test_expense_service_calls_geo_llm_when_text_rules_are_incomplete(self):
+    def test_expense_service_calls_geo_llm_for_country_but_keeps_clp(self):
         llm = FakeGeoLLM(geo_result={"country": "Spain", "currency": "EUR"})
         service = ExpenseService(sheets_service=None, llm_service=llm)
 
@@ -1147,7 +1159,7 @@ class ReceiptPipelineTests(unittest.TestCase):
         )
 
         self.assertEqual(draft["country"], "Spain")
-        self.assertEqual(draft["currency"], "EUR")
+        self.assertEqual(draft["currency"], "CLP")
         self.assertEqual(llm.geo_calls, 1)
 
     def test_processing_state_does_not_request_case_id(self):

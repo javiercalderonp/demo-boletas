@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 _E164_RE = re.compile(r"^\+[1-9]\d{7,14}$")
@@ -140,7 +140,30 @@ class AccountingExportPayload(BaseModel):
     cost_center: str = ""
     case_status: str = ""
     expense_status: str = ""
+    date_from: str = ""
+    date_to: str = ""
     include_csv: bool = True
+
+
+class PortaExportPayload(BaseModel):
+    company_id: str = Field(min_length=1)
+    scope: Literal["case", "month", "range", "company"]
+    case_id: str = ""
+    year: Optional[int] = Field(default=None, ge=2000, le=2100)
+    month: Optional[int] = Field(default=None, ge=1, le=12)
+    date_from: str = ""
+    date_to: str = ""
+    date_source: Literal["document_date", "case_closed_at"] = "document_date"
+
+    @model_validator(mode="after")
+    def validate_scope_fields(self):
+        if self.scope == "case" and not self.case_id.strip():
+            raise ValueError("Debes indicar un caso")
+        if self.scope == "month" and (self.year is None or self.month is None):
+            raise ValueError("Debes indicar año y mes")
+        if self.scope == "range" and (not self.date_from or not self.date_to):
+            raise ValueError("Debes indicar las fechas desde y hasta")
+        return self
 
 
 class DashboardResponse(BaseModel):
@@ -151,8 +174,10 @@ class StatusActionPayload(BaseModel):
     action: Literal[
         "approve", "reject", "observe", "manual_review", "close", "reopen", "deactivate", "activate", "resolve",
         "request_user_confirmation", "resolve_settlement", "close_rendicion",
+        "approve_settlement_proof", "reject_settlement_proof",
     ]
     reason: Optional[str] = Field(default=None, max_length=500)
+    force: bool = False
 
 
 class SendMessagePayload(BaseModel):

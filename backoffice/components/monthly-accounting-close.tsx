@@ -4,6 +4,7 @@ import { AlertTriangle, FileArchive, FileSpreadsheet, FileText, Trash2, X } from
 import { useCallback, useEffect, useState } from "react";
 
 import { Badge } from "@/components/badge";
+import { useAuth } from "@/components/auth-provider";
 import { SectionCard } from "@/components/section-card";
 import { apiRequest, downloadApiFile } from "@/lib/api";
 import type {
@@ -24,6 +25,21 @@ const statusLabels: Record<string, string> = {
   expired: "Expirado",
 };
 
+const monthNames = [
+  "Enero",
+  "Febrero",
+  "Marzo",
+  "Abril",
+  "Mayo",
+  "Junio",
+  "Julio",
+  "Agosto",
+  "Septiembre",
+  "Octubre",
+  "Noviembre",
+  "Diciembre",
+];
+
 function previousMonth(): { year: number; month: number } {
   const date = new Date();
   date.setDate(1);
@@ -35,19 +51,31 @@ function formatCLP(value: number): string {
   return `$${value.toLocaleString("es-CL", { maximumFractionDigits: 0 })}`;
 }
 
+function exportPeriod(item: AccountingExport): string {
+  if (item.filters?.date_from && item.filters?.date_to) {
+    return `${item.filters.date_from} al ${item.filters.date_to}`;
+  }
+  return `${item.period_year}-${String(item.period_month).padStart(2, "0")}`;
+}
+
 export function MonthlyAccountingClose({ token }: { token: string }) {
+  const { user } = useAuth();
   const defaultPeriod = previousMonth();
   const [companies, setCompanies] = useState<Company[]>([]);
   const [history, setHistory] = useState<AccountingExport[]>([]);
   const [companyId, setCompanyId] = useState("");
   const [year, setYear] = useState(defaultPeriod.year);
   const [month, setMonth] = useState(defaultPeriod.month);
+  const [periodMode, setPeriodMode] = useState<"month" | "range">("month");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [preview, setPreview] = useState<AccountingExportPreview | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<AccountingExport | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
+  const periodIsComplete = periodMode === "month" || Boolean(dateFrom && dateTo);
 
   const loadHistory = useCallback(async () => {
     const result = await apiRequest<ExportsResponse>("/accounting-exports", { token });
@@ -62,11 +90,17 @@ export function MonthlyAccountingClose({ token }: { token: string }) {
       .then(([companyResult, exportResult]) => {
         const activeCompanies = companyResult.items.filter((company) => company.active);
         setCompanies(activeCompanies);
-        setCompanyId((current) => current || activeCompanies[0]?.company_id || "");
+        const associatedCompanyId =
+          user?.role === "company_admin"
+            ? user.company_id || user.company_ids?.[0] || ""
+            : "";
+        setCompanyId(
+          (current) => current || associatedCompanyId || activeCompanies[0]?.company_id || "",
+        );
         setHistory(exportResult.items);
       })
       .catch((nextError: Error) => setError(nextError.message));
-  }, [token]);
+  }, [token, user]);
 
   const loadPreview = useCallback(async () => {
     if (!companyId) return;
@@ -76,6 +110,14 @@ export function MonthlyAccountingClose({ token }: { token: string }) {
       year: String(year),
       month: String(month),
     });
+    if (periodMode === "range") {
+      if (!dateFrom || !dateTo) {
+        setPreview(null);
+        return;
+      }
+      query.set("date_from", dateFrom);
+      query.set("date_to", dateTo);
+    }
     try {
       const result = await apiRequest<AccountingExportPreview>(
         `/accounting-exports/preview?${query.toString()}`,
@@ -85,7 +127,7 @@ export function MonthlyAccountingClose({ token }: { token: string }) {
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "No se pudo cargar la vista previa.");
     }
-  }, [companyId, month, token, year]);
+  }, [companyId, dateFrom, dateTo, month, periodMode, token, year]);
 
   useEffect(() => {
     void loadPreview();
@@ -98,7 +140,14 @@ export function MonthlyAccountingClose({ token }: { token: string }) {
       await apiRequest<AccountingExport>("/accounting-exports", {
         method: "POST",
         token,
-        body: { company_id: companyId, year, month, include_csv: true },
+        body: {
+          company_id: companyId,
+          year,
+          month,
+          date_from: periodMode === "range" ? dateFrom : "",
+          date_to: periodMode === "range" ? dateTo : "",
+          include_csv: true,
+        },
       });
       await loadHistory();
       setModalOpen(false);
@@ -116,7 +165,7 @@ export function MonthlyAccountingClose({ token }: { token: string }) {
       await downloadApiFile(
         `/accounting-exports/${item.export_id}/download?format=${format}`,
         token,
-        `Cierre_${item.period_year}-${String(item.period_month).padStart(2, "0")}.${format}`,
+        `Cierre_${exportPeriod(item).replaceAll(" ", "_")}.${format}`,
       );
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "No se pudo descargar.");
@@ -161,7 +210,7 @@ export function MonthlyAccountingClose({ token }: { token: string }) {
           <button
             type="button"
             onClick={() => setModalOpen(true)}
-            disabled={!companyId}
+            disabled={!companyId || !periodIsComplete}
             className="rounded-lg bg-primary-600 px-3 py-2 text-xs font-semibold text-white transition hover:bg-primary-700 disabled:opacity-50"
           >
             Generar paquete contable
@@ -182,16 +231,47 @@ export function MonthlyAccountingClose({ token }: { token: string }) {
               ))}
             </select>
           </label>
-          <label className="text-xs font-medium text-gray-600">
-            Mes
-            <select value={month} onChange={(event) => setMonth(Number(event.target.value))} className="mt-1 block rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm">
-              {Array.from({ length: 12 }, (_, index) => index + 1).map((value) => <option key={value} value={value}>{String(value).padStart(2, "0")}</option>)}
-            </select>
-          </label>
-          <label className="text-xs font-medium text-gray-600">
-            Año
-            <input type="number" min={2000} max={2100} value={year} onChange={(event) => setYear(Number(event.target.value))} className="mt-1 block w-24 rounded-lg border border-gray-300 px-3 py-2 text-sm" />
-          </label>
+          <div className="flex rounded-lg border border-gray-300 p-1" aria-label="Tipo de período">
+            <button
+              type="button"
+              onClick={() => setPeriodMode("month")}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium ${periodMode === "month" ? "bg-gray-900 text-white" : "text-gray-600"}`}
+            >
+              Por mes
+            </button>
+            <button
+              type="button"
+              onClick={() => setPeriodMode("range")}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium ${periodMode === "range" ? "bg-gray-900 text-white" : "text-gray-600"}`}
+            >
+              Rango personalizado
+            </button>
+          </div>
+          {periodMode === "month" ? (
+            <>
+              <label className="text-xs font-medium text-gray-600">
+                Mes
+                <select value={month} onChange={(event) => setMonth(Number(event.target.value))} className="mt-1 block rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm">
+                  {monthNames.map((name, index) => <option key={name} value={index + 1}>{name}</option>)}
+                </select>
+              </label>
+              <label className="text-xs font-medium text-gray-600">
+                Año
+                <input type="number" min={2000} max={2100} value={year} onChange={(event) => setYear(Number(event.target.value))} className="mt-1 block w-24 rounded-lg border border-gray-300 px-3 py-2 text-sm" />
+              </label>
+            </>
+          ) : (
+            <>
+              <label className="text-xs font-medium text-gray-600">
+                Desde
+                <input type="date" value={dateFrom} max={dateTo || undefined} onChange={(event) => setDateFrom(event.target.value)} className="mt-1 block rounded-lg border border-gray-300 px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs font-medium text-gray-600">
+                Hasta
+                <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(event) => setDateTo(event.target.value)} className="mt-1 block rounded-lg border border-gray-300 px-3 py-2 text-sm" />
+              </label>
+            </>
+          )}
           <button type="button" onClick={() => void loadPreview()} className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Vista previa</button>
         </div>
 
@@ -222,7 +302,7 @@ export function MonthlyAccountingClose({ token }: { token: string }) {
               <tbody>
                 {history.slice(0, 5).map((item) => (
                   <tr key={item.export_id} className="border-t border-gray-100">
-                    <td className="py-2">{item.period_year}-{String(item.period_month).padStart(2, "0")}</td>
+                    <td className="py-2">{exportPeriod(item)}</td>
                     <td className="py-2">{item.requested_by}</td>
                     <td className="py-2"><Badge>{statusLabels[item.status] || item.status}</Badge></td>
                     <td className="py-2">{item.expense_count}</td>

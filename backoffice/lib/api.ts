@@ -1,6 +1,8 @@
 import { emitApiMutation } from "@/lib/api-events";
 
 const DEFAULT_LOCAL_API_BASE_URL = "http://localhost:8000/api";
+const DEFAULT_REQUEST_TIMEOUT_MS = 20000;
+const DEFAULT_UPLOAD_TIMEOUT_MS = 60000;
 const BACKOFFICE_TOKEN_STORAGE_KEY = "backoffice_token";
 const BACKOFFICE_LOGIN_EMAIL_STORAGE_KEY = "backoffice_login_email";
 
@@ -64,6 +66,59 @@ type RequestOptions = {
   token?: string | null;
 };
 
+type ApiErrorItem = {
+  msg?: unknown;
+  message?: unknown;
+};
+
+function apiErrorMessage(value: unknown, fallback: string): string {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+  if (Array.isArray(value)) {
+    const messages = value
+      .map((item) => apiErrorMessage(item, ""))
+      .filter((message) => message.length > 0);
+    return messages.length > 0 ? messages.join(" ") : fallback;
+  }
+  if (value && typeof value === "object") {
+    const item = value as ApiErrorItem;
+    return apiErrorMessage(item.msg ?? item.message, fallback);
+  }
+  return fallback;
+}
+
+async function responseErrorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const data: unknown = await response.json();
+    if (data && typeof data === "object" && "detail" in data) {
+      return apiErrorMessage((data as { detail?: unknown }).detail, fallback);
+    }
+    return apiErrorMessage(data, fallback);
+  } catch {
+    return fallback;
+  }
+}
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("La API tardó demasiado en responder. Intenta nuevamente.");
+    }
+    throw new Error("No se pudo conectar con la API. Revisa tu conexión e intenta nuevamente.");
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 export async function apiRequest<T>(
   path: string,
   { method = "GET", body, token }: RequestOptions = {},
@@ -73,7 +128,7 @@ export async function apiRequest<T>(
   let response: Response;
 
   try {
-    response = await fetch(`${apiBaseUrl}${path}`, {
+    response = await fetchWithTimeout(`${apiBaseUrl}${path}`, {
       method: normalizedMethod,
       headers: {
         "Content-Type": "application/json",
@@ -81,18 +136,15 @@ export async function apiRequest<T>(
       },
       body: body === undefined ? undefined : JSON.stringify(body),
       cache: "no-store",
-    });
-  } catch {
-    throw new Error("No se pudo conectar con la API.");
+    }, DEFAULT_REQUEST_TIMEOUT_MS);
+  } catch (error) {
+    throw error instanceof Error ? error : new Error("No se pudo conectar con la API.");
   }
 
   if (!response.ok) {
-    let detail = "No se pudo completar la solicitud.";
-    try {
-      const data = await response.json();
-      detail = data.detail || detail;
-    } catch {}
-    throw new Error(detail);
+    throw new Error(
+      await responseErrorMessage(response, "No se pudo completar la solicitud."),
+    );
   }
 
   if (normalizedMethod !== "GET" && normalizedMethod !== "HEAD") {
@@ -100,6 +152,58 @@ export async function apiRequest<T>(
   }
 
   return response.json() as Promise<T>;
+}
+
+export async function apiUpload<T>(
+  path: string,
+  formData: FormData,
+  token: string,
+): Promise<T> {
+  const apiBaseUrl = getApiBaseUrl();
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(`${apiBaseUrl}${path}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+      cache: "no-store",
+    }, DEFAULT_UPLOAD_TIMEOUT_MS);
+  } catch (error) {
+    throw error instanceof Error ? error : new Error("No se pudo conectar con la API.");
+  }
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response, "No se pudo subir el archivo."));
+  }
+  emitApiMutation({ method: "POST", path });
+  return response.json() as Promise<T>;
+}
+
+export async function downloadApiCsv(
+  path: string,
+  token: string,
+  filename: string,
+): Promise<void> {
+  const response = await fetchWithTimeout(
+    `${getApiBaseUrl()}${path}`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    },
+    DEFAULT_REQUEST_TIMEOUT_MS,
+  );
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response, "No se pudo descargar el archivo."));
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 export function getStoredToken(): string | null {

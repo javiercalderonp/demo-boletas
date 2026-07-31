@@ -210,15 +210,13 @@ class ExpenseService:
 
     def enrich_draft_expense(self, draft_expense: dict[str, Any]) -> dict[str, Any]:
         draft = dict(draft_expense or {})
+        # Temporary product rule: all expenses are recorded in Chilean pesos,
+        # regardless of the currency suggested by OCR or the LLM.
+        draft["currency"] = "CLP"
         case_id = str(draft.get("case_id", draft.get("trip_id", "")) or "").strip()
         if case_id:
             draft["case_id"] = case_id
             draft["trip_id"] = case_id
-        normalized_currency = self._normalize_currency_candidate(draft.get("currency"))
-        if normalized_currency:
-            draft["currency"] = normalized_currency
-        elif "currency" in draft and str(draft.get("currency", "") or "").strip():
-            draft["currency"] = ""
         merchant = str(draft.get("merchant", "") or "").strip()
         if self._should_infer_merchant_with_llm(draft):
             inferred_merchant = self.infer_merchant_with_llm(draft)
@@ -279,6 +277,7 @@ class ExpenseService:
         draft = self._reconcile_country_currency(draft)
         draft = self._apply_chile_guardrails(draft)
         draft = self._normalize_professional_fee_receipt(draft)
+        draft["currency"] = "CLP"
 
         category = draft.get("category")
         if category is None or str(category).strip() == "":
@@ -405,6 +404,13 @@ class ExpenseService:
         if rate is not None:
             draft["withholding_rate"] = rate
         return draft
+
+    def prepare_accounting_export_fields(
+        self, expense: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Reuse existing recognition reconciliation without persisting changes."""
+
+        return self._normalize_professional_fee_receipt(dict(expense))
 
     def _expected_professional_fee_withholding_rate(self, draft_expense: dict[str, Any]) -> float | None:
         country = str(draft_expense.get("country", "") or "").strip().lower()
@@ -1311,21 +1317,29 @@ class ExpenseService:
 
     def _build_receipt_summary(self, draft_expense: dict[str, Any]) -> str:
         lines = ["Detecté este gasto a partir de una *boleta*:"]
-        lines.append(f"Comercio: {draft_expense.get('merchant', '-')}")
-        lines.append(f"Fecha: {draft_expense.get('date', '-')}")
-        lines.append(f"Total: {draft_expense.get('total', '-')} {draft_expense.get('currency', '-')}")
-        lines.append(f"Categoría: {draft_expense.get('category', '-')}")
-        lines.append(f"País: {draft_expense.get('country', '-')}")
+        currency = draft_expense.get("currency", "-")
+        lines.append(f"🏪 Comercio: {draft_expense.get('merchant', '-')}")
+        lines.append(f"📅 Fecha: {draft_expense.get('date', '-')}")
+        lines.append(
+            f"💵 Total: {self._format_summary_amount(draft_expense.get('total'), currency)} "
+            f"{currency}"
+        )
+        lines.append(f"🏷️ Categoría: {draft_expense.get('category', '-')}")
+        lines.append(f"🌎 País: {draft_expense.get('country', '-')}")
         if draft_expense.get("payment_method"):
-            lines.append(f"Medio de pago: {draft_expense.get('payment_method')}")
+            lines.append(f"💳 Medio de pago: {draft_expense.get('payment_method')}")
         return "\n".join(lines)
 
     def _build_invoice_summary(self, draft_expense: dict[str, Any]) -> str:
         lines = ["Detecté este gasto a partir de una *factura*:"]
+        currency = draft_expense.get("currency", "-")
         lines.append(f"Proveedor: {draft_expense.get('merchant', '-')}")
         lines.append(f"Fecha: {draft_expense.get('date', '-')}")
         lines.append(f"Folio: {draft_expense.get('invoice_number', '-')}")
-        lines.append(f"Total: {draft_expense.get('total', '-')} {draft_expense.get('currency', '-')}")
+        lines.append(
+            f"Total: {self._format_summary_amount(draft_expense.get('total'), currency)} "
+            f"{currency}"
+        )
         lines.append(f"Categoría: {draft_expense.get('category', '-')}")
         lines.append(f"País: {draft_expense.get('country', '-')}")
         if draft_expense.get("issuer_tax_id"):
@@ -1347,12 +1361,13 @@ class ExpenseService:
         if liquid_amount is None and draft_expense.get("gross_amount") is None:
             liquid_amount = draft_expense.get("total")
         lines.append(
-            f"💵 Monto líquido: {self._format_summary_amount(liquid_amount)} "
+            f"💵 Monto líquido: {self._format_summary_amount(liquid_amount, draft_expense.get('currency'))} "
             f"{draft_expense.get('currency', '-')}"
         )
         if draft_expense.get("gross_amount") is not None:
             lines.append(
-                f"💰 Monto bruto: {self._format_summary_amount(draft_expense.get('gross_amount'))} "
+                f"💰 Monto bruto: "
+                f"{self._format_summary_amount(draft_expense.get('gross_amount'), draft_expense.get('currency'))} "
                 f"{draft_expense.get('currency', '-')}"
             )
         return "\n".join(lines)
@@ -1361,20 +1376,26 @@ class ExpenseService:
         tax_id = str(value or "").strip()
         return re.sub(r"^\s*(?:RUT|RUC|ID)\s*:?\s*", "", tax_id, flags=re.IGNORECASE).strip() or "-"
 
-    def _format_summary_amount(self, value: Any) -> str:
+    def _format_summary_amount(self, value: Any, currency: Any = "") -> str:
         amount = parse_float(value)
         if amount is None:
             return "-"
+        if str(currency or "").strip().upper() == "CLP":
+            return f"{round(amount):,}".replace(",", ".")
         if amount.is_integer():
             return str(int(amount))
         return f"{amount:.2f}".rstrip("0").rstrip(".")
 
     def _build_generic_summary(self, draft_expense: dict[str, Any]) -> str:
         doc_label = draft_expense.get("document_type", "-")
+        currency = draft_expense.get("currency", "-")
         lines = [f"Detecté este gasto ({doc_label}):"]
         lines.append(f"Comercio: {draft_expense.get('merchant', '-')}")
         lines.append(f"Fecha: {draft_expense.get('date', '-')}")
-        lines.append(f"Total: {draft_expense.get('total', '-')} {draft_expense.get('currency', '-')}")
+        lines.append(
+            f"Total: {self._format_summary_amount(draft_expense.get('total'), currency)} "
+            f"{currency}"
+        )
         lines.append(f"Categoría: {draft_expense.get('category', '-')}")
         lines.append(f"País: {draft_expense.get('country', '-')}")
         return "\n".join(lines)
@@ -1470,7 +1491,7 @@ class ExpenseService:
                 review_reason="no_active_case",
             )
 
-        currency = str(draft_expense.get("currency", "CLP")).upper()
+        currency = "CLP"
         total_clp = convert_to_clp(total, currency)
         active_case_id = str(expense_case.get("case_id", "") or "").strip()
 
@@ -1520,7 +1541,7 @@ class ExpenseService:
         review_reason: str,
     ) -> dict[str, Any]:
         total = parse_float(draft_expense.get("total"))
-        currency = str(draft_expense.get("currency", "CLP")).upper() or "CLP"
+        currency = "CLP"
         total_clp = convert_to_clp(total, currency) if total is not None else ""
         now = utc_now_iso()
         draft_with_reason = dict(draft_expense)
@@ -1532,7 +1553,7 @@ class ExpenseService:
             "trip_id": "",
             "merchant": draft_expense.get("merchant", ""),
             "date": draft_expense.get("date", ""),
-            "currency": currency if str(draft_expense.get("currency", "") or "").strip() else "",
+            "currency": currency,
             "total": total if total is not None else draft_expense.get("total", ""),
             "total_clp": round(total_clp, 2) if isinstance(total_clp, (int, float)) else "",
             "category": draft_expense.get("category", ""),

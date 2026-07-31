@@ -6,6 +6,22 @@ import { useAuth } from "@/components/auth-provider";
 import { BrandLogo } from "@/components/brand-logo";
 import { apiRequest, getStoredLoginEmail } from "@/lib/api";
 
+function validatePassword(password: string): string | null {
+  if (password.length < 8) {
+    return "La clave debe tener al menos 8 caracteres.";
+  }
+  if (!/[A-Z]/.test(password)) {
+    return "La clave debe incluir al menos una mayúscula.";
+  }
+  if (!/\d/.test(password)) {
+    return "La clave debe incluir al menos un número.";
+  }
+  if (!/[^A-Za-z0-9]/.test(password)) {
+    return "La clave debe incluir al menos un carácter especial.";
+  }
+  return null;
+}
+
 export default function LoginPage() {
   const { login, setupPassword } = useAuth();
   const [mode, setMode] = useState<"login" | "requestSetup" | "setup">("login");
@@ -43,6 +59,10 @@ export default function LoginPage() {
       } else {
         if (password !== passwordConfirmation) {
           throw new Error("Las claves no coinciden.");
+        }
+        const passwordError = validatePassword(password);
+        if (passwordError) {
+          throw new Error(passwordError);
         }
         await setupPassword(email, name, password);
       }
@@ -100,11 +120,17 @@ export default function LoginPage() {
                   type="password"
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
+                  autoComplete={mode === "setup" ? "new-password" : "current-password"}
                   className="block w-full rounded-lg border border-gray-300 px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
                   placeholder="••••••••"
                   required
                   minLength={mode === "setup" ? 8 : undefined}
                 />
+                {mode === "setup" && (
+                  <p className="mt-1.5 text-xs leading-5 text-gray-500">
+                    Usa al menos 8 caracteres, una mayúscula, un número y un carácter especial.
+                  </p>
+                )}
               </div>
             )}
             {mode === "setup" && (
@@ -114,6 +140,7 @@ export default function LoginPage() {
                   type="password"
                   value={passwordConfirmation}
                   onChange={(event) => setPasswordConfirmation(event.target.value)}
+                  autoComplete="new-password"
                   className="block w-full rounded-lg border border-gray-300 px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
                   placeholder="••••••••"
                   required

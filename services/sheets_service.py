@@ -34,6 +34,7 @@ SHEET_NAMES = {
     "backoffice_users": "BackofficeUsers",
     "audit_log": "AuditLog",
     "monthly_accounting_exports": "MonthlyAccountingExports",
+    "porta_exports": "PortaExports",
 }
 
 LEGACY_SHEET_NAMES = {
@@ -113,6 +114,7 @@ _TRIP_REQUIRED_HEADERS = [
     "settlement_calculated_at",
     "settlement_resolved_at",
     "settlement_payment_proof_document_id",
+    "company_payment_proof_document_id",
     "settlement_notes",
 ]
 _CONVERSATION_REQUIRED_HEADERS = [
@@ -154,6 +156,9 @@ _TRIP_DOCUMENT_HEADERS = [
     "review_reason",
     "ocr_json",
     "expected_amount_clp",
+    "user_confirmed_at",
+    "reviewed_at",
+    "reviewed_by",
 ]
 _BACKOFFICE_USER_HEADERS = [
     "id",
@@ -214,6 +219,13 @@ _MONTHLY_ACCOUNTING_EXPORT_HEADERS = [
     "snapshot_json",
     "error_message",
     "format_version",
+]
+_PORTA_EXPORT_HEADERS = [
+    "export_id", "company_id", "scope", "case_id", "period_year",
+    "period_month", "date_from", "date_to", "date_source", "filters_json",
+    "status", "requested_by", "requested_at", "completed_at",
+    "xlsx_object_key", "expense_count", "case_count", "total_clp",
+    "warnings_json", "error_message", "format_version",
 ]
 
 
@@ -298,6 +310,7 @@ class SheetsService:
             "BackofficeUsers": [],
             "AuditLog": [],
             "MonthlyAccountingExports": [],
+            "PortaExports": [],
         }
         credentials_path = str(getattr(self.settings, "google_application_credentials", "") or "").strip()
         if (
@@ -661,6 +674,9 @@ class SheetsService:
             SHEET_NAMES["monthly_accounting_exports"],
             list(_MONTHLY_ACCOUNTING_EXPORT_HEADERS),
         )
+        self._ensure_sheet_headers(
+            SHEET_NAMES["porta_exports"], list(_PORTA_EXPORT_HEADERS)
+        )
 
     def _ensure_expenses_headers(self) -> None:
         ws = self._worksheet(SHEET_NAMES["expenses"])
@@ -914,6 +930,8 @@ class SheetsService:
             return list(_AUDIT_LOG_HEADERS)
         if name == SHEET_NAMES["monthly_accounting_exports"]:
             return list(_MONTHLY_ACCOUNTING_EXPORT_HEADERS)
+        if name == SHEET_NAMES["porta_exports"]:
+            return list(_PORTA_EXPORT_HEADERS)
         return []
 
     def _with_retry(self, operation, retries: int = 3, base_delay: float = 0.5):
@@ -1416,6 +1434,36 @@ class SheetsService:
             str(export_id or "").strip(),
         )
         return existing if deleted else None
+
+    def create_porta_export(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._append_row(SHEET_NAMES["porta_exports"], payload)
+        return dict(payload)
+
+    def update_porta_export(
+        self, export_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        existing = self.get_porta_export(export_id)
+        if existing is None:
+            return None
+        merged = {**existing, **payload, "export_id": str(export_id or "").strip()}
+        self._upsert_by_key(
+            SHEET_NAMES["porta_exports"], "export_id", merged["export_id"], merged
+        )
+        return merged
+
+    def get_porta_export(self, export_id: str) -> dict[str, Any] | None:
+        target = str(export_id or "").strip()
+        for row in self._get_records(SHEET_NAMES["porta_exports"]):
+            if str(row.get("export_id", "") or "").strip() == target:
+                return dict(row)
+        return None
+
+    def list_porta_exports(self) -> list[dict[str, Any]]:
+        rows = [
+            dict(row) for row in self._get_records(SHEET_NAMES["porta_exports"])
+        ]
+        rows.sort(key=lambda item: str(item.get("requested_at", "") or ""), reverse=True)
+        return rows
 
     def list_employees(self) -> list[dict[str, Any]]:
         employees: list[dict[str, Any]] = []

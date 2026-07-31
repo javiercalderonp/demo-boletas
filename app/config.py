@@ -90,6 +90,12 @@ class Settings:
     consolidated_report_logo_path: str = os.getenv(
         "CONSOLIDATED_REPORT_LOGO_PATH", "./assets/ripley-logo.png"
     )
+    porta_export_template_path: str = os.getenv(
+        "PORTA_EXPORT_TEMPLATE_PATH", "./FORMATO RENDICIÓN 2026.xlsx"
+    )
+    porta_export_date_source: str = os.getenv(
+        "PORTA_EXPORT_DATE_SOURCE", "document_date"
+    ).strip().lower()
     docusign_enabled: bool = _as_bool(os.getenv("DOCUSIGN_ENABLED"), default=False)
     docusign_base_url: str = os.getenv(
         "DOCUSIGN_BASE_URL", "https://demo.docusign.net/restapi"

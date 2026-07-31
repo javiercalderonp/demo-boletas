@@ -7,7 +7,6 @@ import {
   CheckCircle,
   CheckSquare,
   Download,
-  Ellipsis,
   FileText,
   Filter,
   Inbox,
@@ -25,7 +24,7 @@ import { SectionCard } from "@/components/section-card";
 import { Shell } from "@/components/shell";
 import { TableSkeleton } from "@/components/table-skeleton";
 import { useAuth } from "@/components/auth-provider";
-import { apiRequest, getApiBaseUrl } from "@/lib/api";
+import { apiRequest, downloadApiCsv } from "@/lib/api";
 import { normalizeExpenseReviewFields } from "@/lib/expense-review";
 import { useAutoRefresh } from "@/lib/use-auto-refresh";
 import type { Expense } from "@/lib/types";
@@ -136,30 +135,6 @@ type RejectConfirm = {
   ids: string[];
 } | null;
 
-function renderSecondaryExpenseAction({
-  label,
-  tone,
-  onClick,
-}: {
-  label: string;
-  tone: "danger";
-  onClick: () => void;
-}) {
-  return (
-    <button
-      className="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-red-600 transition hover:bg-red-50"
-      onClick={(event) => {
-        event.stopPropagation();
-        (event.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open");
-        onClick();
-      }}
-      type="button"
-    >
-      {label}
-    </button>
-  );
-}
-
 export default function ExpensesPage() {
   const { token } = useAuth();
   const [items, setItems] = useState<Expense[] | null>(null);
@@ -173,16 +148,7 @@ export default function ExpensesPage() {
 
   async function exportCsv() {
     if (!token) return;
-    const response = await fetch(`${getApiBaseUrl()}/expenses/export/csv`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "gastos.csv";
-    a.click();
-    URL.revokeObjectURL(url);
+    await downloadApiCsv("/expenses/export/csv", token, "gastos.csv");
   }
 
   function load(nextFilters = filters) {
@@ -662,24 +628,16 @@ export default function ExpensesPage() {
                               </button>
                             )}
                             {canReject && (
-                              <details
-                                className="relative"
-                                onClick={(event) => event.stopPropagation()}
-                                onKeyDown={(event) => event.stopPropagation()}
+                              <button
+                                className="rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-50"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setRejectConfirm({ ids: [expense.expense_id] });
+                                }}
+                                type="button"
                               >
-                                <summary className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-full transition hover:bg-gray-200 [&::-webkit-details-marker]:hidden">
-                                  <Ellipsis className="h-4 w-4 text-gray-500" />
-                                </summary>
-                                <div className="absolute left-0 top-11 z-10 min-w-[10rem] overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-lg">
-                                  {canReject &&
-                                    renderSecondaryExpenseAction({
-                                      label: "Rechazar",
-                                      tone: "danger",
-                                      onClick: () =>
-                                        setRejectConfirm({ ids: [expense.expense_id] }),
-                                    })}
-                                </div>
-                              </details>
+                                Rechazar
+                              </button>
                             )}
                           </div>
                         </div>
@@ -774,24 +732,16 @@ export default function ExpensesPage() {
                             </button>
                           )}
                           {canReject && (
-                            <details
-                              className="relative"
-                              onClick={(event) => event.stopPropagation()}
-                              onKeyDown={(event) => event.stopPropagation()}
+                            <button
+                              className="rounded-md border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 transition hover:bg-red-50"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setRejectConfirm({ ids: [expense.expense_id] });
+                              }}
+                              type="button"
                             >
-                              <summary className="flex h-8 w-8 cursor-pointer list-none items-center justify-center rounded-md border border-gray-300 bg-white text-gray-600 transition hover:bg-gray-50 [&::-webkit-details-marker]:hidden">
-                                <Ellipsis className="h-4 w-4" />
-                              </summary>
-                              <div className="absolute left-0 top-10 z-10 min-w-[150px] rounded-xl border border-gray-200 bg-white p-1 shadow-lg">
-                                {canReject &&
-                                  renderSecondaryExpenseAction({
-                                    label: "Rechazar",
-                                    tone: "danger",
-                                    onClick: () =>
-                                      setRejectConfirm({ ids: [expense.expense_id] }),
-                                  })}
-                              </div>
-                            </details>
+                              Rechazar
+                            </button>
                           )}
                         </div>
                       </div>,

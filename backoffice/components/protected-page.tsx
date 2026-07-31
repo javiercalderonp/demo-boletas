@@ -5,17 +5,35 @@ import { useRouter } from "next/navigation";
 
 import { useAuth } from "@/components/auth-provider";
 
-export function ProtectedPage({ children }: { children: React.ReactNode }) {
+export function ProtectedPage({
+  children,
+  requireGlobalAdmin = false,
+}: {
+  children: React.ReactNode;
+  requireGlobalAdmin?: boolean;
+}) {
   const { user, loading } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
     if (!loading && !user) {
       router.push("/login");
+    } else if (
+      !loading &&
+      requireGlobalAdmin &&
+      user &&
+      !(user.scope_type === "global" && (user.role === "super_admin" || user.role === "admin"))
+    ) {
+      router.replace("/");
     }
-  }, [loading, router, user]);
+  }, [loading, requireGlobalAdmin, router, user]);
 
-  if (loading || !user) {
+  const unauthorized =
+    requireGlobalAdmin &&
+    user &&
+    !(user.scope_type === "global" && (user.role === "super_admin" || user.role === "admin"));
+
+  if (loading || !user || unauthorized) {
     return (
       <div className="flex h-screen items-center justify-center bg-gray-50">
         <div className="flex flex-col items-center gap-3">

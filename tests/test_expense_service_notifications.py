@@ -87,6 +87,63 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
 
         self.assertNotIn("No se detectó número de folio/factura.", summary)
 
+    def test_receipt_summary_uses_icons_and_formats_clp_without_decimals(self):
+        service = ExpenseService(sheets_service=FakeSheetsService())
+
+        summary = service.build_summary_message(
+            {
+                "document_type": "receipt",
+                "merchant": "NIU SUSHI",
+                "date": "2021-04-22",
+                "currency": "CLP",
+                "total": 110300.0,
+                "category": "Meals",
+                "country": "Chile",
+                "payment_method": "VISA DEBITO",
+            },
+            include_text_actions=False,
+        )
+
+        self.assertIn("🏪 Comercio: NIU SUSHI", summary)
+        self.assertIn("📅 Fecha: 2021-04-22", summary)
+        self.assertIn("💵 Total: 110.300 CLP", summary)
+        self.assertIn("🏷️ Categoría: Meals", summary)
+        self.assertIn("🌎 País: Chile", summary)
+        self.assertIn("💳 Medio de pago: VISA DEBITO", summary)
+        self.assertNotIn("110300.0", summary)
+
+    def test_invoice_and_generic_summaries_format_clp_without_decimals(self):
+        service = ExpenseService(sheets_service=FakeSheetsService())
+
+        invoice_summary = service.build_summary_message(
+            {
+                "document_type": "invoice",
+                "merchant": "Proveedor",
+                "date": "2026-07-25",
+                "currency": "CLP",
+                "total": 4500.0,
+                "category": "Otros",
+                "country": "Chile",
+                "invoice_number": "123",
+            },
+            include_text_actions=False,
+        )
+        generic_summary = service.build_summary_message(
+            {
+                "document_type": "otro",
+                "merchant": "Proveedor",
+                "date": "2026-07-25",
+                "currency": "CLP",
+                "total": 4500.0,
+                "category": "Otros",
+                "country": "Chile",
+            },
+            include_text_actions=False,
+        )
+
+        self.assertIn("Total: 4.500 CLP", invoice_summary)
+        self.assertIn("Total: 4.500 CLP", generic_summary)
+
     def test_policy_status_and_alert_messages_are_separated(self):
         sheets = FakeSheetsService()
         sheets.case_expenses = [{"total_clp": 12000}]
@@ -307,9 +364,9 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
         self.assertEqual(draft["net_amount"], 84750)
         self.assertEqual(draft["withholding_rate"], 15.25)
         self.assertIn("boleta de honorarios", summary)
-        self.assertIn("💰 Monto bruto: 100000", summary)
+        self.assertIn("💰 Monto bruto: 100.000", summary)
         self.assertNotIn("Retención", summary)
-        self.assertIn("💵 Monto líquido: 84750", summary)
+        self.assertIn("💵 Monto líquido: 84.750", summary)
         self.assertIn("🪪 RUT emisor: 12.345.678-9", summary)
         self.assertIn("🪪 RUT receptor: 77.123.456-1", summary)
         self.assertNotIn("RUT emisor: RUT", summary)
@@ -345,8 +402,8 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
                 "🔢 Folio: 1255",
                 "🪪 RUT emisor: 77.987.654-3",
                 "🪪 RUT receptor: 77.123.456-1",
-                "💵 Monto líquido: 241500 CLP",
-                "💰 Monto bruto: 280000 CLP",
+                "💵 Monto líquido: 241.500 CLP",
+                "💰 Monto bruto: 280.000 CLP",
             ],
         )
 
@@ -497,8 +554,8 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
         self.assertEqual(draft["withholding_amount"], 57750)
         self.assertEqual(draft["net_amount"], 362250)
         self.assertEqual(draft["total"], 420000)
-        self.assertIn("💰 Monto bruto: 420000 CLP", summary)
-        self.assertIn("💵 Monto líquido: 362250 CLP", summary)
+        self.assertIn("💰 Monto bruto: 420.000 CLP", summary)
+        self.assertIn("💵 Monto líquido: 362.250 CLP", summary)
 
     def test_professional_fee_receipt_derives_gross_from_total_when_net_field_is_missing(self):
         service = ExpenseService(sheets_service=FakeSheetsService())
@@ -522,8 +579,8 @@ class ExpenseServiceNotificationTests(unittest.TestCase):
         self.assertEqual(draft["gross_amount"], 420000)
         self.assertEqual(draft["net_amount"], 362250)
         self.assertEqual(draft["total"], 420000)
-        self.assertIn("💰 Monto bruto: 420000 CLP", summary)
-        self.assertIn("💵 Monto líquido: 362250 CLP", summary)
+        self.assertIn("💰 Monto bruto: 420.000 CLP", summary)
+        self.assertIn("💵 Monto líquido: 362.250 CLP", summary)
 
     def test_professional_fee_receipt_does_not_require_category_or_country(self):
         service = ExpenseService(sheets_service=FakeSheetsService())

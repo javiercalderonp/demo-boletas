@@ -19,6 +19,21 @@ const conversationStateLabels: Record<string, string> = {
   active: "Activa",
 };
 
+const interactiveReplyLabels: Record<string, string> = {
+  closure_no_finish_submission: "Cerrar rendición",
+  closure_no_finish_trip: "Cerrar viaje",
+  closure_yes_more_documents: "Tengo más documentos",
+  closure_yes_more_receipts: "Tengo más comprobantes",
+  simple_confirmation_no_review_company: "Revisar con la empresa",
+  simple_confirmation_yes_confirm_consolidated: "Confirmar",
+};
+
+function formatMessageText(message: ConversationMessage) {
+  const text = String(message.text || "").trim();
+  if (message.speaker !== "person") return text;
+  return interactiveReplyLabels[text.toLowerCase()] ?? text;
+}
+
 function formatConversationState(value?: string) {
   if (!value) return "Sin estado";
   return conversationStateLabels[value] ??
@@ -206,6 +221,7 @@ export function ChatPanel({
                 const isPerson = message.speaker === "person";
                 const isOperator = message.speaker === "operator";
                 const attachments = getMediaAttachments(message);
+                const displayText = formatMessageText(message);
 
                 let alignment = "justify-start";
                 let bgClasses = "bg-white text-gray-900 shadow-sm ring-1 ring-black/5";
@@ -284,7 +300,11 @@ export function ChatPanel({
                           )}
                         </div>
                       )}
-                      {message.text && <p className="whitespace-pre-wrap text-sm leading-5">{message.text}</p>}
+                      {displayText && (
+                        <p className="whitespace-pre-wrap break-words text-sm leading-5">
+                          {displayText}
+                        </p>
+                      )}
                       <p className={`mt-1 text-right text-[10px] ${timeColor}`}>
                         {formatDateTime(message.created_at)}
                       </p>

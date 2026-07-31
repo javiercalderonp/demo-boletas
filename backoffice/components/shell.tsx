@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
@@ -15,6 +16,7 @@ import {
   Menu,
   UserCog,
   ClipboardList,
+  FileSpreadsheet,
 } from "lucide-react";
 
 import { useAuth } from "@/components/auth-provider";
@@ -25,6 +27,7 @@ const navigation = [
   { href: "/employees", label: "Personas", icon: Users },
   { href: "/cases", label: "Casos", icon: Briefcase },
   { href: "/expenses", label: "Gastos", icon: Receipt },
+  { href: "/accounting-exports", label: "Exportación contable", icon: FileSpreadsheet },
   { href: "/conversations", label: "Conversaciones", icon: MessageSquare },
   { href: "/users", label: "Usuarios", icon: UserCog },
   { href: "/audit", label: "Auditoría", icon: ClipboardList },
@@ -32,6 +35,10 @@ const navigation = [
 
 const deployCommit = process.env.NEXT_PUBLIC_DEPLOY_COMMIT || "local";
 const deployTime = process.env.NEXT_PUBLIC_DEPLOY_TIME || "";
+
+const companyLogos: Record<string, { src: string; alt: string }> = {
+  porta: { src: "/company-logos/porta.webp", alt: "Porta" },
+};
 
 export function Shell({
   title,
@@ -46,6 +53,24 @@ export function Shell({
   const { user, logout } = useAuth();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const isGlobalAdmin =
+    user?.scope_type === "global" &&
+    (user.role === "super_admin" || user.role === "admin");
+  const visibleNavigation = navigation.filter(
+    (item) => isGlobalAdmin || (item.href !== "/users" && item.href !== "/audit"),
+  );
+  const isCompanyAdmin =
+    user?.scope_type === "company" &&
+    (user.role === "company_admin" || user.role === "admin");
+  const companyIds = user?.company_ids?.length
+    ? user.company_ids
+    : user?.company_id
+      ? [user.company_id]
+      : [];
+  const companyLogo =
+    isCompanyAdmin && companyIds.length === 1
+      ? companyLogos[companyIds[0].trim().toLowerCase()]
+      : undefined;
 
   const isActive = (href: string) => {
     if (href === "/") return pathname === "/";
@@ -76,7 +101,7 @@ export function Shell({
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto px-3 pb-4 pt-0">
           <div className="space-y-1">
-            {navigation.map((item) => {
+            {visibleNavigation.map((item) => {
               const Icon = item.icon;
               const active = isActive(item.href);
               return (
@@ -145,15 +170,27 @@ export function Shell({
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Search */}
-            <div className="relative hidden md:block">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Buscar..."
-                className="h-9 w-64 rounded-lg border border-gray-200 bg-gray-50 pl-9 pr-3 text-sm text-gray-900 placeholder-gray-400 outline-none focus:border-primary-300 focus:bg-white focus:ring-2 focus:ring-primary-100 transition"
-              />
-            </div>
+            {isCompanyAdmin ? (
+              companyLogo ? (
+                <Image
+                  src={companyLogo.src}
+                  alt={companyLogo.alt}
+                  width={140}
+                  height={42}
+                  className="h-9 w-auto max-w-36 object-contain"
+                />
+              ) : null
+            ) : (
+              /* Search */
+              <div className="relative hidden md:block">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Buscar..."
+                  className="h-9 w-64 rounded-lg border border-gray-200 bg-gray-50 pl-9 pr-3 text-sm text-gray-900 placeholder-gray-400 outline-none focus:border-primary-300 focus:bg-white focus:ring-2 focus:ring-primary-100 transition"
+                />
+              </div>
+            )}
 
             {/* User dropdown */}
             <div className="relative">
