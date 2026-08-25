@@ -380,6 +380,15 @@
 
 ### Completado
 
+- [x] **Evitar bloqueo de conversaciones por límite de celdas de Google Sheets**
+  - Historial completo persistido como filas independientes en `ConversationMessages`
+  - `Conversations.context_json` conserva una ventana de hasta 50 mensajes y un máximo seguro de 40.000 caracteres
+  - Migración automática y deduplicada del historial existente al actualizar cada conversación
+  - El backoffice recompone el historial completo desde las filas archivadas y la ventana activa
+  - Una falla al archivar o registrar mensajes no interrumpe el procesamiento de acciones de WhatsApp
+  - Cloud Run queda limitado a una instancia mientras Google Sheets sea el backend, evitando escrituras concurrentes entre instancias
+  - Pruebas de límite, concurrencia y tolerancia a fallos
+
 - [x] **Exportación contable Porta — backend**
   - Servicio independiente del exportador administrativo para seleccionar gastos por caso, mes, rango o empresa completa
   - Elegibilidad centralizada sobre los estados operativos existentes del gasto, sin usar ni modificar estados de pago o liquidación

@@ -1,13 +1,222 @@
+import json
 import unittest
+from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from app.config import Settings
+from app.main import _append_message_log
+from services.backoffice_service import BackofficeService
 from services.sheets_service import SHEET_NAMES, SheetsService, _column_label
 
 
 class SheetsServiceFallbackTests(unittest.TestCase):
+    def test_conversation_state_keeps_bounded_window_and_archives_full_history(self):
+        service = SheetsService(
+            Settings(google_application_credentials="", google_sheets_spreadsheet_id="")
+        )
+        phone = "+56911111111"
+        messages = [
+            {
+                "id": f"msg-{index}",
+                "speaker": "person",
+                "type": "text",
+                "text": f"Mensaje {index}",
+                "created_at": f"2026-08-25T12:{index:02d}:00Z",
+            }
+            for index in range(60)
+        ]
+
+        service.update_conversation(phone, {"context_json": {"message_log": messages}})
+
+        conversation = service.get_conversation(phone)
+        self.assertEqual(len(conversation["context_json"]["message_log"]), 50)
+        self.assertEqual(conversation["context_json"]["message_log"][0]["id"], "msg-10")
+        self.assertEqual(len(service.list_conversation_messages(phone)), 60)
+
+    def test_conversation_update_continues_when_history_archive_fails(self):
+        service = SheetsService(
+            Settings(google_application_credentials="", google_sheets_spreadsheet_id="")
+        )
+        phone = "+56911111111"
+        messages = [{"id": f"msg-{index}", "text": "x" * 1200} for index in range(60)]
+
+        with patch.object(service, "_archive_conversation_messages", side_effect=RuntimeError("down")):
+            result = service.update_conversation(
+                phone,
+                {"state": "CONFIRM_SUMMARY", "context_json": {"message_log": messages}},
+            )
+
+        self.assertEqual(result["state"], "CONFIRM_SUMMARY")
+        self.assertLessEqual(len(result["context_json"]["message_log"]), 50)
+        self.assertLessEqual(len(str(result["context_json"])), 50_000)
+        self.assertIs(result["context_json"]["history_archive_incomplete"], True)
+        self.assertEqual(result["context_json"]["history_archive_message_count"], 60)
+        self.assertTrue(result["context_json"]["history_archive_backlog"])
+
+        recovered = service.update_conversation(
+            phone,
+            {"context_json": {"message_log": result["context_json"]["message_log"]}},
+        )
+        self.assertNotIn("history_archive_incomplete", recovered["context_json"])
+        self.assertNotIn("history_archive_backlog", recovered["context_json"])
+
+    def test_conversation_updates_merge_stale_message_histories(self):
+        service = SheetsService(
+            Settings(google_application_credentials="", google_sheets_spreadsheet_id="")
+        )
+        phone = "+56911111111"
+        service.update_conversation(
+            phone,
+            {"context_json": {"message_log": [{"id": "person-1", "text": "Foto"}]}},
+        )
+        service.update_conversation(
+            phone,
+            {"context_json": {"message_log": [{"id": "operator-1", "text": "Hola"}]}},
+        )
+
+        result = service.update_conversation(
+            phone,
+            {"context_json": {"message_log": [{"id": "person-1", "text": "Foto"}, {"id": "bot-1", "text": "Procesando"}]}},
+        )
+
+        self.assertEqual(
+            [message["id"] for message in result["context_json"]["message_log"]],
+            ["person-1", "operator-1", "bot-1"],
+        )
+
+    def test_message_identity_prefers_provider_ids_and_preserves_legacy_duplicates(self):
+        merged = SheetsService._merge_message_logs(
+            [
+                {"id": "local-1", "message_id": "wamid.1", "text": "original"},
+                {"speaker": "person", "created_at": "2026-08-25T12:00:00Z", "text": "sí"},
+            ],
+            [
+                {"id": "local-retry", "message_id": "wamid.1", "text": "enriched", "image_url": "https://example.test/a.jpg"},
+                {"speaker": "person", "created_at": "2026-08-25T12:00:00Z", "text": "sí"},
+            ],
+        )
+
+        self.assertEqual(len(merged), 2)
+        self.assertEqual(merged[0]["text"], "enriched")
+        self.assertEqual(merged[0]["image_url"], "https://example.test/a.jpg")
+
+    def test_update_accepts_serialized_context_and_filters_invalid_messages(self):
+        service = SheetsService(
+            Settings(google_application_credentials="", google_sheets_spreadsheet_id="")
+        )
+
+        result = service.update_conversation(
+            "+56911111111",
+            {"context_json": '{"message_log":[null,"bad",{"id":"ok","text":"hola"}]}'},
+        )
+
+        self.assertEqual(result["context_json"]["message_log"], [{"id": "ok", "text": "hola"}])
+
+    def test_append_rows_uses_single_remote_batch_and_updates_cache(self):
+        service = SheetsService(
+            Settings(google_application_credentials="", google_sheets_spreadsheet_id="")
+        )
+        worksheet = Mock()
+        service._spreadsheet = object()
+        service._worksheet_cache[SHEET_NAMES["conversation_messages"]] = worksheet
+        service._headers_cache[SHEET_NAMES["conversation_messages"]] = (
+            0.0,
+            ["message_record_id", "phone", "text"],
+        )
+        service._records_cache[SHEET_NAMES["conversation_messages"]] = (0.0, [])
+
+        with patch("services.sheets_service.time.monotonic", return_value=0.0):
+            service._append_rows(
+                SHEET_NAMES["conversation_messages"],
+                [{"message_record_id": "m1", "phone": "+5691", "text": "uno"}, {"message_record_id": "m2", "phone": "+5691", "text": "dos"}],
+            )
+
+        worksheet.append_rows.assert_called_once()
+        self.assertEqual(len(service._records_cache[SHEET_NAMES["conversation_messages"]][1]), 2)
+
+    def test_append_rows_keeps_successful_batch_cached_when_later_batch_fails(self):
+        service = SheetsService(
+            Settings(google_application_credentials="", google_sheets_spreadsheet_id="")
+        )
+        worksheet = Mock()
+        worksheet.append_rows.side_effect = [None, RuntimeError("second batch failed")]
+        name = SHEET_NAMES["conversation_messages"]
+        service._spreadsheet = object()
+        service._worksheet_cache[name] = worksheet
+        service._headers_cache[name] = (0.0, ["message_record_id"])
+        service._records_cache[name] = (0.0, [])
+
+        with patch("services.sheets_service.time.monotonic", return_value=0.0):
+            with self.assertRaises(RuntimeError):
+                service._append_rows(
+                    name,
+                    [{"message_record_id": f"m{index}"} for index in range(101)],
+                )
+
+        self.assertEqual(len(service._records_cache[name][1]), 100)
+
+    def test_large_message_payload_is_valid_json_below_sheet_cell_limit(self):
+        payload = SheetsService._safe_conversation_message_payload(
+            {
+                "id": "large",
+                "speaker": "person",
+                "text": "x" * 70_000,
+                "attachments": [{"document_url": "https://example.test/" + "y" * 60_000}],
+            }
+        )
+
+        parsed = json.loads(payload)
+        self.assertLessEqual(len(payload), 40_000)
+        self.assertIs(parsed["payload_truncated"], True)
+        self.assertEqual(parsed["original_text_length"], 70_000)
+
+        service = SheetsService(
+            Settings(google_application_credentials="", google_sheets_spreadsheet_id="")
+        )
+        service._archive_conversation_messages("+56911111111", [{"id": "large", "text": "x" * 70_000}])
+        archived = service._memory_store[SHEET_NAMES["conversation_messages"]][0]
+        self.assertLessEqual(len(archived["text"]), 40_000)
+        self.assertLessEqual(len(archived["payload_json"]), 40_000)
+
+    def test_backoffice_detail_rehydrates_archived_history(self):
+        sheets = Mock()
+        sheets.get_conversation.return_value = {
+            "phone": "+56911111111",
+            "case_id": "",
+            "context_json": {"message_log": [{"id": "recent"}]},
+        }
+        sheets.list_conversation_messages.return_value = [{"id": "old"}, {"id": "recent"}]
+        sheets.list_employees.return_value = []
+        sheets.list_expense_cases.return_value = []
+        sheets.get_employee_any_by_phone.return_value = None
+        sheets.get_expense_case_by_id.return_value = None
+        service = BackofficeService(sheets)
+
+        detail = service.get_conversation_detail("+56911111111")
+
+        self.assertEqual(
+            detail["conversation"]["context_json"]["message_log"],
+            [{"id": "old"}, {"id": "recent"}],
+        )
+
+    def test_message_log_failure_does_not_escape_into_business_flow(self):
+        sheets = Mock()
+        sheets.get_conversation.return_value = {
+            "state": "CONFIRM_SUMMARY",
+            "current_step": "confirm_summary",
+            "context_json": {"message_log": []},
+        }
+        sheets.update_conversation.side_effect = RuntimeError("Sheets unavailable")
+        conversation = Mock()
+        conversation.ensure_conversation.side_effect = lambda value: value
+        container = SimpleNamespace(sheets=sheets, conversation=conversation)
+
+        _append_message_log(container, "+56911111111", {"speaker": "person", "text": "Confirmar"})
+
+        sheets.update_conversation.assert_called_once()
+
     def test_column_label_supports_columns_beyond_z(self):
         self.assertEqual(_column_label(1), "A")
         self.assertEqual(_column_label(26), "Z")

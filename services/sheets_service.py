@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -30,6 +32,7 @@ SHEET_NAMES = {
     "expense_cases": "ExpenseCases",
     "expenses": "Expenses",
     "conversations": "Conversations",
+    "conversation_messages": "ConversationMessages",
     "expense_case_documents": "ExpenseCaseDocuments",
     "backoffice_users": "BackofficeUsers",
     "audit_log": "AuditLog",
@@ -125,6 +128,21 @@ _CONVERSATION_REQUIRED_HEADERS = [
     "context_json",
     "updated_at",
 ]
+_CONVERSATION_MESSAGE_HEADERS = [
+    "message_record_id",
+    "phone",
+    "message_id",
+    "provider_message_id",
+    "speaker",
+    "type",
+    "text",
+    "created_at",
+    "payload_json",
+]
+_CONVERSATION_MESSAGE_WINDOW = 50
+_CONVERSATION_CONTEXT_SAFE_CHAR_LIMIT = 40_000
+_CONVERSATION_MESSAGE_PAYLOAD_SAFE_CHAR_LIMIT = 40_000
+_CONVERSATION_MESSAGE_BATCH_SIZE = 100
 _TRIP_DOCUMENT_HEADERS = [
     "document_id",
     "phone",
@@ -299,6 +317,8 @@ class SheetsService:
         self._records_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
         self._headers_cache: dict[str, tuple[float, list[str]]] = {}
         self._read_cooldowns: dict[str, float] = {}
+        self._conversation_locks_guard = threading.Lock()
+        self._conversation_locks: dict[str, threading.RLock] = {}
         self._sqlite_conn: sqlite3.Connection | None = None
         self._memory_store: dict[str, list[dict[str, Any]]] = {
             "empresas": [],
@@ -306,6 +326,7 @@ class SheetsService:
             "ExpenseCases": [],
             "Expenses": [],
             "Conversations": [],
+            "ConversationMessages": [],
             "ExpenseCaseDocuments": [],
             "BackofficeUsers": [],
             "AuditLog": [],
@@ -655,6 +676,28 @@ class SheetsService:
         cached_records.append(row_dict.copy())
         self._set_records_cache(name, cached_records)
 
+    def _append_rows(self, name: str, row_dicts: list[dict[str, Any]]) -> None:
+        if not row_dicts:
+            return
+        ws = self._worksheet(name)
+        if ws is None:
+            for row_dict in row_dicts:
+                self._append_row(name, row_dict)
+            return
+        headers = self._get_headers(name)
+        cached_records = self._get_records(name)
+        for start in range(0, len(row_dicts), _CONVERSATION_MESSAGE_BATCH_SIZE):
+            batch_dicts = row_dicts[start : start + _CONVERSATION_MESSAGE_BATCH_SIZE]
+            rows = [
+                [_to_sheet_cell(row_dict.get(header, "")) for header in headers]
+                for row_dict in batch_dicts
+            ]
+            self._with_retry(lambda rows=rows: ws.append_rows(rows, value_input_option="USER_ENTERED"))
+            cached_records.extend(row.copy() for row in batch_dicts)
+            # Keep the cache consistent with batches already committed remotely so a
+            # later batch failure cannot cause those rows to be appended again.
+            self._set_records_cache(name, cached_records)
+
     def _ensure_required_headers(self) -> None:
         self._ensure_sheet_headers(SHEET_NAMES["companies"], list(_COMPANY_HEADERS))
         self._ensure_sheet_headers(SHEET_NAMES["employees"], list(_EMPLOYEE_REQUIRED_HEADERS))
@@ -662,6 +705,9 @@ class SheetsService:
         self._ensure_expenses_headers()
         self._ensure_sheet_headers(
             SHEET_NAMES["conversations"], list(_CONVERSATION_REQUIRED_HEADERS)
+        )
+        self._ensure_sheet_headers(
+            SHEET_NAMES["conversation_messages"], list(_CONVERSATION_MESSAGE_HEADERS)
         )
         self._ensure_sheet_headers(
             SHEET_NAMES["expense_case_documents"], list(_TRIP_DOCUMENT_HEADERS)
@@ -922,6 +968,8 @@ class SheetsService:
             return list(_EXPENSE_REQUIRED_HEADERS)
         if name == SHEET_NAMES["conversations"]:
             return list(_CONVERSATION_REQUIRED_HEADERS)
+        if name == SHEET_NAMES["conversation_messages"]:
+            return list(_CONVERSATION_MESSAGE_HEADERS)
         if name == SHEET_NAMES["expense_case_documents"]:
             return list(_TRIP_DOCUMENT_HEADERS)
         if name == SHEET_NAMES["backoffice_users"]:
@@ -1325,36 +1373,230 @@ class SheetsService:
         except ValueError:
             return None
 
-    def update_conversation(self, phone: str, payload: dict[str, Any]) -> dict[str, Any]:
-        existing = self.get_conversation(phone) or {}
-        context = payload.get("context_json")
-        if isinstance(context, str):
-            context_obj = json_loads(context, default={})
-        else:
-            context_obj = context if context is not None else existing.get("context_json", {})
+    def _conversation_lock(self, phone: str) -> threading.RLock:
+        key = normalize_whatsapp_phone(phone) or str(phone or "").strip()
+        with self._conversation_locks_guard:
+            return self._conversation_locks.setdefault(key, threading.RLock())
 
-        conversation = {
-            "phone": phone,
-            "state": payload.get("state", existing.get("state", "WAIT_RECEIPT")),
-            "current_step": payload.get(
-                "current_step", existing.get("current_step", "")
-            ),
-            "context_json": context_obj,
-            "updated_at": payload.get("updated_at", utc_now_iso()),
+    @staticmethod
+    def _message_identity(message: dict[str, Any], index: int) -> tuple[str, str]:
+        for field in ("message_id", "provider_message_id", "id"):
+            value = str(message.get(field) or "").strip()
+            if value:
+                return field, value
+        return "legacy", f"{index}:{message.get('speaker', '')}:{message.get('created_at', '')}:{message.get('text', '')}"
+
+    @classmethod
+    def _merge_message_logs(cls, current: Any, incoming: Any) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        positions: dict[tuple[str, str], int] = {}
+        for source in (current, incoming):
+            if not isinstance(source, list):
+                continue
+            for index, raw_message in enumerate(source):
+                if not isinstance(raw_message, dict):
+                    continue
+                message = dict(raw_message)
+                identity = cls._message_identity(message, index)
+                position = positions.get(identity)
+                if position is None:
+                    positions[identity] = len(merged)
+                    merged.append(message)
+                else:
+                    merged[position] = {**merged[position], **message}
+        return merged
+
+    @classmethod
+    def _merge_conversation_context(cls, current: Any, incoming: Any) -> dict[str, Any]:
+        current_context = current if isinstance(current, dict) else {}
+        incoming_context = incoming if isinstance(incoming, dict) else {}
+        merged = {**current_context, **incoming_context}
+        if "message_log" in current_context or "message_log" in incoming_context:
+            merged["message_log"] = cls._merge_message_logs(
+                current_context.get("message_log"), incoming_context.get("message_log")
+            )
+        return merged
+
+    @classmethod
+    def _conversation_message_record_id(cls, phone: str, message: dict[str, Any], index: int) -> str:
+        identity = cls._message_identity(message, index)
+        digest = hashlib.sha256(
+            f"{normalize_whatsapp_phone(phone)}:{identity[0]}:{identity[1]}".encode("utf-8")
+        ).hexdigest()[:32]
+        return f"cmsg-{digest}"
+
+    @staticmethod
+    def _safe_conversation_message_payload(message: dict[str, Any]) -> str:
+        payload = dict(message)
+        serialized = json_dumps(payload)
+        if len(serialized) <= _CONVERSATION_MESSAGE_PAYLOAD_SAFE_CHAR_LIMIT:
+            return serialized
+        for key in ("attachments", "media_url", "image_url", "document_url"):
+            payload.pop(key, None)
+        payload["payload_truncated"] = True
+        serialized = json_dumps(payload)
+        if len(serialized) <= _CONVERSATION_MESSAGE_PAYLOAD_SAFE_CHAR_LIMIT:
+            return serialized
+        text = str(payload.get("text") or "")
+        payload["text"] = text[:10_000]
+        payload["original_text_length"] = len(text)
+        serialized = json_dumps(payload)
+        if len(serialized) <= _CONVERSATION_MESSAGE_PAYLOAD_SAFE_CHAR_LIMIT:
+            return serialized
+        minimal_payload = {
+            key: payload.get(key)
+            for key in ("id", "message_id", "provider_message_id", "speaker", "type", "created_at")
+            if payload.get(key) is not None
         }
-        to_sheet = conversation.copy()
-        to_sheet["context_json"] = json_dumps(conversation["context_json"])
-        logger.info(
-            "Updating conversation phone=%s state=%s current_step=%s context_keys=%s",
-            normalize_whatsapp_phone(phone),
-            conversation["state"],
-            conversation["current_step"] or None,
-            sorted(conversation["context_json"].keys())
-            if isinstance(conversation["context_json"], dict)
-            else None,
+        minimal_payload.update(
+            {
+                "text": text[:10_000],
+                "original_text_length": len(text),
+                "payload_truncated": True,
+            }
         )
-        self._upsert_by_key(SHEET_NAMES["conversations"], "phone", phone, to_sheet)
-        return conversation
+        return json_dumps(minimal_payload)
+
+    @staticmethod
+    def _safe_conversation_message_cell(value: Any) -> str:
+        return str(value or "").strip()[:_CONVERSATION_MESSAGE_PAYLOAD_SAFE_CHAR_LIMIT]
+
+    @classmethod
+    def _safe_conversation_message(cls, message: dict[str, Any]) -> dict[str, Any]:
+        payload = json_loads(cls._safe_conversation_message_payload(message), default={})
+        return payload if isinstance(payload, dict) else {}
+
+    def _archive_conversation_messages(self, phone: str, messages: list[dict[str, Any]]) -> None:
+        if not messages:
+            return
+        target_phone = normalize_whatsapp_phone(phone)
+        existing_ids = {
+            str(row.get("message_record_id") or "").strip()
+            for row in self._get_records(SHEET_NAMES["conversation_messages"])
+            if normalize_whatsapp_phone(row.get("phone", "")) == target_phone
+        }
+        rows: list[dict[str, Any]] = []
+        for index, message in enumerate(messages):
+            safe_message = self._safe_conversation_message(message)
+            record_id = self._conversation_message_record_id(target_phone, message, index)
+            if record_id in existing_ids:
+                continue
+            rows.append(
+                {
+                    "message_record_id": record_id,
+                    "phone": target_phone,
+                    "message_id": self._safe_conversation_message_cell(message.get("message_id")),
+                    "provider_message_id": self._safe_conversation_message_cell(message.get("provider_message_id")),
+                    "speaker": self._safe_conversation_message_cell(message.get("speaker")),
+                    "type": self._safe_conversation_message_cell(message.get("type")),
+                    "text": self._safe_conversation_message_cell(safe_message.get("text")),
+                    "created_at": self._safe_conversation_message_cell(message.get("created_at")),
+                    "payload_json": json_dumps(safe_message),
+                }
+            )
+            existing_ids.add(record_id)
+        self._append_rows(SHEET_NAMES["conversation_messages"], rows)
+
+    @staticmethod
+    def _bounded_conversation_context(context: dict[str, Any]) -> dict[str, Any]:
+        bounded = dict(context)
+        messages = bounded.get("message_log")
+        if not isinstance(messages, list):
+            return bounded
+        window = [dict(item) for item in messages if isinstance(item, dict)][
+            -_CONVERSATION_MESSAGE_WINDOW:
+        ]
+        bounded["message_log"] = window
+        backlog = bounded.get("history_archive_backlog")
+        while window and len(json_dumps(bounded)) > _CONVERSATION_CONTEXT_SAFE_CHAR_LIMIT:
+            window.pop(0)
+        if isinstance(backlog, list):
+            while backlog and len(json_dumps(bounded)) > _CONVERSATION_CONTEXT_SAFE_CHAR_LIMIT:
+                backlog.pop(0)
+        return bounded
+
+    def list_conversation_messages(self, phone: str) -> list[dict[str, Any]]:
+        target_phone = normalize_whatsapp_phone(phone)
+        archived: list[dict[str, Any]] = []
+        for row in self._get_records(SHEET_NAMES["conversation_messages"]):
+            if normalize_whatsapp_phone(row.get("phone", "")) != target_phone:
+                continue
+            payload = json_loads(row.get("payload_json"), default={})
+            if isinstance(payload, dict):
+                archived.append(payload)
+        conversation = self.get_conversation(target_phone) or {}
+        context = conversation.get("context_json", {})
+        window = context.get("message_log", []) if isinstance(context, dict) else []
+        backlog = context.get("history_archive_backlog", []) if isinstance(context, dict) else []
+        merged = self._merge_message_logs(archived, backlog)
+        merged = self._merge_message_logs(merged, window)
+        merged.sort(key=lambda item: str(item.get("created_at") or ""))
+        return merged
+
+    def update_conversation(self, phone: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._conversation_lock(phone):
+            existing = self.get_conversation(phone) or {}
+            context = payload.get("context_json")
+            if isinstance(context, str):
+                incoming_context = json_loads(context, default={})
+            else:
+                incoming_context = context if context is not None else existing.get("context_json", {})
+            context_obj = self._merge_conversation_context(
+                existing.get("context_json", {}), incoming_context
+            )
+            full_message_log = context_obj.get("message_log", [])
+            archive_backlog = context_obj.get("history_archive_backlog", [])
+            archive_candidates = self._merge_message_logs(archive_backlog, full_message_log)
+            archive_failed = False
+            if archive_candidates:
+                try:
+                    self._archive_conversation_messages(phone, archive_candidates)
+                except Exception:
+                    archive_failed = True
+                    logger.exception(
+                        "Failed to archive conversation messages; continuing with bounded state phone=%s",
+                        normalize_whatsapp_phone(phone),
+                    )
+            if archive_failed:
+                context_obj["history_archive_incomplete"] = True
+                context_obj["history_archive_failed_at"] = utc_now_iso()
+                context_obj["history_archive_message_count"] = len(archive_candidates)
+                # The active window remains in message_log. Persist only the overflow
+                # here so the next update can retry it without duplicating the window.
+                overflow = archive_candidates[:-_CONVERSATION_MESSAGE_WINDOW]
+                context_obj["history_archive_backlog"] = [
+                    self._safe_conversation_message(message) for message in overflow
+                ]
+            else:
+                context_obj.pop("history_archive_incomplete", None)
+                context_obj.pop("history_archive_failed_at", None)
+                context_obj.pop("history_archive_message_count", None)
+                context_obj.pop("history_archive_backlog", None)
+            context_obj = self._bounded_conversation_context(context_obj)
+
+            conversation = {
+                "phone": phone,
+                "state": payload.get("state", existing.get("state", "WAIT_RECEIPT")),
+                "current_step": payload.get("current_step", existing.get("current_step", "")),
+                "context_json": context_obj,
+                "updated_at": payload.get("updated_at", utc_now_iso()),
+            }
+            to_sheet = conversation.copy()
+            to_sheet["context_json"] = json_dumps(conversation["context_json"])
+            logger.info(
+                "Updating conversation phone=%s state=%s current_step=%s context_keys=%s message_count=%s",
+                normalize_whatsapp_phone(phone),
+                conversation["state"],
+                conversation["current_step"] or None,
+                sorted(conversation["context_json"].keys())
+                if isinstance(conversation["context_json"], dict)
+                else None,
+                len(conversation["context_json"].get("message_log", []))
+                if isinstance(conversation["context_json"], dict)
+                else 0,
+            )
+            self._upsert_by_key(SHEET_NAMES["conversations"], "phone", phone, to_sheet)
+            return conversation
 
     def append_audit_log(
         self,

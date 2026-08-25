@@ -124,6 +124,7 @@ deploy_backend() {
     --source=. \
     --region="$REGION" \
     --project="$PROJECT" \
+    --max-instances=1 \
     --update-env-vars="DEPLOY_COMMIT=$DEPLOY_COMMIT,DEPLOY_TIME=$DEPLOY_TIME"
 }
 

@@ -931,6 +931,13 @@ class BackofficeService:
             return None
         employee = self.sheets_service.get_employee_any_by_phone(phone)
         expense_case = self.sheets_service.get_expense_case_by_id(conversation.get("case_id", ""))
+        context = conversation.get("context_json", {})
+        if isinstance(context, dict):
+            conversation = dict(conversation)
+            conversation["context_json"] = {
+                **context,
+                "message_log": self.sheets_service.list_conversation_messages(phone),
+            }
         return {
             "conversation": self._enrich_conversations([conversation])[0],
             "employee": employee,

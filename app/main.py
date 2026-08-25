@@ -2419,14 +2419,20 @@ def _append_message_log(
         context,
         {**context, "message_log": message_log},
     )
-    container.sheets.update_conversation(
-        phone,
-        {
-            "state": conversation.get("state", "WAIT_RECEIPT"),
-            "current_step": conversation.get("current_step", ""),
-            "context_json": updated_context,
-        },
-    )
+    try:
+        container.sheets.update_conversation(
+            phone,
+            {
+                "state": conversation.get("state", "WAIT_RECEIPT"),
+                "current_step": conversation.get("current_step", ""),
+                "context_json": updated_context,
+            },
+        )
+    except Exception:
+        logger.exception(
+            "Failed to persist conversation message log; continuing business flow phone=%s",
+            phone,
+        )
 
 
 def _log_inbound_text_message(
