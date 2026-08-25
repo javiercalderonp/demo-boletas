@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.0.2.0] - 2026-08-25
+
+- Agrega `Centro de costo` al menú de campos corregibles para todos los tipos de documento.
+- Después de corregir el centro de costo, vuelve al resumen para solicitar confirmación.
+
 ## [0.0.1.0] - 2026-08-25
 
 - Evita que el historial acumulado de WhatsApp supere el límite por celda de Google Sheets.
