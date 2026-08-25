@@ -18,7 +18,7 @@ COPY app ./app
 COPY services ./services
 COPY utils ./utils
 COPY assets ./assets
-COPY ["FORMATO RENDICIÓN 2026.xlsx", "./FORMATO RENDICIÓN 2026.xlsx"]
+COPY ["FORMATO RENDICIÓN 2026.xlsx", "./FORMATO RENDICIÓN 2026.xlsx"]
 
 ENV PORT=8080
 EXPOSE 8080

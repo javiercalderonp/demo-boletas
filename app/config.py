@@ -91,7 +91,7 @@ class Settings:
         "CONSOLIDATED_REPORT_LOGO_PATH", "./assets/ripley-logo.png"
     )
     porta_export_template_path: str = os.getenv(
-        "PORTA_EXPORT_TEMPLATE_PATH", "./FORMATO RENDICIÓN 2026.xlsx"
+        "PORTA_EXPORT_TEMPLATE_PATH", "./FORMATO RENDICIÓN 2026.xlsx"
     )
     porta_export_date_source: str = os.getenv(
         "PORTA_EXPORT_DATE_SOURCE", "document_date"
