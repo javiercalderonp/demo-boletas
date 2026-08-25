@@ -95,6 +95,7 @@ CORRECTION_FIELD_OPTIONS = {
     "3": "total",
     "4": "category",
     "5": "country",
+    "6": "cost_center",
 }
 CORRECTION_FIELD_ALIASES = {
     "merchant": "merchant",
@@ -125,6 +126,10 @@ CORRECTION_FIELD_ALIASES = {
     "pais": "country",
     "país": "country",
     "country": "country",
+    "centro de costo": "cost_center",
+    "centro costo": "cost_center",
+    "cost center": "cost_center",
+    "cost_center": "cost_center",
 }
 CORRECTION_FIELD_LABELS = {
     "merchant": "merchant",
@@ -133,6 +138,7 @@ CORRECTION_FIELD_LABELS = {
     "currency": "moneda",
     "category": "categoría",
     "country": "país",
+    "cost_center": "centro de costo",
     "invoice_number": "folio",
     "issuer_tax_id": "RUT emisor",
     "receiver_tax_id": "RUT receptor",
@@ -141,7 +147,7 @@ CORRECTION_FIELD_LABELS = {
 }
 
 CORRECTION_FIELDS_BY_DOCUMENT_TYPE = {
-    "receipt": ("merchant", "date", "total", "category", "country"),
+    "receipt": ("merchant", "date", "total", "category", "country", "cost_center"),
     "invoice": (
         "merchant",
         "date",
@@ -149,6 +155,7 @@ CORRECTION_FIELDS_BY_DOCUMENT_TYPE = {
         "total",
         "category",
         "country",
+        "cost_center",
         "issuer_tax_id",
         "receiver_tax_id",
     ),
@@ -160,6 +167,7 @@ CORRECTION_FIELDS_BY_DOCUMENT_TYPE = {
         "receiver_tax_id",
         "net_amount",
         "gross_amount",
+        "cost_center",
     ),
 }
 
@@ -640,6 +648,8 @@ class ConversationService:
             draft["cost_center"] = cost_center
             if cost_center.lower() not in {center.lower() for center in centers}:
                 draft["cost_centers"] = centers + [cost_center]
+            if context.get("correction_field") == "cost_center":
+                return self._to_confirm_summary(draft)
             return {
                 "state": DONE,
                 "current_step": "",
@@ -997,6 +1007,19 @@ class ConversationService:
         return selected if selected in options.values() else None
 
     def _to_needs_info_for_field(self, draft: dict[str, Any], field_name: str) -> dict[str, Any]:
+        if field_name == "cost_center":
+            return {
+                "state": CONFIRM_SUMMARY,
+                "current_step": "cost_center",
+                "context_json": {
+                    "draft_expense": draft,
+                    "missing_fields": [],
+                    "last_question": "cost_center",
+                    "correction_field": "cost_center",
+                },
+                "reply": self._build_cost_center_prompt(draft),
+                "action": "noop",
+            }
         extra = ""
         if field_name == "country":
             extra = "\nActualizaré moneda automáticamente según el país."

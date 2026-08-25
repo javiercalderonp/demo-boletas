@@ -1052,6 +1052,7 @@ class ReceiptPipelineTests(unittest.TestCase):
                 "receiver_tax_id",
                 "net_amount",
                 "gross_amount",
+                "cost_center",
             ],
         )
         self.assertEqual(
@@ -1064,8 +1065,44 @@ class ReceiptPipelineTests(unittest.TestCase):
                 "RUT receptor",
                 "Monto líquido",
                 "Monto bruto",
+                "Centro de costo",
             ],
         )
+
+    def test_invoice_correction_menu_includes_cost_center_and_returns_to_summary(self):
+        service = ConversationService(expense_service=ExpenseService(None, None))
+        draft = {
+            "document_type": "invoice",
+            "merchant": "Uber",
+            "date": "2026-08-12",
+            "total": 14012,
+            "category": "Transport",
+            "country": "Chile",
+            "cost_center": "Facturas",
+            "cost_centers": ["Facturas", "Operaciones"],
+        }
+
+        options = get_correction_field_options(draft)
+        cost_center_option = next(key for key, value in options.items() if value == "cost_center")
+        selection = service.handle_text_message(
+            {
+                "state": "CONFIRM_SUMMARY",
+                "current_step": "select_correction_field",
+                "context_json": {"draft_expense": draft},
+            },
+            cost_center_option,
+        )
+
+        self.assertEqual(selection["state"], "CONFIRM_SUMMARY")
+        self.assertEqual(selection["current_step"], "cost_center")
+        self.assertEqual(selection["context_json"]["correction_field"], "cost_center")
+
+        corrected = service.handle_text_message(selection, "2")
+
+        self.assertEqual(corrected["state"], "CONFIRM_SUMMARY")
+        self.assertEqual(corrected["current_step"], "confirm_summary")
+        self.assertEqual(corrected["context_json"]["draft_expense"]["cost_center"], "Operaciones")
+        self.assertEqual(corrected["action"], "noop")
 
     def test_professional_fee_receipt_manual_net_correction_is_not_overwritten_by_ocr(self):
         service = ConversationService(expense_service=ExpenseService(None, None))
